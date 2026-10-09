@@ -23,7 +23,9 @@ El sistema debe mantener la información mínima necesaria para identificar cada
 ### Requisitos
 
 -   El sistema debe registrar productos con SKU, nombre, stock mínimo, precio de venta y stock inicial.
--   Cada producto debe tener un SKU único y estable.
+-   Antes de validar y guardar un producto, el sistema debe eliminar los espacios iniciales y finales de su SKU y nombre.
+-   El SKU y el nombre son obligatorios y, después de eliminar sus espacios iniciales y finales, no pueden estar vacíos.
+-   Cada producto debe tener un SKU único y estable, sin imponer un formato específico.
 -   El sistema no debe permitir modificar el SKU de un producto después de su registro.
 -   El sistema debe permitir consultar productos por SKU o por nombre.
 -   El sistema debe permitir modificar el nombre, el precio de venta y el stock mínimo de un producto activo.
@@ -40,6 +42,8 @@ El sistema debe mantener la información mínima necesaria para identificar cada
 -   Dado un SKU no registrado, cuando se confirme el registro de un producto con todos los datos requeridos y stock inicial mayor que cero, el sistema debe crear el producto y registrar una entrada de stock inicial.
 -   Dado un SKU no registrado, cuando se confirme el registro de un producto con stock inicial igual a cero, el sistema debe crear el producto con stock actual igual a cero y no debe registrar un movimiento.
 -   Dado un SKU ya registrado, cuando se intente registrar otro producto con ese SKU, el sistema debe rechazar la operación e informar que el SKU ya existe.
+-   Cuando el SKU o el nombre estén vacíos o contengan solo espacios, el sistema debe rechazar el registro del producto.
+-   Cuando el SKU o el nombre contengan espacios iniciales o finales, el sistema debe eliminarlos antes de validar y guardar el producto.
 -   Cuando se intente modificar el SKU de un producto, el sistema debe rechazar la operación e informar que el SKU no es modificable.
 -   Cuando se consulte un SKU existente, el sistema debe mostrar el producto correspondiente.
 -   Cuando se consulte un nombre que identifique inequívocamente un producto, el sistema debe mostrar ese producto.
@@ -67,6 +71,7 @@ El sistema debe reflejar el stock actual a partir de los movimientos confirmados
 -   Cuando se solicite una salida, el sistema debe verificar que la cantidad no supere el stock disponible.
 -   El sistema no debe confirmar ningún movimiento que resulte en stock negativo.
 -   Estas restricciones también deben aplicarse a los movimientos compensatorios.
+-   Al confirmar una operación de stock, el sistema debe validar la disponibilidad vigente en ese momento y proteger las operaciones simultáneas para impedir confirmaciones basadas en una disponibilidad obsoleta.
 
 ### Criterios de aceptación
 
@@ -77,6 +82,7 @@ El sistema debe reflejar el stock actual a partir de los movimientos confirmados
 -   Cuando se solicite una cantidad igual a cero, negativa o con más de dos decimales, el sistema debe rechazar el movimiento.
 -   Dado un producto con stock actual menor que la cantidad solicitada para una salida, el sistema debe rechazar la salida e informar el stock disponible.
 -   Después de confirmar cualquier movimiento, el stock actual del producto no debe ser negativo.
+-   Dadas operaciones de stock simultáneas que no podrían confirmarse todas sin producir stock negativo, el sistema debe validar cada confirmación contra la disponibilidad vigente, confirmar solo las operaciones que sigan cumpliendo las reglas y rechazar las demás sin guardar cambios parciales.
 
 ## RF-03. Movimientos de inventario
 
@@ -90,13 +96,19 @@ El sistema debe conservar un historial verificable de entradas, salidas y correc
 -   Cada movimiento debe incluir un motivo.
 -   El sistema debe registrar automáticamente la fecha y hora de cada movimiento confirmado.
 -   El sistema debe permitir consultar movimientos por producto, tipo y período.
+-   Cuando se proporcionen fechas para un período, el sistema debe interpretarlas en la hora local de Argentina y almacenar los instantes de los movimientos en UTC.
+-   El período de consulta debe incluir su inicio y excluir su final.
+-   Cuando se combinen filtros de producto, tipo y período, el sistema debe devolver únicamente los movimientos que cumplan todos los filtros proporcionados.
 -   El sistema no debe permitir editar ni eliminar movimientos confirmados.
 -   Cuando sea necesario corregir un movimiento confirmado, el sistema debe registrar un movimiento compensatorio relacionado con el movimiento original.
 -   Un movimiento compensatorio puede neutralizar total o parcialmente la cantidad del movimiento original.
--   La suma de las cantidades de todas las compensaciones confirmadas vinculadas a un movimiento original no debe superar la cantidad de ese movimiento original.
--   Cada nueva compensación no debe superar la cantidad pendiente de compensar del movimiento original.
+-   Todo movimiento compensatorio debe tener el tipo opuesto al movimiento original y debe vincularse a un movimiento original que no sea compensatorio.
+-   La suma de las cantidades absolutas de todas las compensaciones confirmadas vinculadas a un movimiento original no debe superar la cantidad absoluta de ese movimiento original.
+-   La cantidad absoluta de cada nueva compensación no debe superar la cantidad absoluta pendiente de compensar del movimiento original.
+-   El sistema debe permitir múltiples compensaciones parciales vinculadas al mismo movimiento original hasta alcanzar exactamente su cantidad original.
 -   El sistema debe conservar el vínculo entre cada movimiento compensatorio y su movimiento original.
 -   La confirmación de una compensación no debe modificar ni eliminar el movimiento original.
+-   Una compensación debe corregir un error de registro del movimiento original y no debe utilizarse solo porque posteriormente se prefiera otra cantidad para una operación física ocurrida.
 -   Un producto desactivado puede admitir únicamente movimientos compensatorios necesarios para corregir su historial.
 -   Los movimientos compensatorios de productos desactivados deben respetar las mismas reglas de cantidad y stock no negativo que cualquier otro movimiento.
 
@@ -107,10 +119,16 @@ El sistema debe conservar un historial verificable de entradas, salidas y correc
 -   Cuando se consulten movimientos de un producto, el sistema debe devolver únicamente los movimientos asociados a ese producto.
 -   Cuando se consulte por tipo, el sistema debe devolver únicamente entradas o únicamente salidas, según lo solicitado.
 -   Cuando se consulte por período, el sistema debe devolver únicamente los movimientos incluidos en el período solicitado.
+-   Dado un período con inicio y final, el sistema debe incluir un movimiento ocurrido en el inicio y excluir uno ocurrido exactamente en el final.
+-   Dado un movimiento almacenado en UTC, cuando su instante corresponda a una fecha y hora incluidas en un período proporcionado en hora local de Argentina, el sistema debe incluirlo en la consulta.
+-   Cuando se combinen filtros de producto, tipo y período, el sistema debe devolver únicamente los movimientos que cumplan todos los filtros.
 -   Cuando se intente editar o eliminar un movimiento confirmado, el sistema debe rechazar la operación.
 -   Cuando se confirme una compensación válida, el sistema debe crear un nuevo movimiento vinculado al original y conservar ambos en el historial.
 -   Cuando una compensación total o parcial provocaría stock negativo, el sistema debe rechazarla.
--   Dado un movimiento original con compensaciones confirmadas parciales o totales, cuando se solicite una nueva compensación cuya cantidad supere la cantidad pendiente de compensar, el sistema debe rechazarla e informar el motivo.
+-   Dado un movimiento original con compensaciones confirmadas parciales o totales, cuando se solicite una nueva compensación cuya cantidad absoluta supere la cantidad absoluta pendiente de compensar, el sistema debe rechazarla e informar el motivo.
+-   Dado un movimiento original con compensaciones parciales válidas, el sistema debe permitir una nueva compensación cuya cantidad complete exactamente la cantidad original.
+-   Cuando se solicite una compensación con el mismo tipo que el movimiento original o vinculada a otra compensación, el sistema debe rechazarla.
+-   Cuando se solicite una compensación únicamente porque se prefiere una cantidad distinta para una operación física que ocurrió, el sistema debe rechazarla.
 -   Dado un producto desactivado, cuando se solicite una compensación válida de un movimiento de su historial, el sistema debe permitirla y conservar el vínculo con el movimiento original.
 -   Dado un producto desactivado, cuando se solicite una entrada o salida ordinaria, el sistema debe rechazarla.
 
@@ -123,7 +141,8 @@ El sistema debe identificar de forma objetiva los productos que requieren atenci
 ### Requisitos
 
 -   El sistema debe considerar que un producto tiene stock bajo cuando su stock actual sea menor o igual que su stock mínimo.
--   El sistema debe identificar los productos que requieren reposición.
+-   Las consultas globales de stock bajo y de reposición deben incluir únicamente productos activos.
+-   El sistema debe identificar como productos que requieren reposición únicamente los productos activos cuyo faltante sea mayor que cero.
 -   Para cada producto, el faltante debe calcularse como el máximo entre cero y la diferencia entre el stock mínimo y el stock actual.
 
 ### Criterios de aceptación
@@ -133,6 +152,8 @@ El sistema debe identificar de forma objetiva los productos que requieren atenci
 -   Dado un producto cuyo stock actual sea mayor que su stock mínimo, el sistema no debe identificarlo como producto con stock bajo.
 -   Dado un producto con stock mínimo de 10 y stock actual de 6, el sistema debe informar un faltante de 4.
 -   Dado un producto con stock mínimo de 10 y stock actual de 12, el sistema debe informar un faltante de 0.
+-   Dado un producto activo con stock mínimo de 0 y stock actual de 0, el sistema debe identificarlo con stock bajo, pero no debe incluirlo entre los productos que requieren reposición.
+-   Dado un producto desactivado con stock actual menor o igual que su stock mínimo, el sistema no debe incluirlo en las consultas globales de stock bajo ni de reposición.
 
 ## RF-05. Asistente con IA
 
@@ -146,8 +167,11 @@ El asistente debe permitir consultar el inventario y proponer operaciones median
 -   Para responder consultas, el asistente debe consultar los datos reales del inventario.
 -   El asistente debe interpretar solicitudes para registrar productos, entradas, salidas y modificaciones de productos.
 -   Antes de cualquier modificación, el asistente debe mostrar la operación propuesta y solicitar confirmación.
+-   Antes de confirmarse, una propuesta debe poder editarse sin crear movimientos ni modificar el inventario; editar una propuesta no constituye una modificación de los datos de un producto.
 -   El asistente debe ejecutar una modificación únicamente después de recibir confirmación.
 -   Cuando no se reciba confirmación, el asistente no debe realizar cambios.
+-   Al recibir una confirmación, el asistente debe volver a validar todas las reglas de negocio aplicables con el estado actual del inventario.
+-   Si una regla aplicable falla al confirmar, el asistente debe rechazar la operación, explicar el motivo y no guardar cambios parciales.
 -   Cuando una solicitud no identifique inequívocamente un producto u operación, el asistente debe solicitar una aclaración.
 -   Cuando existan coincidencias disponibles para una solicitud ambigua, el asistente debe mostrarlas.
 -   Cuando una operación sea inválida o no pueda ejecutarse, el asistente debe informar claramente el error y no debe afirmar que se realizó.
@@ -160,8 +184,10 @@ El asistente debe permitir consultar el inventario y proponer operaciones median
 -   Cuando se solicite reposición, el asistente debe responder con los productos identificados y su faltante calculado.
 -   Cuando se solicite el historial de movimientos con filtros válidos, el asistente debe mostrar los movimientos que correspondan a esos filtros.
 -   Antes de registrar un producto, movimiento, modificación o compensación, el asistente debe mostrar los datos propuestos y pedir confirmación.
+-   Dada una propuesta editable no confirmada, cuando se modifiquen sus datos, el asistente debe actualizar la propuesta sin crear movimientos, sin modificar el inventario y sin modificar los datos del producto.
 -   Dada una propuesta no confirmada, el sistema no debe crear ni modificar datos.
 -   Dada una propuesta confirmada y válida, el sistema debe ejecutar la operación e informar el resultado.
+-   Dada una propuesta que era válida al mostrarse, cuando deje de cumplir una regla de negocio antes de confirmarse, el asistente debe rechazarla al confirmar, explicar el motivo y no guardar cambios parciales.
 -   Cuando una referencia de producto sea ambigua, el asistente debe solicitar aclaración y mostrar las coincidencias disponibles.
 -   Cuando una referencia de producto no exista, el asistente debe informarlo claramente.
 -   Cuando una operación infrinja una regla de negocio, el asistente debe informar el motivo y no debe confirmar un resultado inexistente.
@@ -191,6 +217,7 @@ El MVP debe mantener un alcance reducido y centrado en el control esencial de un
 ## Reglas de negocio transversales
 
 -   El SKU identifica de forma única a un producto y no puede modificarse.
+-   El SKU y el nombre son obligatorios; antes de validarlos y guardarlos se eliminan sus espacios iniciales y finales, y no pueden quedar vacíos.
 -   El stock actual y el stock mínimo admiten hasta dos decimales.
 -   El stock mínimo puede ser cero o un valor positivo, pero no puede ser negativo.
 -   El precio de venta debe ser mayor que cero.
@@ -201,17 +228,25 @@ El MVP debe mantener un alcance reducido y centrado en el control esencial de un
 -   El stock resultante de un movimiento confirmado nunca puede ser negativo.
 -   El stock actual debe reflejar los movimientos confirmados, junto con el valor inicial cero cuando un producto se registre sin movimiento de stock inicial.
 -   Todo movimiento requiere un motivo y fecha y hora registradas automáticamente.
+-   Los instantes de los movimientos se almacenan en UTC; las fechas proporcionadas para períodos se interpretan en la hora local de Argentina, con inicio inclusivo y final exclusivo.
+-   Los filtros combinados de producto, tipo y período se aplican de forma conjunta; cada movimiento devuelto debe cumplir todos los filtros proporcionados.
 -   Los movimientos confirmados son inmutables.
 -   Las correcciones deben conservar la trazabilidad mediante movimientos compensatorios vinculados al movimiento original.
--   Las compensaciones pueden ser totales o parciales y deben respetar todas las reglas de integridad del stock.
--   La suma de las cantidades de todas las compensaciones confirmadas vinculadas a un movimiento original no puede superar la cantidad de ese movimiento original.
--   Cada nueva compensación no puede superar la cantidad pendiente de compensar del movimiento original.
+-   Las compensaciones solo pueden vincularse a movimientos originales que no sean compensaciones, deben tener el tipo opuesto al original y deben respetar todas las reglas de integridad del stock.
+-   Las compensaciones pueden ser totales o parciales para corregir errores de registro, pero no para sustituir una operación física ocurrida por una cantidad posteriormente preferida.
+-   La suma de las cantidades absolutas de todas las compensaciones confirmadas vinculadas a un movimiento original no puede superar la cantidad absoluta de ese movimiento original.
+-   La cantidad absoluta de cada nueva compensación no puede superar la cantidad absoluta pendiente de compensar del movimiento original.
+-   Se permiten múltiples compensaciones parciales hasta alcanzar exactamente la cantidad original.
 -   Los productos desactivados solo admiten consultas e historial y no permiten operaciones ordinarias nuevas ni modificaciones. Como excepción, pueden recibir movimientos compensatorios vinculados a su historial, siempre que cumplan las reglas de integridad y stock.
--   Toda modificación requiere una propuesta visible y confirmación previa.
+-   Las consultas globales de stock bajo y reposición incluyen únicamente productos activos; solo requieren reposición los productos con faltante mayor que cero.
+-   Las propuestas no confirmadas pueden editarse sin crear movimientos, modificar el inventario ni modificar los datos de un producto; la modificación de nombre, precio de venta o stock mínimo corresponde únicamente a un producto activo y requiere confirmación.
+-   Toda modificación requiere una propuesta visible y confirmación previa; al confirmar, se vuelven a validar las reglas de negocio y no se guardan cambios parciales si alguna falla.
+-   Las operaciones de stock deben validarse contra la disponibilidad vigente al confirmarse y mantener la integridad de inventario frente a ejecuciones simultáneas.
 
 ## Casos de error relevantes
 
 -   SKU duplicado al registrar un producto.
+-   SKU o nombre vacío tras eliminar los espacios iniciales y finales.
 -   Intento de modificar un SKU.
 -   Stock mínimo negativo o con más de dos decimales.
 -   Precio de venta igual o menor que cero.
@@ -219,10 +254,14 @@ El MVP debe mantener un alcance reducido y centrado en el control esencial de un
 -   Intento de registrar un movimiento de stock inicial con cantidad cero.
 -   Cantidad de movimiento igual a cero, negativa o con más de dos decimales.
 -   Salida o compensación que produciría stock negativo.
--   Compensación cuya cantidad supera la cantidad pendiente de compensar del movimiento original.
+-   Compensación cuya cantidad absoluta supera la cantidad absoluta pendiente de compensar del movimiento original.
+-   Compensación con el mismo tipo que el movimiento original.
+-   Compensación vinculada directamente a otra compensación.
+-   Solicitud de compensación que no corrige un error de registro del movimiento original.
 -   Movimiento sin motivo.
 -   Producto inexistente.
 -   Producto desactivado en una solicitud de operación ordinaria o modificación.
 -   Consulta o solicitud ambigua que no identifica un producto u operación.
 -   Intento de editar o eliminar un movimiento confirmado.
 -   Solicitud de modificación sin confirmación.
+-   Regla de negocio que deja de cumplirse entre la propuesta y su confirmación.

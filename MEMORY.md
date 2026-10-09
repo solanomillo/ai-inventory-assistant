@@ -5,9 +5,8 @@
 - Rama de trabajo: main.
 - Metodología: Spec-Driven Development (SDD).
 - La guía AGENTS.md y la constitución del proyecto están preparadas.
-- La especificación funcional del núcleo de inventario está guardada
-  en specs/001-inventory-core/spec.md.
-- Commit de la especificación: 998654f.
+- La especificación funcional aprobada del núcleo de inventario está en
+  `specs/001-inventory-core/spec.md` y es la referencia oficial del MVP.
 - No hay implementación funcional todavía.
 
 ## Decisiones importantes
@@ -17,11 +16,17 @@
 - Trabajar únicamente en main.
 - Usar Conventional Commits con mensajes en inglés.
 - Aprobar cada fase antes de avanzar a la siguiente.
-- Resolver manualmente los cambios pequeños y evidentes cuando
-  sea más eficiente que delegarlos.
+- Finalizó la revisión de los nueve hallazgos de clarificación.
+- El usuario aprobó explícitamente la especificación funcional actualizada.
+- Las compensaciones son opuestas al movimiento original no compensatorio,
+  pueden ser parciales hasta su cantidad total y no generan stock negativo.
+- Los períodos usan hora local de Argentina, inicio inclusivo, final exclusivo
+  y filtros combinados mediante AND; los instantes se almacenan en UTC.
+- Las consultas globales de stock bajo y reposición incluyen solo productos
+  activos; la reposición requiere faltante mayor que cero.
+- SKU y nombre se recortan, son obligatorios y no pueden quedar vacíos.
+- Las propuestas no confirmadas son editables; al confirmar se revalidan las
+  reglas, se evita persistencia parcial y se protege el stock ante concurrencia.
 
-## Próximos pasos
-- Crear y verificar .gitignore.
-- Incorporar esta memoria a las instrucciones de AGENTS.md.
-- Completar la preparación del repositorio.
-- Después, continuar con el plan técnico de la especificación aprobada.
+## Próximo paso
+- Iniciar la planificación técnica de la especificación aprobada.
