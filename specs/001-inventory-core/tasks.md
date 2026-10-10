@@ -5,6 +5,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 - Cada tarea pertenece a una fase, declara dependencias, archivos previstos, pruebas y criterios de aceptación verificables.
 - Se priorizan las reglas deterministas del dominio y la persistencia antes de integrar el LLM.
 - Las decisiones pendientes que bloquean una tarea se indican explícitamente y no se resuelven aquí.
+- **Entorno local:** el usuario crea y activa `.venv`, crea el archivo local `.env` e instala las dependencias manualmente. El agente no debe crear ni modificar el entorno virtual, crear `.env` ni ejecutar instalaciones de paquetes. El archivo `.env.example` sí forma parte del repositorio y debe contener solo nombres de variables y valores de ejemplo no sensibles.
 
 ## Fase 0 — Esqueleto, configuración y scaffolding del proveedor
 ### T001 — Esqueleto del proyecto
@@ -13,7 +14,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 - **Archivos previstos:** `requirements.txt`, `.env.example`, directorios `app/` y `tests/`; revisión de `.gitignore` existente.
 - **Dependencias:** ninguna.
 - **Pruebas:** verificación manual de archivos.
-- **Criterios de aceptación:** `requirements.txt` y `.env.example` existen; `.env.example` no contiene credenciales; `.gitignore` conserva sus reglas actuales (solo se agrega `.streamlit/` si hace falta); no se modifican `AGENTS.md`, `MEMORY.md`, `LICENSE`, `spec.md` ni `plan.md`.
+- **Criterios de aceptación:** `requirements.txt` y `.env.example` existen; `.env.example` no contiene credenciales; `.gitignore` conserva sus reglas actuales (solo se agrega `.streamlit/` si hace falta); el agente no crea `.venv` ni `.env` local y no instala dependencias; el usuario se encarga manualmente de esas acciones; no se modifican `AGENTS.md`, `MEMORY.md`, `LICENSE`, `spec.md` ni `plan.md`.
 
 ### T002 — Configuración e inicialización del LLM
 - **Fase:** 0.

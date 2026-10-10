@@ -16,3 +16,6 @@ __pycache__/
 
 # Bases de datos locales
 *.db
+
+# Streamlit
+.streamlit/

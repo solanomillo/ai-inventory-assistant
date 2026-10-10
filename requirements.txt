@@ -1,0 +1,8 @@
+streamlit
+python-dotenv
+pydantic
+pytest
+langchain
+langchain-core
+langchain-deepseek
+langgraph
