@@ -1,14 +1,19 @@
 # Tareas: núcleo de inventario
+
 ## Resumen del alcance
+
 Este documento descompone el plan técnico aprobado (`plan.md`) en tareas pequeñas, ordenadas por dependencias y verificables, para el MVP de inventario definido por `spec.md`.
-- Los identificadores (`T001`–`T025`) son únicos y estables.
+
+- Los identificadores (`T001`–`T026`) son únicos y estables.
 - Cada tarea pertenece a una fase, declara dependencias, archivos previstos, pruebas y criterios de aceptación verificables.
 - Se priorizan las reglas deterministas del dominio y la persistencia antes de integrar el LLM.
 - Las decisiones pendientes que bloquean una tarea se indican explícitamente y no se resuelven aquí.
 - **Entorno local:** el usuario crea y activa `.venv`, crea el archivo local `.env` e instala las dependencias manualmente. El agente no debe crear ni modificar el entorno virtual, crear `.env` ni ejecutar instalaciones de paquetes. El archivo `.env.example` sí forma parte del repositorio y debe contener solo nombres de variables y valores de ejemplo no sensibles.
 
 ## Fase 0 — Esqueleto, configuración y scaffolding del proveedor
+
 ### T001 — Esqueleto del proyecto
+
 - **Fase:** 0.
 - **Objetivo:** preparar la base del proyecto sin sobrescribir trabajo previo.
 - **Archivos previstos:** `requirements.txt`, `.env.example`, directorios `app/` y `tests/`; revisión de `.gitignore` existente.
@@ -17,123 +22,256 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 - **Criterios de aceptación:** `requirements.txt` y `.env.example` existen; `.env.example` no contiene credenciales; `.gitignore` conserva sus reglas actuales (solo se agrega `.streamlit/` si hace falta); el agente no crea `.venv` ni `.env` local y no instala dependencias; el usuario se encarga manualmente de esas acciones; no se modifican `AGENTS.md`, `MEMORY.md`, `LICENSE`, `spec.md` ni `plan.md`.
 
 ### T002 — Configuración e inicialización del LLM
+
 - **Fase:** 0.
 - **Objetivo:** centralizar configuración e inicialización del proveedor.
 - **Archivos previstos:** `app/config.py`, `app/services/llm.py`.
 - **Dependencias:** T001.
 - **Pruebas:** `tests/unit/test_llm.py` (con `monkeypatch`, sin DeepSeek real, sin llamadas de red ni credenciales reales).
-- **Criterios de aceptación:** `get_llm()` lanza error sin `DEEPSEEK_API_KEY`; con valores inyectados devuelve `ChatDeepSeek` con `temperature=0`; la prueba no realiza llamadas de red (el adaptador se verifica por construcción del objeto, no por invocación).
+- **Criterios de aceptación:** `get_llm()` lanza un error sin `DEEPSEEK_API_KEY`; con valores inyectados devuelve `ChatDeepSeek` con `temperature=0`; la prueba no realiza llamadas de red (el adaptador se verifica por construcción del objeto, no por invocación).
 - **Pendiente:** el identificador del modelo DeepSeek queda documentado; no se fija aquí.
 
-## Fase 1 — Dominio puro + persistencia
-### T003 — Representación de cantidades y precio
+## Fase 1 — Dominio puro y persistencia
+
+### T003 — Representación numérica (unidades enteras, factor, precio y costo)
+
 - **Fase:** 1.
-- **Objetivo:** definir la representación exacta de cantidades, stock y precio.
-- **Archivos previstos:** conversores `to_cents`/`from_cents` y representación `Decimal` del precio.
+- **Objetivo:** definir la representación exacta de cantidades, factor, precio y costo.
+- **Archivos previstos:** `app/domain/quantities.py` (validación de enteros, factor, precio y costo).
 - **Dependencias:** ninguna.
-- **Pruebas:** `tests/unit/test_money_quantities.py`.
-- **Criterios de aceptación:** `12.34` ↔ `1234` exacto e idempotente; cantidades con más de dos decimales se rechazan; precio se valida como `Decimal` mayor que cero sin imponer precisión nueva.
+- **Pruebas:** `tests/unit/test_quantities.py`.
+- **Criterios de aceptación:**
+  - Las cantidades de stock y el stock mínimo se representan mediante números enteros mayores o iguales a cero.
+  - Las cantidades de movimientos de entrada, salida, apertura y compensación deben ser números enteros mayores que cero.
+  - Los factores de conversión de las presentaciones son números enteros mayores o iguales a uno.
+  - Los precios de venta se representan con `Decimal` y deben ser mayores que cero.
+  - Los costos de entrada son opcionales; cuando se informan, se representan con `Decimal` y deben ser mayores o iguales a cero.
+  - Los cálculos monetarios no utilizan `float`.
+  - Las validaciones distinguen entre cantidades de stock y cantidades de movimientos.
+- **RF:** RF-02 (cantidades), RF-07 (factor, precio, costo).
 
-### T004 — Reglas de dominio de producto
+### T004 — Reglas de dominio de producto y presentaciones
+
 - **Fase:** 1.
-- **Objetivo:** implementar y validar las reglas de RF-01.
-- **Archivos previstos:** `app/domain/products.py`.
+- **Objetivo:** implementar y validar las reglas de RF-01 y RF-07.
+- **Archivos previstos:** `app/domain/products.py`, `app/domain/presentations.py`.
 - **Dependencias:** T003.
-- **Pruebas:** `tests/unit/test_product_rules.py`.
-- **Criterios de aceptación:** SKU único e inmutable, recortado; nombre obligatorio, recortado, no vacío; stock mínimo cero o positivo con hasta dos decimales; precio mayor que cero.
+- **Pruebas:** `tests/unit/test_product_rules.py`, `tests/unit/test_presentation_rules.py`.
+- **Criterios de aceptación:**
+  - El SKU es único, inmutable, obligatorio y se almacena sin espacios al principio o al final.
+  - El nombre del producto y la unidad base son obligatorios, se recortan y no pueden quedar vacíos.
+  - El stock mínimo es un entero mayor o igual que cero.
+  - Cada producto tiene exactamente una presentación base con factor `1`.
+  - El nombre de cada presentación es único dentro del producto.
+  - El factor es un entero mayor o igual que `1`.
+  - El factor no puede modificarse cuando la presentación tiene stock cerrado o movimientos históricos.
+  - El precio de venta de cada presentación es mayor que cero y se valida mediante `Decimal`.
+- **RF:** RF-01, RF-07.
 
-### T005 — Reglas de dominio de stock
+### T005 — Reglas de dominio de stock compuesto y apertura
+
 - **Fase:** 1.
-- **Objetivo:** implementar las reglas de control de existencias de RF-02.
+- **Objetivo:** implementar las reglas de RF-02 (stock suelto, cerrado, total equivalente y apertura).
 - **Archivos previstos:** `app/domain/stock.py`.
 - **Dependencias:** T003.
 - **Pruebas:** `tests/unit/test_stock_rules.py`.
-- **Criterios de aceptación:** una salida no deja stock negativo; stock inicial cero no genera movimiento; stock inicial positivo genera una entrada identificada como stock inicial.
+- **Criterios de aceptación:**
+  - Las unidades sueltas y el stock cerrado no pueden ser negativos.
+  - El total equivalente se deriva correctamente mediante `unidades_sueltas + Σ(stock_cerrado × factor)`.
+  - El total equivalente no se persiste como un saldo independiente.
+  - La apertura de `N` presentaciones resta `N` al stock cerrado y suma `N × factor` a las unidades sueltas.
+  - Una apertura válida no modifica el total equivalente.
+  - La apertura se rechaza si no existe stock cerrado suficiente.
+- **RF:** RF-02, RF-03 (apertura).
 
-### T006 — Reglas de movimientos y compensaciones
+### T006 — Reglas de movimientos y compensaciones con FIFO
+
 - **Fase:** 1.
-- **Objetivo:** implementar las reglas de compensación de RF-03.
+- **Objetivo:** implementar las reglas de RF-03 (tipos, compensaciones y consumo FIFO).
 - **Archivos previstos:** `app/domain/movements.py`.
 - **Dependencias:** T005.
 - **Pruebas:** `tests/unit/test_movement_rules.py`.
-- **Criterios de aceptación:** compensación de tipo opuesto; vínculo solo a original no compensatorio; cada nueva compensación debe ser menor o igual a la cantidad pendiente de compensar; la suma acumulada de los valores absolutos de las compensaciones no puede superar la cantidad absoluta del movimiento original; rechazo de compensación excedente, de tipo igual o encadenada.
+- **Criterios de aceptación:**
+  - Las compensaciones son de tipo opuesto al movimiento original y no pueden encadenarse.
+  - Las aperturas no son compensables.
+  - La cantidad compensable de una entrada cerrada se calcula como `cantidad - cantidad_consumida - cantidad_compensada`.
+  - Las aperturas y las salidas cerradas consumen entradas cerradas mediante FIFO, por presentación.
+  - Una compensación que excede la cantidad compensable se rechaza.
+  - Las cantidades consumidas y compensadas no pueden superar la cantidad original.
+  - Las operaciones de compensación no pueden producir stock negativo.
+- **RF:** RF-03.
 
 ### T007 — Reglas de stock bajo y reposición
+
 - **Fase:** 1.
 - **Objetivo:** implementar las reglas de RF-04.
 - **Archivos previstos:** `app/domain/stock.py` (o módulo equivalente).
 - **Dependencias:** T005.
 - **Pruebas:** `tests/unit/test_stock_alerts.py`.
-- **Criterios de aceptación:** stock actual ≤ mínimo es stock bajo; reposición solo para productos activos con faltante mayor que cero; `mínimo 10 / actual 6 → faltante 4`; `actual 12 → 0`; productos desactivados excluidos de consultas globales.
+- **Criterios de aceptación:**
+  - Se considera que un producto tiene stock bajo cuando el total equivalente es menor o igual que el stock mínimo.
+  - Las consultas globales de stock bajo y reposición incluyen únicamente productos activos.
+  - La reposición se propone solo cuando el faltante es mayor que cero.
+  - El faltante se calcula como `max(0, stock_minimo - total_equivalente)`.
+  - Los productos desactivados se excluyen de las consultas globales de stock bajo y reposición.
+- **RF:** RF-04.
 
 ### T008 — Esquema y conexión SQLite
+
 - **Fase:** 1.
 - **Objetivo:** crear el esquema persistente y el manejo de conexión.
 - **Archivos previstos:** `app/infrastructure/sqlite/schema.py`, `app/infrastructure/sqlite/connection.py`.
 - **Dependencias:** T001.
 - **Pruebas:** `tests/integration/test_schema.py` (SQLite en memoria).
-- **Criterios de aceptación:** el esquema se crea desde una base vacía con tablas de productos, movimientos y propuestas; restricciones `CHECK` de positividad/≥0 según las reglas aprobadas; cada movimiento requiere un motivo no vacío, validado también por la persistencia.
+- **Criterios de aceptación:**
+  - El esquema se crea desde una base vacía con tablas de productos, presentaciones, movimientos y propuestas.
+  - Las cantidades, factores, saldos y contadores FIFO se almacenan en `INTEGER`.
+  - Los precios y costos se almacenan como texto decimal exacto (`TEXT`).
+  - Se definen restricciones de positividad o no negatividad según corresponda.
+  - Los motivos de los movimientos no pueden quedar vacíos.
+  - Las presentaciones respetan la unicidad del nombre dentro de cada producto.
+  - El esquema incluye los campos necesarios para la trazabilidad FIFO de las entradas cerradas.
+  - No se implementa migración de datos históricos: el esquema se crea desde una base nueva.
+- **RF:** RF-02, RF-03, RF-07.
 
 ### T009 — Repositorios básicos y contrato
+
 - **Fase:** 1.
 - **Objetivo:** implementar persistencia básica sin filtros temporales.
 - **Archivos previstos:** `app/services/ports.py` (Protocol de repositorio), `app/infrastructure/sqlite/repositories.py`.
 - **Dependencias:** T008.
-- **Pruebas:** `tests/integration/test_repositories.py` (unicidad de SKU, rechazo de movimientos sin motivo o con motivo vacío, inmutabilidad de movimientos confirmados, filtros por producto y tipo).
-- **Criterios de aceptación:** SKU duplicado rechazado; los movimientos sin motivo o con motivo vacío son rechazados; la persistencia no permite editar ni eliminar movimientos confirmados y rechaza cualquier intento de hacerlo; consultas por producto y por tipo devuelven únicamente los registros que cumplen el filtro.
+- **Pruebas:** `tests/integration/test_repositories.py` (unicidad de SKU, nombre de presentación único, rechazo de movimientos sin motivo, inmutabilidad, filtros por producto y tipo).
+- **Criterios de aceptación:**
+  - Los SKU duplicados y las presentaciones con nombres duplicados dentro del mismo producto se rechazan.
+  - Los movimientos sin motivo o con motivo vacío se rechazan.
+  - La persistencia no permite editar ni eliminar movimientos confirmados.
+  - Las consultas por producto y tipo devuelven únicamente los registros que cumplen los filtros.
+  - Los repositorios permiten recuperar los datos necesarios para reconstruir saldos y consultar el historial de movimientos.
+- **RF:** RF-01, RF-03, RF-07.
 
 ### T010 — Filtros temporales por período
+
 - **Fase:** 1.
 - **Objetivo:** implementar consultas por período con conversión de zona horaria.
 - **Archivos previstos:** `app/infrastructure/sqlite/repositories.py` (consulta por período), helpers de fechas.
 - **Dependencias:** T009.
 - **Pruebas:** `tests/integration/test_period_filters.py`.
-- **Criterios de aceptación:** instantes almacenados en UTC; períodos interpretados en hora local de Argentina con inicio inclusivo y final exclusivo; filtros de producto, tipo y período combinados con AND.
+- **Criterios de aceptación:**
+  - Los instantes se almacenan en UTC.
+  - Los períodos se interpretan en la zona horaria local de Argentina.
+  - El inicio del período es inclusivo y el final es exclusivo.
+  - Los filtros de producto, tipo y período se combinan mediante AND.
 - **Pendiente:** la zona horaria concreta de Argentina bloquea únicamente esta tarea y las consultas por período; no impide T001–T009 ni las tareas posteriores que no dependen de filtros temporales.
 
-## Fase 2 — Servicios, confirmación, compensaciones y concurrencia
-### T011 — Servicio de productos
-- **Fase:** 2.
-- **Objetivo:** implementar los casos de uso de alta, modificación y desactivación.
-- **Archivos previstos:** `app/services/products.py`.
-- **Dependencias:** T004, T009.
-- **Pruebas:** `tests/integration/test_product_service.py`.
-- **Criterios de aceptación:** alta válida; SKU duplicado e inmutabilidad rechazados; desactivación conserva datos e historial.
+## Fase 2 — Servicios, confirmación, apertura, compensaciones y concurrencia
 
-### T012 — Servicio de movimientos
+### T011 — Servicio de productos y presentaciones
+
 - **Fase:** 2.
-- **Objetivo:** registrar entradas y salidas con confirmación transaccional.
+- **Objetivo:** implementar los casos de uso de alta, modificación, desactivación y gestión de presentaciones.
+- **Archivos previstos:** `app/services/products.py`, `app/services/presentations.py`.
+- **Dependencias:** T004, T009.
+- **Pruebas:** `tests/integration/test_product_service.py`, `tests/integration/test_presentation_service.py`.
+- **Criterios de aceptación:**
+  - Se permite dar de alta productos válidos y se rechazan los SKU duplicados.
+  - El SKU no puede modificarse una vez creado.
+  - El alta del producto permite registrar stock inicial suelto y/o cerrado.
+  - Cada porción positiva de stock inicial genera un movimiento de entrada marcado con `es_stock_inicial`.
+  - Si el stock inicial es cero, no se crea ningún movimiento de stock inicial.
+  - El stock inicial y sus movimientos se registran de forma consistente, sin duplicar saldos.
+  - La desactivación conserva el historial.
+  - Una presentación nueva comienza con stock cerrado cero y no modifica otros saldos.
+  - El factor no puede modificarse cuando la presentación tiene stock o movimientos históricos.
+- **RF:** RF-01, RF-02, RF-03, RF-07.
+
+### T012 — Servicio de entradas y salidas (costo y snapshot de precio)
+
+- **Fase:** 2.
+- **Objetivo:** registrar entradas y salidas cerradas y sueltas con confirmación transaccional.
 - **Archivos previstos:** `app/services/movements.py`.
 - **Dependencias:** T005, T009.
-- **Pruebas:** `tests/integration/test_movement_service.py` (incluye rechazo de movimientos sin motivo).
-- **Criterios de aceptación:** movimiento válido persiste y actualiza stock; salida que supera disponibilidad se rechaza sin cambios parciales; no se permite stock negativo; un movimiento confirmado no puede editarse ni eliminarse mediante el servicio.
+- **Pruebas:** `tests/integration/test_movement_service.py` (incluye costo y snapshot de precio).
+- **Criterios de aceptación:**
+  - Una entrada válida persiste el movimiento y actualiza el stock correspondiente.
+  - El costo de una entrada es opcional y, cuando se informa, debe ser mayor o igual que cero.
+  - Una salida válida guarda `precio_aplicado` con el precio de venta de la presentación vigente al confirmar.
+  - Las salidas sueltas utilizan el precio de la presentación base.
+  - Una salida que supera la disponibilidad se rechaza.
+  - No se permite stock negativo.
+  - Los movimientos confirmados son inmutables.
+  - Las modificaciones posteriores de los precios de venta no alteran el precio aplicado registrado en movimientos anteriores.
+- **RF:** RF-02, RF-03, RF-07.
 
-### T013 — Servicio de compensaciones
+### T013 — Servicio de apertura
+
 - **Fase:** 2.
-- **Objetivo:** registrar compensaciones parciales o totales.
+- **Objetivo:** registrar aperturas atómicas y consumir FIFO.
+- **Archivos previstos:** `app/services/movements.py` (o módulo de apertura).
+- **Dependencias:** T012.
+- **Pruebas:** `tests/integration/test_aperture_service.py`.
+- **Criterios de aceptación:**
+  - La apertura de `N ≥ 1` presentaciones resta `N` al stock cerrado y suma `N × factor` a las unidades sueltas en una única transacción.
+  - El movimiento de apertura conserva la presentación, cantidad y motivo.
+  - La apertura consume FIFO las entradas cerradas correspondientes a esa presentación.
+  - Se actualizan los contadores de consumo de las entradas cerradas afectadas.
+  - La operación se rechaza si no existe stock cerrado suficiente.
+  - La apertura es inmutable y no compensable.
+  - Ante un error, se revierten todos los cambios de la operación.
+- **RF:** RF-02, RF-03.
+
+### T014 — Servicio de compensaciones
+
+- **Fase:** 2.
+- **Objetivo:** registrar compensaciones parciales o totales con límite compensable.
 - **Archivos previstos:** `app/services/movements.py` (o módulo de compensaciones).
 - **Dependencias:** T006, T012.
 - **Pruebas:** `tests/integration/test_compensation_service.py`.
-- **Criterios de aceptación:** compensación válida crea movimiento vinculado; excedente, de tipo igual o encadenada se rechaza; un producto desactivado no admite operaciones ordinarias nuevas ni modificaciones y solo permite compensaciones históricas autorizadas vinculadas a su historial.
+- **Criterios de aceptación:**
+  - Una compensación válida crea un movimiento vinculado al movimiento original.
+  - Se rechazan las compensaciones que exceden la cantidad pendiente, son del mismo tipo que el original o intentan encadenarse.
+  - Las aperturas no son compensables.
+  - Las compensaciones de entradas cerradas respetan la cantidad compensable y el stock cerrado vigente.
+  - Los contadores de cantidades compensadas se actualizan de manera consistente.
+  - Los productos desactivados solo admiten compensaciones históricas permitidas por la especificación.
+  - Las entradas sueltas conservan los límites de compensación establecidos, sin atribuirles una trazabilidad por lote que el MVP no implementa.
+  - La operación se ejecuta de forma atómica.
+- **RF:** RF-03.
 
-### T014 — Servicio de propuestas
+### T015 — Servicio de propuestas
+
 - **Fase:** 2.
 - **Objetivo:** crear, editar y confirmar propuestas con revalidación transaccional.
 - **Archivos previstos:** `app/services/proposals.py`.
-- **Dependencias:** T009, T011, T012, T013.
+- **Dependencias:** T009, T011, T012, T013, T014.
 - **Pruebas:** `tests/integration/test_proposal_service.py`.
-- **Criterios de aceptación:** una propuesta pendiente no modifica inventario; su edición no crea movimientos ni modifica datos; al confirmar se revalidan dentro de la transacción el stock vigente y el límite pendiente de compensación (parcial, acumulado y sin stock negativo); si una regla falla, se rechaza sin cambios parciales.
+- **Criterios de aceptación:**
+  - Una propuesta pendiente no modifica el inventario ni crea movimientos confirmados.
+  - Editar una propuesta no modifica los productos, las presentaciones ni los saldos existentes.
+  - La confirmación revalida, dentro de la transacción, el stock vigente, las reglas del producto y la cantidad compensable.
+  - Si una regla falla, se rechaza la confirmación sin cambios parciales.
+  - La confirmación se ejecuta por un servicio de aplicación invocado explícitamente, sin delegar la decisión final al LLM.
+- **RF:** RF-05.
 
-### T015 — Concurrencia e integridad
+### T016 — Concurrencia e integridad
+
 - **Fase:** 2.
 - **Objetivo:** proteger las confirmaciones frente a operaciones simultáneas.
 - **Archivos previstos:** transacciones `BEGIN IMMEDIATE` en los servicios de confirmación.
-- **Dependencias:** T012, T013, T014.
+- **Dependencias:** T012, T013, T014, T015.
 - **Pruebas:** `tests/concurrency/test_concurrency.py` con conexiones SQLite independientes.
-- **Criterios de aceptación:** dos salidas y dos compensaciones simultáneas sobre el mismo producto solo persisten si cada una cumple las reglas sobre el estado vigente; sin stock negativo, sin superar el límite pendiente de compensación y sin cambios parciales.
+- **Criterios de aceptación:**
+  - Las aperturas, salidas y compensaciones simultáneas sobre la misma presentación solo persisten si cada una cumple las reglas sobre el estado vigente.
+  - No se produce stock negativo ni se supera la cantidad compensable.
+  - Los saldos suelto y cerrado se mantienen coherentes.
+  - Los contadores FIFO se actualizan de manera consistente.
+  - Una operación fallida no deja cambios parciales.
+  - Las validaciones de disponibilidad y compensación se realizan dentro de la transacción.
+- **RF:** RF-02, RF-03.
 
 ## Fase 3 — Herramientas, agentes y grafo
-### T016 — Prompts centralizados
+
+### T017 — Prompts centralizados
+
 - **Fase:** 3.
 - **Objetivo:** definir los prompts del Supervisor y del Inventory Agent.
 - **Archivos previstos:** `app/prompts/prompts.py`.
@@ -141,7 +279,8 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 - **Pruebas:** `tests/ai/test_prompts.py`.
 - **Criterios de aceptación:** existen constantes para los prompts del Supervisor y del Inventory Agent; cada prompt describe su responsabilidad, indica responder solo con datos reales y prohíbe explícitamente la escritura directa en la base de datos; las pruebas verifican que dichas prohibiciones y responsabilidades están presentes en el texto.
 
-### T017 — Estado del grafo
+### T018 — Estado del grafo
+
 - **Fase:** 3.
 - **Objetivo:** definir el estado compartido.
 - **Archivos previstos:** `app/graph/state.py`.
@@ -149,90 +288,108 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 - **Pruebas:** `tests/ai/test_state.py`.
 - **Criterios de aceptación:** el estado define y transporta el mensaje del usuario, la propuesta pendiente (si existe) y el resultado de la ejecución; las pruebas verifican la construcción del estado inicial y la propagación de cada campo entre nodos, sin que se introduzcan datos inventados.
 
-### T018 — Herramientas de consulta
+### T019 — Herramientas de consulta
+
 - **Fase:** 3.
 - **Objetivo:** exponer consultas de solo lectura.
 - **Archivos previstos:** `app/tools/inventory_tools.py`.
 - **Dependencias:** T009, T011, T012, T013.
 - **Pruebas:** `tests/ai/test_inventory_tools.py`.
-- **Criterios de aceptación:** cada herramienta devuelve datos reales de stock actual, stock bajo, reposición e historial sin escribir en SQLite.
+- **Criterios de aceptación:** cada herramienta devuelve datos reales de stock (suelto, cerrado y total equivalente), stock bajo, reposición e historial sin escribir en SQLite.
+- **RF:** RF-04, RF-05.
 
-### T019 — Herramientas de propuesta
+### T020 — Herramientas de propuesta
+
 - **Fase:** 3.
 - **Objetivo:** preparar y editar propuestas sin confirmar.
 - **Archivos previstos:** `app/tools/proposal_tools.py`.
-- **Dependencias:** T014.
+- **Dependencias:** T015.
 - **Pruebas:** `tests/ai/test_proposal_tools.py`.
-- **Criterios de aceptación:** las herramientas crean o editan propuestas sin persistir movimientos ni modificar inventario.
+- **Criterios de aceptación:** las herramientas crean o editan propuestas (incluida apertura) sin persistir movimientos confirmados ni modificar el inventario.
+- **RF:** RF-05.
 
-### T020 — Inventory Agent
+### T021 — Inventory Agent
+
 - **Fase:** 3.
 - **Objetivo:** interpretar intenciones y generar respuestas o propuestas.
 - **Archivos previstos:** `app/agents/inventory.py`.
-- **Dependencias:** T016, T017, T018, T019.
+- **Dependencias:** T017, T018, T019, T020.
 - **Pruebas:** `tests/ai/test_inventory_agent.py` (modelo falso).
-- **Criterios de aceptación:** el agente genera propuestas o respuestas con datos reales; no escribe directamente en la base de datos.
+- **Criterios de aceptación:** el agente genera propuestas o respuestas con datos reales; no escribe directamente en la base de datos; las operaciones que modifican inventario requieren una propuesta y confirmación explícita.
 
-### T021 — Supervisor y grafo
+### T022 — Supervisor y grafo
+
 - **Fase:** 3.
 - **Objetivo:** coordinar la derivación al Inventory Agent.
 - **Archivos previstos:** `app/agents/supervisor.py`, `app/graph/workflow.py`.
-- **Dependencias:** T020.
+- **Dependencias:** T021.
 - **Pruebas:** `tests/ai/test_supervisor.py` (integración con modelo falso).
-- **Criterios de aceptación:** el Supervisor deriva la solicitud al Inventory Agent y devuelve un resultado válido.
+- **Criterios de aceptación:** el Supervisor deriva la solicitud al Inventory Agent y devuelve un resultado válido; el flujo permite responder consultas o producir propuestas, sin confirmar operaciones por medio del LLM.
 
 ## Fase 4 — Interfaz Streamlit
-### T022 — UI de conversación y consultas
+
+### T023 — UI de conversación y consultas
+
 - **Fase:** 4.
 - **Objetivo:** mostrar consultas y respuestas.
 - **Archivos previstos:** `app/ui/main.py`.
-- **Dependencias:** T021.
+- **Dependencias:** T022.
 - **Pruebas:** pruebas de flujo con proveedor falso.
-- **Criterios de aceptación:** las consultas muestran los datos reales del inventario.
+- **Criterios de aceptación:** las consultas muestran los datos reales del inventario, incluyendo stock suelto, cerrado y total equivalente, y presentan correctamente los resultados de stock bajo, reposición e historial.
 
-### T023 — UI de propuestas y confirmación
+### T024 — UI de propuestas y confirmación
+
 - **Fase:** 4.
-- **Objetivo:** presentar propuestas y confirmación explícita.
+- **Objetivo:** presentar propuestas y permitir su confirmación explícita.
 - **Archivos previstos:** `app/ui/main.py`.
-- **Dependencias:** T014, T021.
+- **Dependencias:** T015, T022.
 - **Pruebas:** pruebas de flujo con proveedor falso.
-- **Criterios de aceptación:** la confirmación se realiza mediante control de UI, sin pasar por el LLM, y ejecuta únicamente operaciones válidas.
+- **Criterios de aceptación:** las propuestas pueden revisarse antes de confirmar; la confirmación (incluida la apertura) se realiza mediante un control de UI, sin pasar por el LLM; se ejecutan únicamente operaciones válidas y los errores de validación se muestran sin aplicar cambios parciales.
+- **RF:** RF-05.
 
 ## Fase 5 — Integración y validación
-### T024 — Integración end-to-end
+
+### T025 — Integración end-to-end
+
 - **Fase:** 5.
 - **Objetivo:** verificar el flujo completo.
 - **Archivos previstos:** `tests/integration/test_end_to_end.py`.
-- **Dependencias:** T023.
-- **Pruebas:** flujo completo con proveedor falso.
-- **Criterios de aceptación:** el flujo de consulta, propuesta, confirmación y rechazo funciona sin llamadas reales a DeepSeek.
-
-### T025 — Trazabilidad y validación RF-01 a RF-06
-- **Fase:** 5.
-- **Objetivo:** verificar cobertura de requisitos y ausencia de funcionalidades excluidas.
-- **Archivos previstos:** revisión de trazabilidad.
 - **Dependencias:** T024.
+- **Pruebas:** flujo completo con proveedor falso.
+- **Criterios de aceptación:** el flujo de consulta, propuesta, confirmación, apertura y rechazo funciona sin llamadas reales a DeepSeek; las operaciones confirmadas respetan las reglas del dominio y persisten datos coherentes.
+
+### T026 — Trazabilidad y validación RF-01 a RF-07
+
+- **Fase:** 5.
+- **Objetivo:** verificar la cobertura de requisitos y la ausencia de funcionalidades excluidas.
+- **Archivos previstos:** revisión de trazabilidad.
+- **Dependencias:** T025.
 - **Pruebas:** revisión de la matriz de trazabilidad.
-- **Criterios de aceptación:** cada criterio de aceptación de RF-01 a RF-06 de `spec.md` está vinculado a al menos una prueba identificable (archivo y caso); la trazabilidad es verificable de forma explícita; el MVP no incluye múltiples usuarios, proveedores, compras ni ventas formales.
+- **Criterios de aceptación:** cada criterio de aceptación de RF-01 a RF-07 de `spec.md` está vinculado a al menos una prueba identificable (archivo y caso); la trazabilidad es verificable de forma explícita; el MVP no incluye múltiples usuarios, proveedores, compras ni ventas formales.
 
 ## Matriz de trazabilidad
-| Requisito | Tareas | Criterios clave de aceptación |
 
-| --- | --- | --- |
-| RF-01 | T003, T004, T011, T019, T023 | SKU único e inmutable; nombre recortado no vacío; stock mínimo ≥0 con ≤2 decimales; precio >0; desactivación conserva historial. |
-| RF-02 | T003, T005, T012, T015 | Stock según movimientos confirmados; no negativo; inicial cero sin movimiento y positivo como entrada inicial; disponibilidad validada al confirmar. |
-| RF-03 | T006, T009, T012, T013, T014, T015 | Motivo obligatorio; movimientos confirmados inmutables; compensación de tipo opuesto, no encadenada, con límite acumulado; compensaciones en desactivados. |
-| RF-04 | T007, T011, T018 | Stock bajo = actual ≤ mínimo; reposición solo activos con faltante >0; faltante = máx(0, mínimo − actual); desactivados excluidos. |
-| RF-05 | T014, T016–T023 | Consultar datos reales; propuesta editable sin efectos; confirmación explícita; revalidación; no inventar resultados. |
-| RF-06 | T009, T012, T013, T025 | Único inventario/ubicación; sin usuarios, proveedores, compras o ventas; sin edición directa de confirmados; corrección solo por compensación. |
+| Requisito | Tareas | Criterios clave de aceptación |
+|---|---|---|
+| RF-01 | T004, T011, T020, T024 | SKU único e inmutable; nombre y unidad base obligatorios; stock mínimo entero ≥ 0; desactivación conserva historial. |
+| RF-02 | T003, T005, T008, T011, T012, T013, T016 | Stock suelto/cerrado no negativo; total equivalente derivado; cantidades enteras; stock inicial registrado mediante entradas; apertura atómica; disponibilidad validada al confirmar. |
+| RF-03 | T006, T008, T009, T012, T013, T014, T016 | Motivo obligatorio; movimientos inmutables; compensación opuesta y no encadenada; consumo FIFO y cantidad compensable; apertura no compensable. |
+| RF-04 | T007, T019 | Stock bajo = total equivalente ≤ mínimo; reposición solo para activos con faltante > 0; desactivados excluidos. |
+| RF-05 | T015, T017–T024 | Consultar datos reales; propuesta editable sin efectos; confirmación explícita; revalidación; no inventar resultados. |
+| RF-06 | T009, T012, T014, T026 | Único inventario/ubicación; sin usuarios, proveedores, compras o ventas; sin edición directa de confirmados; corrección por compensación, salvo aperturas. |
+| RF-07 | T003, T004, T008, T009, T011, T012 | Presentación base con factor 1; factor y precio válidos; factor inmutable con stock/historial; precio independiente; costo opcional sin distribución. |
 
 ## Decisiones pendientes
-- **Identificador del modelo DeepSeek:** bloquea la ejecución real en Fase 3/5 (no las pruebas con modelo falso).
+
+- **Identificador del modelo DeepSeek:** bloquea la ejecución real en Fase 3/5, pero no las pruebas con modelo falso.
 - **Zona horaria de Argentina:** bloquea T010 y las herramientas de consulta por período; las tareas no relacionadas pueden continuar.
-- **Ciclo de vida de propuestas y topología de despliegue:** deferibles.
+- **Ciclo de vida de propuestas y topología de despliegue:** deferibles; no deben ampliar el alcance sin una decisión posterior.
 
 ## Estrategia de ejecución
+
 1. Ejecutar las tareas en orden, una por vez, dentro de su fase.
 2. Al terminar una tarea, ejecutar sus pruebas y verificar sus criterios de aceptación.
 3. Detenerse si una prueba falla o si una decisión pendiente bloquea la tarea; no avanzar sin resolverlo.
 4. Revisar el resultado antes de continuar y esperar aprobación explícita al finalizar cada fase.
+5. No modificar `.venv`, `.env` ni instalar dependencias desde el agente.
+6. No realizar cambios en tareas posteriores como parte de la implementación de una tarea individual, salvo autorización explícita.

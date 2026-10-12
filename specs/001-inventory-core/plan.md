@@ -59,41 +59,55 @@ Streamlit (ui)
 - `id` interno.
 - `sku` único e inmutable.
 - `nombre` obligatorio, recortado, no vacío.
-- `stock_minimo` cero o positivo, ≤2 decimales.
-- `precio_venta` mayor que cero.
-- `stock_actual` saldo materializado (detalle interno, no funcional).
+- `unidad_base` nombre de la unidad discreta (botella, paquete, unidad).
+- `stock_minimo` entero mayor o igual que cero, en unidades base.
+- `unidades_sueltas` entero mayor o igual que cero.
 - `activo` booleano.
+
+Sin `precio_venta`: el precio vive en las presentaciones.
+
+### Presentación
+
+- `id` interno.
+- `producto_id`.
+- `nombre` único dentro del producto.
+- `factor` entero mayor o igual que 1 (equivalencia en unidades base).
+- `precio_venta` Decimal mayor que cero.
+- `stock_cerrado` entero mayor o igual que cero (solo relevante si `factor > 1`).
+
+La unidad base es la presentación con `factor = 1`. Un producto vendido solo por unidad tiene una única presentación (`factor = 1`). El `factor` es inmutable cuando esa presentación tiene `stock_cerrado > 0` o movimientos históricos.
+
+### Stock compuesto
+
+- `unidades_sueltas` (producto) y `stock_cerrado` (por presentación) son los únicos saldos persistidos.
+- `total_equivalente = unidades_sueltas + Σ(stock_cerrado_p × factor_p)`, derivado, nunca persistido.
+- `stock_minimo`, `stock bajo` y `faltante` se evalúan sobre `total_equivalente`.
 
 ### Movimiento
 
 - `id` interno.
 - `producto_id`.
-- `tipo` entrada o salida.
-- `cantidad` mayor que cero, ≤2 decimales.
+- `presentacion_id` (referencia a la presentación afectada; para sueltas, la unidad base de factor 1).
+- `kind`: `entrada_cerrada`, `entrada_suelta`, `salida_cerrada`, `salida_suelta`, `apertura`, `compensacion`.
+- `cantidad` entero mayor que cero.
 - `motivo` obligatorio.
 - `fecha_utc` instante automático en UTC.
-- `movimiento_original_id` opcional (compensación).
-- `es_stock_inicial` booleano (entrada inicial).
+- `costo` opcional (Decimal ≥ 0), solo entradas.
+- `precio_aplicado` (Decimal > 0), solo salidas, snapshot al confirmar.
+- `es_stock_inicial` booleano (entradas de stock inicial).
+- `movimiento_original_id` opcional (solo compensaciones).
 
-Invariantes: `es_stock_inicial` implica `tipo=entrada` sin original; un movimiento con original es compensatorio.
+Para `entrada_cerrada`, además: `cantidad_consumida` y `cantidad_compensada` (enteros ≥ 0) para el consumo FIFO.
 
 ### Compensación
 
-Es un movimiento compensatorio: tipo opuesto al original, vinculado a un original no compensatorio, con suma de valores absolutos que no supera la cantidad pendiente, sin producir stock negativo.
+Es un movimiento de `kind = compensacion`, opuesto al original, vinculado a un original no compensatorio, con límite de cantidad compensable. Las aperturas no son compensables.
 
-### Propuesta pendiente
+## Representación de cantidades, stock, precio y costo
 
-- `id`.
-- `tipo_accion` (alta, modificación, desactivación, entrada, salida, compensación).
-- `datos` (payload validado).
-- `estado` pendiente, confirmada o rechazada.
-
-Una propuesta pendiente no crea movimientos ni modifica stock.
-
-## Representación de cantidades, stock y precio
-
-- Cantidades de movimiento, `stock_actual` y `stock_minimo`: enteros en centésimas (`int`) en dominio, servicios, repositorios y esquemas. SQLite usa columnas `INTEGER`. Pydantic valida ≤2 decimales y los servicios convierten con `to_cents()`/`from_cents()`.
-- Precio de venta: `Decimal` exacto en Python y `TEXT` canónico en SQLite; la especificación no define precisión decimal para el precio.
+- Cantidades de inventario, stock (suelto y cerrado) y factor de presentación: **enteros** (`int`). SQLite usa columnas `INTEGER`.
+- Precio de venta y costo: **`Decimal` exacto** en Python, almacenado como `TEXT` canónico en SQLite. La especificación no define precisión decimal para precio ni costo.
+- No se usan `float` para cálculos monetarios ni se introduce una representación en centésimas para cantidades.
 
 ## Configuración de DeepSeek
 
@@ -105,17 +119,28 @@ Decisiones pendientes documentadas: identificador del modelo DeepSeek y zona hor
 
 ## Persistencia, transacciones y concurrencia
 
-- Confirmación en una única transacción: `BEGIN IMMEDIATE` → leer propuesta/producto/disponibilidad vigente → revalidar reglas → insertar movimiento, actualizar saldo, marcar propuesta → `COMMIT`; ante fallo, `ROLLBACK` total.
+- Confirmación en una única transacción: `BEGIN IMMEDIATE` → leer propuesta/producto/disponibilidad vigente → revalidar reglas → aplicar cambios → `COMMIT`; ante fallo, `ROLLBACK` total.
+- La **apertura** actualiza `stock_cerrado` y `unidades_sueltas` en la misma transacción y consume FIFO las `entrada_cerrada` correspondientes.
+- Las `salida_cerrada` y las compensaciones consumen y actualizan los contadores FIFO dentro de la misma transacción.
 - Las operaciones concurrentes no pueden confirmarse sobre disponibilidad obsoleta.
 - Sin stock negativo ni cambios parciales.
+
+## Esquema SQLite
+
+- `productos`: `id`, `sku` (único), `nombre`, `unidad_base`, `stock_minimo` (INTEGER), `unidades_sueltas` (INTEGER), `activo`.
+- `presentaciones`: `id`, `producto_id`, `nombre`, `factor` (INTEGER), `precio_venta` (TEXT Decimal), `stock_cerrado` (INTEGER).
+- `movimientos`: `id`, `producto_id`, `presentacion_id`, `kind`, `cantidad` (INTEGER), `motivo`, `fecha_utc`, `costo` (TEXT, opcional), `precio_aplicado` (TEXT, opcional), `es_stock_inicial`, `movimiento_original_id`, `cantidad_consumida` (INTEGER), `cantidad_compensada` (INTEGER).
+- `propuestas`: `id`, `tipo_accion`, `datos`, `estado`, `instante_creacion`.
+
+Se crea como esquema nuevo; no hay datos previos que migrar.
 
 ## Estructura de directorios
 
 ```text
 app/
   config.py
-  services/  llm.py  ports.py  products.py  inventory.py  movements.py  proposals.py
-  domain/    products.py  stock.py  movements.py  proposals.py
+  services/  llm.py  ports.py  products.py  presentations.py  inventory.py  movements.py  proposals.py
+  domain/    quantities.py  products.py  presentations.py  stock.py  movements.py  proposals.py
   infrastructure/sqlite/  connection.py  schema.py  repositories.py
   schemas/
   agents/  supervisor.py  inventory.py
@@ -131,23 +156,23 @@ requirements.txt
 
 ## Estrategia de pruebas
 
-- Reglas de negocio: unitarias de dominio.
-- Persistencia SQLite: integración (unicidad, inmutabilidad, filtros, períodos).
-- Herramientas: devuelven datos reales o crean propuestas, sin escribir movimientos.
+- Reglas de negocio: unitarias de dominio (producto, presentaciones, stock compuesto, apertura, total equivalente, compensaciones con FIFO, costo y precio).
+- Persistencia SQLite: integración (unicidad, inmutabilidad, filtros por producto/kind/período).
+- Herramientas: devuelven datos reales (stock suelto, cerrado y total) o crean propuestas (incluida apertura), sin escribir movimientos.
 - Agentes y supervisor: modelo falso determinista, sin DeepSeek real.
-- Confirmación y compensación: propuesta editable sin efectos; confirmación revalida; compensación excedente rechazada.
-- Concurrencia: salidas/compensaciones simultáneas sin stock negativo ni cambios parciales.
+- Confirmación y compensación: propuesta editable sin efectos; confirmación revalida; compensación que excede la cantidad compensable se rechaza; apertura no compensable.
+- Concurrencia: aperturas, salidas y compensaciones simultáneas sobre la misma presentación sin desincronizar suelto/cerrado ni negativos.
 - Errores de configuración/API: `get_llm()` sin key lanza error.
-- Validación RF-01 a RF-06 con trazabilidad a pruebas.
+- Validación RF-01 a RF-07 con trazabilidad a pruebas.
 
 ## Fases
 
 - Fase 0: esqueleto, configuración y scaffolding del proveedor (sin credenciales).
 - Fase 1: dominio puro + persistencia SQLite (sin LLM).
-- Fase 2: servicios, confirmación, compensaciones y concurrencia (sin LLM).
+- Fase 2: servicios, confirmación, apertura, compensaciones y concurrencia (sin LLM).
 - Fase 3: herramientas, agentes y grafo (requiere identificador de modelo y alcance de agentes).
 - Fase 4: interfaz Streamlit con confirmación explícita.
-- Fase 5: integración y validación RF-01 a RF-06.
+- Fase 5: integración y validación RF-01 a RF-07.
 
 ## Decisiones pendientes
 
