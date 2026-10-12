@@ -5,7 +5,7 @@
 - Proyecto: AI Inventory Assistant.
 - El repositorio contiene la licencia MIT, la constitución del proyecto y la especificación funcional del núcleo de inventario.
 - La especificación funcional aprobada es `specs/001-inventory-core/spec.md`.
-- No asumas un lenguaje, framework, gestor de paquetes, estructura de código fuente, comando de pruebas ni flujo de despliegue hasta que se definan en el plan técnico.
+- El stack técnico y la arquitectura están definidos en `specs/001-inventory-core/plan.md`; respeta esas decisiones. Cualquier cambio requiere revisión y aprobación explícitas.
 - Al introducir la primera implementación, documenta las instrucciones de configuración y verificación correspondientes a las herramientas elegidas.
 
 ## Memoria del proyecto
