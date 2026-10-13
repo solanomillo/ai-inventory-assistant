@@ -58,11 +58,11 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 - **Dependencias:** T003.
 - **Pruebas:** `tests/unit/test_product_rules.py`, `tests/unit/test_presentation_rules.py`.
 - **Criterios de aceptación:**
-  - El SKU es único, inmutable, obligatorio y se almacena sin espacios al principio o al final.
+  - El SKU es único sin distinguir mayúsculas de minúsculas, inmutable, obligatorio y se almacena sin espacios al principio o al final.
   - El nombre del producto y la unidad base son obligatorios, se recortan y no pueden quedar vacíos.
   - El stock mínimo es un entero mayor o igual que cero.
   - Cada producto tiene exactamente una presentación base con factor `1`.
-  - El nombre de cada presentación es único dentro del producto.
+  - El nombre de cada presentación es único dentro del producto, sin distinguir mayúsculas de minúsculas.
   - El factor es un entero mayor o igual que `1`.
   - El factor no puede modificarse cuando la presentación tiene stock cerrado o movimientos históricos.
   - El precio de venta de cada presentación es mayor que cero y se valida mediante `Decimal`.
@@ -130,6 +130,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - Se definen restricciones de positividad o no negatividad según corresponda.
   - Los motivos de los movimientos no pueden quedar vacíos.
   - Las presentaciones respetan la unicidad del nombre dentro de cada producto.
+  - La unicidad del SKU y del nombre de presentación se implementa sin distinguir mayúsculas de minúsculas (por ejemplo, `COLLATE NOCASE` o un índice sobre `lower(...)`).
   - El esquema incluye los campos necesarios para la trazabilidad FIFO de las entradas cerradas.
   - No se implementa migración de datos históricos: el esquema se crea desde una base nueva.
 - **RF:** RF-02, RF-03, RF-07.
@@ -142,10 +143,11 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 - **Dependencias:** T008.
 - **Pruebas:** `tests/integration/test_repositories.py` (unicidad de SKU, nombre de presentación único, rechazo de movimientos sin motivo, inmutabilidad, filtros por producto y tipo).
 - **Criterios de aceptación:**
-  - Los SKU duplicados y las presentaciones con nombres duplicados dentro del mismo producto se rechazan.
+  - Los SKU duplicados y las presentaciones con nombres duplicados dentro del mismo producto se rechazan, incluido el caso en que difieran solo en mayúsculas o minúsculas (comparación sin distinguir mayúsculas).
   - Los movimientos sin motivo o con motivo vacío se rechazan.
   - La persistencia no permite editar ni eliminar movimientos confirmados.
   - Las consultas por producto y tipo devuelven únicamente los registros que cumplen los filtros.
+  - Las búsquedas por SKU y por nombre no distinguen mayúsculas de minúsculas y conservan el texto original almacenado.
   - Los repositorios permiten recuperar los datos necesarios para reconstruir saldos y consultar el historial de movimientos.
 - **RF:** RF-01, RF-03, RF-07.
 
@@ -180,6 +182,8 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - Si el stock inicial es cero, no se crea ningún movimiento de stock inicial.
   - El stock inicial y sus movimientos se registran de forma consistente, sin duplicar saldos.
   - La desactivación conserva el historial.
+  - Se rechaza cualquier modificación (nombre o stock mínimo) de un producto desactivado.
+  - Se rechaza la creación o modificación de presentaciones de un producto desactivado.
   - Una presentación nueva comienza con stock cerrado cero y no modifica otros saldos.
   - El factor no puede modificarse cuando la presentación tiene stock o movimientos históricos.
 - **RF:** RF-01, RF-02, RF-03, RF-07.
@@ -200,6 +204,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - No se permite stock negativo.
   - Los movimientos confirmados son inmutables.
   - Las modificaciones posteriores de los precios de venta no alteran el precio aplicado registrado en movimientos anteriores.
+  - Se rechaza toda entrada o salida ordinaria nueva sobre un producto desactivado.
 - **RF:** RF-02, RF-03, RF-07.
 
 ### T013 — Servicio de apertura
@@ -215,6 +220,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - La apertura consume FIFO las entradas cerradas correspondientes a esa presentación.
   - Se actualizan los contadores de consumo de las entradas cerradas afectadas.
   - La operación se rechaza si no existe stock cerrado suficiente.
+  - Se rechaza la apertura sobre un producto desactivado.
   - La apertura es inmutable y no compensable.
   - Ante un error, se revierten todos los cambios de la operación.
 - **RF:** RF-02, RF-03.
@@ -232,7 +238,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - Las aperturas no son compensables.
   - Las compensaciones de entradas cerradas respetan la cantidad compensable y el stock cerrado vigente.
   - Los contadores de cantidades compensadas se actualizan de manera consistente.
-  - Los productos desactivados solo admiten compensaciones históricas permitidas por la especificación.
+  - Los productos desactivados solo admiten compensaciones históricas válidas permitidas por la especificación.
   - Las entradas sueltas conservan los límites de compensación establecidos, sin atribuirles una trazabilidad por lote que el MVP no implementa.
   - La operación se ejecuta de forma atómica.
 - **RF:** RF-03.
@@ -295,8 +301,8 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 - **Archivos previstos:** `app/tools/inventory_tools.py`.
 - **Dependencias:** T009, T011, T012, T013.
 - **Pruebas:** `tests/ai/test_inventory_tools.py`.
-- **Criterios de aceptación:** cada herramienta devuelve datos reales de stock (suelto, cerrado y total equivalente), stock bajo, reposición e historial sin escribir en SQLite.
-- **RF:** RF-04, RF-05.
+- **Criterios de aceptación:** cada herramienta devuelve datos reales de stock (suelto, cerrado y total equivalente), stock bajo, reposición e historial sin escribir en SQLite; las herramientas resuelven productos por SKU y por nombre sin distinguir mayúsculas de minúsculas, conservando el texto original almacenado y mostrando todas las coincidencias sin seleccionar ninguna.
+- **RF:** RF-01, RF-04, RF-05.
 
 ### T020 — Herramientas de propuesta
 
@@ -365,19 +371,19 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 - **Archivos previstos:** revisión de trazabilidad.
 - **Dependencias:** T025.
 - **Pruebas:** revisión de la matriz de trazabilidad.
-- **Criterios de aceptación:** cada criterio de aceptación de RF-01 a RF-07 de `spec.md` está vinculado a al menos una prueba identificable (archivo y caso); la trazabilidad es verificable de forma explícita; el MVP no incluye múltiples usuarios, proveedores, compras ni ventas formales.
+- **Criterios de aceptación:** cada criterio de aceptación de RF-01 a RF-07 de `spec.md` está vinculado a al menos una prueba identificable (archivo y caso); la matriz mapea los criterios de consultas por SKU/nombre sin distinguir mayúsculas a T009 y T019 y los criterios de productos desactivados a T011 y T013; la trazabilidad es verificable de forma explícita; el MVP no incluye múltiples usuarios, proveedores, compras ni ventas formales.
 
 ## Matriz de trazabilidad
 
-| Requisito | Tareas | Criterios clave de aceptación |
-|---|---|---|
-| RF-01 | T004, T011, T020, T024 | SKU único e inmutable; nombre y unidad base obligatorios; stock mínimo entero ≥ 0; desactivación conserva historial. |
-| RF-02 | T003, T005, T008, T011, T012, T013, T016 | Stock suelto/cerrado no negativo; total equivalente derivado; cantidades enteras; stock inicial registrado mediante entradas; apertura atómica; disponibilidad validada al confirmar. |
-| RF-03 | T006, T008, T009, T012, T013, T014, T016 | Motivo obligatorio; movimientos inmutables; compensación opuesta y no encadenada; consumo FIFO y cantidad compensable; apertura no compensable. |
-| RF-04 | T007, T019 | Stock bajo = total equivalente ≤ mínimo; reposición solo para activos con faltante > 0; desactivados excluidos. |
-| RF-05 | T015, T017–T024 | Consultar datos reales; propuesta editable sin efectos; confirmación explícita; revalidación; no inventar resultados. |
-| RF-06 | T009, T012, T014, T026 | Único inventario/ubicación; sin usuarios, proveedores, compras o ventas; sin edición directa de confirmados; corrección por compensación, salvo aperturas. |
-| RF-07 | T003, T004, T008, T009, T011, T012 | Presentación base con factor 1; factor y precio válidos; factor inmutable con stock/historial; precio independiente; costo opcional sin distribución. |
+| Requisito | Tareas                                         | Criterios clave de aceptación                                                                                                                                                                                                                                                                                                                                                                             |
+| --------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| RF-01     | T004, T009, T011, T019, T020, T024             | SKU único e inmutable (sin distinguir mayúsculas); nombre y unidad base obligatorios; consultas por SKU y por nombre sin distinguir mayúsculas conservando el texto original; múltiples coincidencias mostradas sin seleccionar automáticamente; stock mínimo entero ≥ 0; desactivación conserva historial; el producto desactivado solo admite consultas, historial y compensaciones históricas válidas. |
+| RF-02     | T003, T005, T008, T011, T012, T013, T016, T019 | Stock suelto/cerrado no negativo; total equivalente derivado; cantidades enteras; stock inicial registrado mediante entradas; apertura atómica y rechazada sobre un producto desactivado; disponibilidad validada al confirmar; consultas de stock por SKU/nombre sin distinguir mayúsculas.                                                                                                              |
+| RF-03     | T006, T008, T009, T012, T013, T014, T016       | Motivo obligatorio; movimientos inmutables; compensación opuesta y no encadenada; consumo FIFO y cantidad compensable; apertura no compensable y rechazada sobre un producto desactivado; compensaciones históricas válidas admitidas en productos desactivados.                                                                                                                                          |
+| RF-04     | T007, T019                                     | Stock bajo = total equivalente ≤ mínimo; reposición solo para activos con faltante > 0; desactivados excluidos.                                                                                                                                                                                                                                                                                           |
+| RF-05     | T015, T017–T024                                | Consultar datos reales; propuesta editable sin efectos; confirmación explícita; revalidación; no inventar resultados.                                                                                                                                                                                                                                                                                     |
+| RF-06     | T009, T012, T014, T026                         | Único inventario/ubicación; sin usuarios, proveedores, compras o ventas; sin edición directa de confirmados; corrección por compensación, salvo aperturas.                                                                                                                                                                                                                                                |
+| RF-07     | T003, T004, T008, T009, T011, T012             | Presentación base con factor 1; factor y precio válidos; factor inmutable con stock/historial; precio independiente; costo opcional sin distribución; se rechaza crear o modificar presentaciones de un producto desactivado.                                                                                                                                                                             |
 
 ## Decisiones pendientes
 

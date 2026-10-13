@@ -12,16 +12,16 @@ Las reglas de negocio son deterministas y residen fuera del LLM. Los agentes y l
 
 ## Stack acordado
 
-| Componente | Tecnología | Responsabilidad |
-| --- | --- | --- |
-| Lenguaje | Python | Lógica, interfaz, persistencia, agentes y pruebas. |
-| Interfaz | Streamlit | Conversación, consultas, propuestas y confirmación explícita. |
-| Orquestación | LangGraph | Flujo Supervisor → Inventory Agent. |
-| IA y herramientas | LangChain | Adaptador de modelo y definición de herramientas. |
-| LLM | DeepSeek API | Interpretación de lenguaje natural. |
-| Persistencia | SQLite mediante `sqlite3` | Datos del MVP y transacciones. |
-| Validación | Pydantic | Esquemas de entradas, propuestas y resultados en los límites. |
-| Pruebas | pytest | Unitarias, integración, concurrencia y de agentes. |
+| Componente        | Tecnología                | Responsabilidad                                               |
+| ----------------- | ------------------------- | ------------------------------------------------------------- |
+| Lenguaje          | Python                    | Lógica, interfaz, persistencia, agentes y pruebas.            |
+| Interfaz          | Streamlit                 | Conversación, consultas, propuestas y confirmación explícita. |
+| Orquestación      | LangGraph                 | Flujo Supervisor → Inventory Agent.                           |
+| IA y herramientas | LangChain                 | Adaptador de modelo y definición de herramientas.             |
+| LLM               | DeepSeek API              | Interpretación de lenguaje natural.                           |
+| Persistencia      | SQLite mediante `sqlite3` | Datos del MVP y transacciones.                                |
+| Validación        | Pydantic                  | Esquemas de entradas, propuestas y resultados en los límites. |
+| Pruebas           | pytest                    | Unitarias, integración, concurrencia y de agentes.            |
 
 ## Alcance de agentes
 
@@ -57,12 +57,13 @@ Streamlit (ui)
 ### Producto
 
 - `id` interno.
-- `sku` único e inmutable.
+- `sku` único e inmutable; la unicidad no distingue mayúsculas de minúsculas.
 - `nombre` obligatorio, recortado, no vacío.
 - `unidad_base` nombre de la unidad discreta (botella, paquete, unidad).
 - `stock_minimo` entero mayor o igual que cero, en unidades base.
 - `unidades_sueltas` entero mayor o igual que cero.
 - `activo` booleano.
+- Un producto con `activo = false` solo admite consultas, historial y compensaciones históricas válidas; se rechazan el alta de movimientos ordinarios nuevos, las modificaciones, la creación o modificación de presentaciones y las aperturas.
 
 Sin `precio_venta`: el precio vive en las presentaciones.
 
@@ -70,7 +71,7 @@ Sin `precio_venta`: el precio vive en las presentaciones.
 
 - `id` interno.
 - `producto_id`.
-- `nombre` único dentro del producto.
+- `nombre` único dentro del producto, sin distinguir mayúsculas de minúsculas.
 - `factor` entero mayor o igual que 1 (equivalencia en unidades base).
 - `precio_venta` Decimal mayor que cero.
 - `stock_cerrado` entero mayor o igual que cero (solo relevante si `factor > 1`).
@@ -119,7 +120,7 @@ Decisiones pendientes documentadas: identificador del modelo DeepSeek y zona hor
 
 ## Persistencia, transacciones y concurrencia
 
-- Confirmación en una única transacción: `BEGIN IMMEDIATE` → leer propuesta/producto/disponibilidad vigente → revalidar reglas → aplicar cambios → `COMMIT`; ante fallo, `ROLLBACK` total.
+- Confirmación en una única transacción: `BEGIN IMMEDIATE` → leer propuesta/producto/disponibilidad vigente → revalidar reglas (incluido el estado activo del producto) → aplicar cambios → `COMMIT`; ante fallo, `ROLLBACK` total.
 - La **apertura** actualiza `stock_cerrado` y `unidades_sueltas` en la misma transacción y consume FIFO las `entrada_cerrada` correspondientes.
 - Las `salida_cerrada` y las compensaciones consumen y actualizan los contadores FIFO dentro de la misma transacción.
 - Las operaciones concurrentes no pueden confirmarse sobre disponibilidad obsoleta.
@@ -161,6 +162,7 @@ requirements.txt
 - Herramientas: devuelven datos reales (stock suelto, cerrado y total) o crean propuestas (incluida apertura), sin escribir movimientos.
 - Agentes y supervisor: modelo falso determinista, sin DeepSeek real.
 - Confirmación y compensación: propuesta editable sin efectos; confirmación revalida; compensación que excede la cantidad compensable se rechaza; apertura no compensable.
+- Productos desactivados: consultas e historial permitidos; se rechazan las operaciones ordinarias nuevas, las modificaciones de nombre o stock, la creación o modificación de presentaciones y las aperturas; se admiten las compensaciones históricas válidas.
 - Concurrencia: aperturas, salidas y compensaciones simultáneas sobre la misma presentación sin desincronizar suelto/cerrado ni negativos.
 - Errores de configuración/API: `get_llm()` sin key lanza error.
 - Validación RF-01 a RF-07 con trazabilidad a pruebas.
