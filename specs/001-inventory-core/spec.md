@@ -100,6 +100,7 @@ El sistema debe conservar un historial verificable de entradas, salidas, apertur
 ### Apertura de presentaciones
 
 - Una apertura convierte una o varias presentaciones cerradas en unidades sueltas: resta `N` al stock cerrado de una presentación y suma `N × factor` a las unidades sueltas del producto.
+- Una apertura solo es válida sobre una presentación cuyo factor sea mayor que 1; la presentación base (factor 1) no puede abrirse.
 - Una apertura es una operación atómica e inmutable: no cambia el total equivalente y se registra en el historial.
 - Una apertura requiere stock cerrado suficiente de esa presentación.
 - Una apertura no es compensable con las reglas de compensación actuales.
@@ -135,6 +136,7 @@ El sistema debe conservar un historial verificable de entradas, salidas, apertur
 - Cuando se intente editar o eliminar un movimiento confirmado, el sistema debe rechazar la operación.
 - Dada una apertura de `N` presentaciones con stock cerrado suficiente, el sistema debe restar `N` al stock cerrado y sumar `N × factor` a las unidades sueltas en una única transacción, sin alterar el total equivalente.
 - Dada una apertura sin stock cerrado suficiente, el sistema debe rechazarla.
+- Dada la presentación base (factor 1), cuando se solicite una apertura, el sistema debe rechazarla sin modificar el stock ni registrar el movimiento.
 - Dado un producto desactivado, cuando se solicite una apertura, el sistema debe rechazarla.
 - Cuando se solicite compensar una apertura, el sistema debe rechazarla.
 - Dada una entrada cerrada A (+2), una apertura de 1, y una entrada cerrada B (+1) de la misma presentación, el sistema debe rechazar compensar A por 2 y debe permitir compensar A por 1.
@@ -258,7 +260,7 @@ El sistema debe permitir administrar un producto por distintas presentaciones co
 - Todo movimiento requiere un motivo y fecha y hora registradas automáticamente.
 - Los instantes se almacenan en UTC; los períodos se interpretan en hora local de Argentina con inicio inclusivo y final exclusivo; los filtros combinados se aplican de forma conjunta.
 - Los movimientos confirmados son inmutables.
-- Las aperturas son atómicas, inmutables y no compensables; no cambian el total equivalente.
+- Las aperturas son atómicas, inmutables y no compensables; solo aplican a presentaciones con factor mayor que 1, por lo que la presentación base (factor 1) no puede abrirse, y no cambian el total equivalente.
 - Las correcciones se realizan mediante movimientos compensatorios vinculados al original.
 - Las compensaciones son opuestas al original, no encadenadas y pueden ser parciales o totales.
 - Para las entradas cerradas, el consumo FIFO de aperturas y salidas cerradas reduce la cantidad compensable; la cantidad compensable es `cantidad − cantidad_consumida − cantidad_compensada`.
@@ -281,6 +283,7 @@ El sistema debe permitir administrar un producto por distintas presentaciones co
 - Cantidad de movimiento igual a cero, negativa o no entera.
 - Salida que supera el stock suelto o cerrado disponible.
 - Apertura sin stock cerrado suficiente.
+- Apertura de la presentación base (factor 1).
 - Compensación de una apertura.
 - Compensación de una entrada cerrada que supera su cantidad compensable (stock ya transformado o consumido).
 - Compensación con el mismo tipo que el movimiento original o encadenada.

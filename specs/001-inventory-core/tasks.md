@@ -71,10 +71,11 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 ### T005 — Reglas de dominio de stock compuesto y apertura
 
 - **Fase:** 1.
+- **Estado:** **Reabierta / pendiente de corrección.** Historial: T005 había sido aprobada e implementada, y esa aprobación previa se conserva como antecedente; la reapertura responde a la divergencia con `spec.md` (RF-03) sobre la apertura de la presentación base (factor `1`). La corrección documentada aquí requiere aprobación humana antes de ejecutarse y no se aplica en este cambio documental.
 - **Objetivo:** implementar las reglas de RF-02 (stock suelto, cerrado, total equivalente y apertura).
 - **Archivos previstos:** `app/domain/stock.py`.
 - **Dependencias:** T003.
-- **Pruebas:** `tests/unit/test_stock_rules.py`.
+- **Pruebas:** `tests/unit/test_stock_rules.py`; se sustituye `test_open_presentations_accepts_base_presentation` por la prueba de rechazo `test_open_presentations_rejects_base_presentation`, que comprueba que la apertura con factor `1` se rechaza y que los saldos no cambian.
 - **Criterios de aceptación:**
   - Las unidades sueltas y el stock cerrado no pueden ser negativos.
   - El total equivalente se deriva correctamente mediante `unidades_sueltas + Σ(stock_cerrado × factor)`.
@@ -82,6 +83,8 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - La apertura de `N` presentaciones resta `N` al stock cerrado y suma `N × factor` a las unidades sueltas.
   - Una apertura válida no modifica el total equivalente.
   - La apertura se rechaza si no existe stock cerrado suficiente.
+  - La apertura se rechaza si la presentación tiene factor `1` (presentación base), sin alterar los saldos ni registrar el movimiento.
+- **Reapertura (divergencia con la implementación cerrada anterior de T005):** T005 se cerró admitiendo la apertura con factor `1` (`app/domain/stock.py`, prueba `test_open_presentations_accepts_base_presentation`), lo que contradice `spec.md` (RF-03: "Una apertura solo es válida sobre una presentación cuyo factor sea mayor que 1; la presentación base (factor 1) no puede abrirse"). La regla de rechazo debe residir en el dominio (`app/domain/stock.py`) y ser reutilizada por las capas superiores (T013) sin duplicar la lógica de negocio. La corrección no se aplica en este cambio documental y requiere aprobación explícita.
 - **RF:** RF-02, RF-03 (apertura).
 
 ### T006 — Reglas de movimientos y compensaciones con FIFO
@@ -220,6 +223,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - La apertura consume FIFO las entradas cerradas correspondientes a esa presentación.
   - Se actualizan los contadores de consumo de las entradas cerradas afectadas.
   - La operación se rechaza si no existe stock cerrado suficiente.
+  - Se rechaza la apertura de la presentación base (factor `1`) reutilizando la validación del dominio de T005 (`app/domain/stock.py`); el rechazo proviene del dominio, sin reimplementar la regla ni duplicar la lógica de negocio, y no crea movimientos ni altera saldos.
   - Se rechaza la apertura sobre un producto desactivado.
   - La apertura es inmutable y no compensable.
   - Ante un error, se revierten todos los cambios de la operación.
@@ -379,7 +383,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 | --------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | RF-01     | T004, T009, T011, T019, T020, T024             | SKU único e inmutable (sin distinguir mayúsculas); nombre y unidad base obligatorios; consultas por SKU y por nombre sin distinguir mayúsculas conservando el texto original; múltiples coincidencias mostradas sin seleccionar automáticamente; stock mínimo entero ≥ 0; desactivación conserva historial; el producto desactivado solo admite consultas, historial y compensaciones históricas válidas. |
 | RF-02     | T003, T005, T008, T011, T012, T013, T016, T019 | Stock suelto/cerrado no negativo; total equivalente derivado; cantidades enteras; stock inicial registrado mediante entradas; apertura atómica y rechazada sobre un producto desactivado; disponibilidad validada al confirmar; consultas de stock por SKU/nombre sin distinguir mayúsculas.                                                                                                              |
-| RF-03     | T006, T008, T009, T012, T013, T014, T016       | Motivo obligatorio; movimientos inmutables; compensación opuesta y no encadenada; consumo FIFO y cantidad compensable; apertura no compensable y rechazada sobre un producto desactivado; compensaciones históricas válidas admitidas en productos desactivados.                                                                                                                                          |
+| RF-03     | T005, T006, T008, T009, T012, T013, T014, T016 | Motivo obligatorio; movimientos inmutables; compensación opuesta y no encadenada; consumo FIFO y cantidad compensable; apertura no compensable, rechazada sobre un producto desactivado y prohibida sobre la presentación base (factor `1`), regla validada en el dominio (T005) y reutilizada sin duplicación por el servicio de apertura (T013); compensaciones históricas válidas admitidas en productos desactivados.                                                                                                                                          |
 | RF-04     | T007, T019                                     | Stock bajo = total equivalente ≤ mínimo; reposición solo para activos con faltante > 0; desactivados excluidos.                                                                                                                                                                                                                                                                                           |
 | RF-05     | T015, T017–T024                                | Consultar datos reales; propuesta editable sin efectos; confirmación explícita; revalidación; no inventar resultados.                                                                                                                                                                                                                                                                                     |
 | RF-06     | T009, T012, T014, T026                         | Único inventario/ubicación; sin usuarios, proveedores, compras o ventas; sin edición directa de confirmados; corrección por compensación, salvo aperturas.                                                                                                                                                                                                                                                |
@@ -390,6 +394,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 - **Identificador del modelo DeepSeek:** bloquea la ejecución real en Fase 3/5, pero no las pruebas con modelo falso.
 - **Zona horaria de Argentina:** bloquea T010 y las herramientas de consulta por período; las tareas no relacionadas pueden continuar.
 - **Ciclo de vida de propuestas y topología de despliegue:** deferibles; no deben ampliar el alcance sin una decisión posterior.
+- **Corrección de T005 (rechazo de la apertura con factor `1`):** alcance aprobado, pero la corrección del dominio (`app/domain/stock.py`) y su prueba de rechazo requieren aprobación humana explícita antes de ejecutarse; no se aplica en este cambio documental y no se avanza a T006.
 
 ## Estrategia de ejecución
 

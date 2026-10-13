@@ -16,7 +16,20 @@
   - Archivos: `app/domain/products.py`, `app/domain/presentations.py`,
     `tests/unit/test_product_rules.py`, `tests/unit/test_presentation_rules.py`.
   - Validación: el usuario confirmó que la suite completa pasó con 112 pruebas.
-- Próxima tarea técnica: T005, todavía sin autorización para comenzar.
+- T005 corregida y aprobada (tras revisión independiente): reglas de dominio de stock
+  compuesto y apertura.
+  - Archivos: `app/domain/stock.py`, `tests/unit/test_stock_rules.py`.
+  - Funcionalidad: validación de stock suelto/cerrado, cálculo del total equivalente
+    y apertura de presentaciones con conservación del total.
+  - Aperturas: rechaza la presentación base (factor 1) mediante
+    `BasePresentationApertureError` y `validate_aperture_factor`.
+  - Pruebas: `tests/unit/test_stock_rules.py`, incluida la prueba de rechazo de la
+    apertura base y la prueba directa del invariante de `ApertureResult`.
+  - Resultados reportados por implementer (no verificados independientemente por el
+    coordinator ni el reviewer): 57 pruebas específicas y 169 en la suite completa.
+  - La revisión independiente final fue APROBADO y los hallazgos de calidad de
+    pruebas quedaron atendidos.
+- Próxima tarea técnica: T006, todavía sin autorización para comenzar.
 
 ## Especificación vigente (resumen)
 - RF-01 a RF-07. Cantidades de inventario enteras (unidades discretas).
@@ -51,9 +64,11 @@
 - Cambios pendientes de revisión/cierre en `specs/001-inventory-core/spec.md`,
   `plan.md` y `tasks.md`.
 - No reabrir revisiones cosméticas; corregir solo defectos funcionales importantes.
+- Documentado en spec/tasks: prohibición de aperturas de la presentación base
+  (factor 1); el dominio la valida y T013 la reutiliza.
 
 ## Git
-- Existen commits/push pendientes de confirmar (T004 y ajustes documentales).
+- Existen commits/push pendientes de confirmar (T004, T005 y ajustes documentales).
   No asumir que se ejecutaron.
 
 ## Decisiones pendientes
