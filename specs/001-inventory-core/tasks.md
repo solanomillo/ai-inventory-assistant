@@ -71,7 +71,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 ### T005 — Reglas de dominio de stock compuesto y apertura
 
 - **Fase:** 1.
-- **Estado:** **Reabierta / pendiente de corrección.** Historial: T005 había sido aprobada e implementada, y esa aprobación previa se conserva como antecedente; la reapertura responde a la divergencia con `spec.md` (RF-03) sobre la apertura de la presentación base (factor `1`). La corrección documentada aquí requiere aprobación humana antes de ejecutarse y no se aplica en este cambio documental.
+- **Estado:** **Cerrada y aprobada** (tras corrección y revisión independiente). Historial: T005 se había cerrado admitiendo la apertura de la presentación base (factor `1`); una revisión posterior detectó la divergencia con `spec.md` (RF-03), la corrección se aplicó en el dominio (`app/domain/stock.py`) con su prueba de rechazo y la revisión independiente final quedó aprobada. Esta aprobación previa se conserva como antecedente.
 - **Objetivo:** implementar las reglas de RF-02 (stock suelto, cerrado, total equivalente y apertura).
 - **Archivos previstos:** `app/domain/stock.py`.
 - **Dependencias:** T003.
@@ -84,18 +84,18 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - Una apertura válida no modifica el total equivalente.
   - La apertura se rechaza si no existe stock cerrado suficiente.
   - La apertura se rechaza si la presentación tiene factor `1` (presentación base), sin alterar los saldos ni registrar el movimiento.
-- **Reapertura (divergencia con la implementación cerrada anterior de T005):** T005 se cerró admitiendo la apertura con factor `1` (`app/domain/stock.py`, prueba `test_open_presentations_accepts_base_presentation`), lo que contradice `spec.md` (RF-03: "Una apertura solo es válida sobre una presentación cuyo factor sea mayor que 1; la presentación base (factor 1) no puede abrirse"). La regla de rechazo debe residir en el dominio (`app/domain/stock.py`) y ser reutilizada por las capas superiores (T013) sin duplicar la lógica de negocio. La corrección no se aplica en este cambio documental y requiere aprobación explícita.
 - **RF:** RF-02, RF-03 (apertura).
 
 ### T006 — Reglas de movimientos y compensaciones con FIFO
 
 - **Fase:** 1.
+- **Estado:** **Cerrada y aprobada** tras revisión independiente.
 - **Objetivo:** implementar las reglas de RF-03 (tipos, compensaciones y consumo FIFO).
 - **Archivos previstos:** `app/domain/movements.py`.
 - **Dependencias:** T005.
 - **Pruebas:** `tests/unit/test_movement_rules.py`.
 - **Criterios de aceptación:**
-  - Las compensaciones son de tipo opuesto al movimiento original y no pueden encadenarse.
+  - Una compensación es un movimiento de tipo compensación cuyo efecto sobre el stock es opuesto al del movimiento original, y no puede encadenarse.
   - Las aperturas no son compensables.
   - La cantidad compensable de una entrada cerrada se calcula como `cantidad - cantidad_consumida - cantidad_compensada`.
   - Las aperturas y las salidas cerradas consumen entradas cerradas mediante FIFO, por presentación.
@@ -163,10 +163,10 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 - **Pruebas:** `tests/integration/test_period_filters.py`.
 - **Criterios de aceptación:**
   - Los instantes se almacenan en UTC.
-  - Los períodos se interpretan en la zona horaria local de Argentina.
+  - Los períodos se interpretan en la zona horaria local de Argentina (`America/Argentina/Buenos_Aires`) y se convierten a UTC para consultar los movimientos.
   - El inicio del período es inclusivo y el final es exclusivo.
   - Los filtros de producto, tipo y período se combinan mediante AND.
-- **Pendiente:** la zona horaria concreta de Argentina bloquea únicamente esta tarea y las consultas por período; no impide T001–T009 ni las tareas posteriores que no dependen de filtros temporales.
+- **Decisión resuelta:** la zona horaria es `America/Argentina/Buenos_Aires`; los períodos ingresados en hora local de Argentina se convierten a UTC y la persistencia de instantes continúa en UTC, con semántica `[inicio, fin)`. La tarea mantiene su alcance: filtros temporales en las consultas de movimientos, conversión de zona horaria y combinación mediante AND con los filtros de producto y tipo.
 
 ## Fase 2 — Servicios, confirmación, apertura, compensaciones y concurrencia
 
@@ -181,7 +181,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - Se permite dar de alta productos válidos y se rechazan los SKU duplicados.
   - El SKU no puede modificarse una vez creado.
   - El alta del producto permite registrar stock inicial suelto y/o cerrado.
-  - Cada porción positiva de stock inicial genera un movimiento de entrada marcado con `es_stock_inicial`.
+  - Cada porción positiva de stock inicial genera un movimiento de entrada marcado con `is_initial_stock`.
   - Si el stock inicial es cero, no se crea ningún movimiento de stock inicial.
   - El stock inicial y sus movimientos se registran de forma consistente, sin duplicar saldos.
   - La desactivación conserva el historial.
@@ -201,7 +201,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 - **Criterios de aceptación:**
   - Una entrada válida persiste el movimiento y actualiza el stock correspondiente.
   - El costo de una entrada es opcional y, cuando se informa, debe ser mayor o igual que cero.
-  - Una salida válida guarda `precio_aplicado` con el precio de venta de la presentación vigente al confirmar.
+  - Una salida válida guarda `applied_price` con el precio de venta de la presentación vigente al confirmar.
   - Las salidas sueltas utilizan el precio de la presentación base.
   - Una salida que supera la disponibilidad se rechaza.
   - No se permite stock negativo.
@@ -238,7 +238,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 - **Pruebas:** `tests/integration/test_compensation_service.py`.
 - **Criterios de aceptación:**
   - Una compensación válida crea un movimiento vinculado al movimiento original.
-  - Se rechazan las compensaciones que exceden la cantidad pendiente, son del mismo tipo que el original o intentan encadenarse.
+  - Se rechazan las compensaciones que exceden la cantidad pendiente, cuyo efecto no es opuesto al del movimiento original o intentan encadenarse.
   - Las aperturas no son compensables.
   - Las compensaciones de entradas cerradas respetan la cantidad compensable y el stock cerrado vigente.
   - Los contadores de cantidades compensadas se actualizan de manera consistente.
@@ -392,9 +392,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 ## Decisiones pendientes
 
 - **Identificador del modelo DeepSeek:** bloquea la ejecución real en Fase 3/5, pero no las pruebas con modelo falso.
-- **Zona horaria de Argentina:** bloquea T010 y las herramientas de consulta por período; las tareas no relacionadas pueden continuar.
 - **Ciclo de vida de propuestas y topología de despliegue:** deferibles; no deben ampliar el alcance sin una decisión posterior.
-- **Corrección de T005 (rechazo de la apertura con factor `1`):** alcance aprobado, pero la corrección del dominio (`app/domain/stock.py`) y su prueba de rechazo requieren aprobación humana explícita antes de ejecutarse; no se aplica en este cambio documental y no se avanza a T006.
 
 ## Estrategia de ejecución
 

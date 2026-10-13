@@ -87,12 +87,12 @@ El sistema debe conservar un historial verificable de entradas, salidas, apertur
 
 ### Requisitos
 
-- El sistema debe registrar movimientos de los tipos: entrada cerrada, entrada suelta, salida cerrada, salida suelta y apertura.
+- El sistema debe registrar movimientos de los tipos: entrada cerrada, entrada suelta, salida cerrada, salida suelta, apertura y compensación.
 - Cada movimiento debe estar asociado a un producto y, cuando corresponda, a una presentación.
 - Cada movimiento debe incluir un motivo.
 - El sistema debe registrar automáticamente la fecha y hora de cada movimiento confirmado.
 - El sistema debe permitir consultar movimientos por producto, tipo y período.
-- Cuando se proporcionen fechas para un período, el sistema debe interpretarlas en la hora local de Argentina y almacenar los instantes de los movimientos en UTC.
+- Cuando se proporcionen fechas para un período, el sistema debe interpretarlas en la hora local de Argentina según el identificador IANA `America/Argentina/Buenos_Aires`, convertirlas a UTC para consultar los movimientos y almacenar los instantes de los movimientos en UTC.
 - El período de consulta debe incluir su inicio y excluir su final.
 - Cuando se combinen filtros de producto, tipo y período, el sistema debe devolver únicamente los movimientos que cumplan todos los filtros proporcionados.
 - El sistema no debe permitir editar ni eliminar movimientos confirmados.
@@ -116,7 +116,7 @@ El sistema debe conservar un historial verificable de entradas, salidas, apertur
 
 - Cuando sea necesario corregir un movimiento confirmado, el sistema debe registrar un movimiento compensatorio vinculado al movimiento original.
 - Un movimiento compensatorio puede neutralizar total o parcialmente la cantidad del movimiento original.
-- Todo movimiento compensatorio debe tener el tipo opuesto al movimiento original y debe vincularse a un movimiento original que no sea compensatorio.
+- Todo movimiento compensatorio es un movimiento de tipo compensación cuyo efecto sobre el stock es el opuesto al del movimiento original, y debe vincularse a un movimiento original que no sea compensatorio.
 - Las aperturas no pueden ser compensadas ni ser destino de una compensación.
 - La confirmación de una compensación no debe modificar ni eliminar el movimiento original.
 
@@ -258,11 +258,11 @@ El sistema debe permitir administrar un producto por distintas presentaciones co
 - El stock suelto y el stock cerrado nunca pueden ser negativos.
 - El total equivalente se deriva de las unidades sueltas y del stock cerrado por presentación; no se persiste como saldo independiente.
 - Todo movimiento requiere un motivo y fecha y hora registradas automáticamente.
-- Los instantes se almacenan en UTC; los períodos se interpretan en hora local de Argentina con inicio inclusivo y final exclusivo; los filtros combinados se aplican de forma conjunta.
+- Los instantes se almacenan en UTC; los períodos se interpretan en la hora local de Argentina (`America/Argentina/Buenos_Aires`), convirtiendo las fechas locales a UTC, y aplican la semántica `[inicio, fin)` (inicio inclusivo y final exclusivo); los filtros combinados se aplican de forma conjunta.
 - Los movimientos confirmados son inmutables.
 - Las aperturas son atómicas, inmutables y no compensables; solo aplican a presentaciones con factor mayor que 1, por lo que la presentación base (factor 1) no puede abrirse, y no cambian el total equivalente.
 - Las correcciones se realizan mediante movimientos compensatorios vinculados al original.
-- Las compensaciones son opuestas al original, no encadenadas y pueden ser parciales o totales.
+- Una compensación es un movimiento de tipo compensación cuyo efecto es opuesto al del movimiento original; no puede encadenarse a otra compensación y puede ser parcial o total.
 - Para las entradas cerradas, el consumo FIFO de aperturas y salidas cerradas reduce la cantidad compensable; la cantidad compensable es `cantidad − cantidad_consumida − cantidad_compensada`.
 - Las entradas sueltas no tienen trazabilidad individual por entrada; se conservan la validación de stock disponible y el límite de cantidad pendiente de compensar.
 - Los productos desactivados solo admiten consultas, historial y compensaciones históricas válidas; no admiten operaciones ordinarias nuevas ni modificaciones, incluidas las modificaciones de nombre o stock, la creación o modificación de presentaciones y las aperturas.
@@ -286,7 +286,7 @@ El sistema debe permitir administrar un producto por distintas presentaciones co
 - Apertura de la presentación base (factor 1).
 - Compensación de una apertura.
 - Compensación de una entrada cerrada que supera su cantidad compensable (stock ya transformado o consumido).
-- Compensación con el mismo tipo que el movimiento original o encadenada.
+- Compensación cuyo efecto no es opuesto al del movimiento original, o compensación encadenada.
 - Movimiento sin motivo.
 - Producto inexistente.
 - Producto desactivado en una solicitud de operación ordinaria, modificación, creación o modificación de presentaciones o apertura.

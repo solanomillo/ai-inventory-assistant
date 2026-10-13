@@ -58,47 +58,47 @@ Streamlit (ui)
 
 - `id` interno.
 - `sku` único e inmutable; la unicidad no distingue mayúsculas de minúsculas.
-- `nombre` obligatorio, recortado, no vacío.
-- `unidad_base` nombre de la unidad discreta (botella, paquete, unidad).
-- `stock_minimo` entero mayor o igual que cero, en unidades base.
-- `unidades_sueltas` entero mayor o igual que cero.
-- `activo` booleano.
-- Un producto con `activo = false` solo admite consultas, historial y compensaciones históricas válidas; se rechazan el alta de movimientos ordinarios nuevos, las modificaciones, la creación o modificación de presentaciones y las aperturas.
+- `name` obligatorio, recortado, no vacío.
+- `base_unit` nombre de la unidad discreta (botella, paquete, unidad).
+- `minimum_stock` entero mayor o igual que cero, en unidades base.
+- `loose_units` entero mayor o igual que cero.
+- `active` booleano.
+- Un producto con `active = false` solo admite consultas, historial y compensaciones históricas válidas; se rechazan el alta de movimientos ordinarios nuevos, las modificaciones, la creación o modificación de presentaciones y las aperturas.
 
-Sin `precio_venta`: el precio vive en las presentaciones.
+Sin `sale_price`: el precio vive en las presentaciones.
 
 ### Presentación
 
 - `id` interno.
-- `producto_id`.
-- `nombre` único dentro del producto, sin distinguir mayúsculas de minúsculas.
+- `product_id`.
+- `name` único dentro del producto, sin distinguir mayúsculas de minúsculas.
 - `factor` entero mayor o igual que 1 (equivalencia en unidades base).
-- `precio_venta` Decimal mayor que cero.
-- `stock_cerrado` entero mayor o igual que cero (solo relevante si `factor > 1`).
+- `sale_price` Decimal mayor que cero.
+- `closed_stock` entero mayor o igual que cero (solo relevante si `factor > 1`).
 
-La unidad base es la presentación con `factor = 1`. Un producto vendido solo por unidad tiene una única presentación (`factor = 1`). El `factor` es inmutable cuando esa presentación tiene `stock_cerrado > 0` o movimientos históricos.
+La unidad base es la presentación con `factor = 1`. Un producto vendido solo por unidad tiene una única presentación (`factor = 1`). El `factor` es inmutable cuando esa presentación tiene `closed_stock > 0` o movimientos históricos.
 
 ### Stock compuesto
 
-- `unidades_sueltas` (producto) y `stock_cerrado` (por presentación) son los únicos saldos persistidos.
-- `total_equivalente = unidades_sueltas + Σ(stock_cerrado_p × factor_p)`, derivado, nunca persistido.
-- `stock_minimo`, `stock bajo` y `faltante` se evalúan sobre `total_equivalente`.
+- `loose_units` (producto) y `closed_stock` (por presentación) son los únicos saldos persistidos.
+- `total_equivalente = loose_units + Σ(closed_stock_p × factor_p)`, derivado, nunca persistido.
+- `minimum_stock`, `stock bajo` y `faltante` se evalúan sobre `total_equivalente`.
 
 ### Movimiento
 
 - `id` interno.
-- `producto_id`.
-- `presentacion_id` (referencia a la presentación afectada; para sueltas, la unidad base de factor 1).
+- `product_id`.
+- `presentation_id` (referencia a la presentación afectada; para sueltas, la unidad base de factor 1).
 - `kind`: `entrada_cerrada`, `entrada_suelta`, `salida_cerrada`, `salida_suelta`, `apertura`, `compensacion`.
-- `cantidad` entero mayor que cero.
-- `motivo` obligatorio.
-- `fecha_utc` instante automático en UTC.
-- `costo` opcional (Decimal ≥ 0), solo entradas.
-- `precio_aplicado` (Decimal > 0), solo salidas, snapshot al confirmar.
-- `es_stock_inicial` booleano (entradas de stock inicial).
-- `movimiento_original_id` opcional (solo compensaciones).
+- `quantity` entero mayor que cero.
+- `reason` obligatorio.
+- `occurred_at` instante automático en UTC.
+- `cost` opcional (Decimal ≥ 0), solo entradas.
+- `applied_price` (Decimal > 0), solo salidas, snapshot al confirmar.
+- `is_initial_stock` booleano (entradas de stock inicial).
+- `original_movement_id` opcional (solo compensaciones).
 
-Para `entrada_cerrada`, además: `cantidad_consumida` y `cantidad_compensada` (enteros ≥ 0) para el consumo FIFO.
+Para `entrada_cerrada`, además: `consumed_quantity` y `compensated_quantity` (enteros ≥ 0) para el consumo FIFO.
 
 ### Compensación
 
@@ -108,6 +108,7 @@ Es un movimiento de `kind = compensacion`, opuesto al original, vinculado a un o
 
 - Cantidades de inventario, stock (suelto y cerrado) y factor de presentación: **enteros** (`int`). SQLite usa columnas `INTEGER`.
 - Precio de venta y costo: **`Decimal` exacto** en Python, almacenado como `TEXT` canónico en SQLite. La especificación no define precisión decimal para precio ni costo.
+- Fechas y períodos: los instantes se persisten en **UTC**; las fechas de un período se interpretan en la zona horaria local de Argentina, cuyo identificador IANA es **`America/Argentina/Buenos_Aires`**, y se convierten a **UTC** antes de consultar los movimientos. La semántica del período es **`[inicio, fin)`** (inicio inclusivo, final exclusivo).
 - No se usan `float` para cálculos monetarios ni se introduce una representación en centésimas para cantidades.
 
 ## Configuración de DeepSeek
@@ -116,22 +117,24 @@ Es un movimiento de `kind = compensacion`, opuesto al original, vinculado a un o
 - `services/llm.py`: `get_llm()` → `ChatDeepSeek(model, api_key, temperature=0)`.
 - `.env.example` sin credenciales.
 
-Decisiones pendientes documentadas: identificador del modelo DeepSeek y zona horaria concreta de Argentina.
+Decisiones pendientes documentadas: identificador del modelo DeepSeek.
 
 ## Persistencia, transacciones y concurrencia
 
 - Confirmación en una única transacción: `BEGIN IMMEDIATE` → leer propuesta/producto/disponibilidad vigente → revalidar reglas (incluido el estado activo del producto) → aplicar cambios → `COMMIT`; ante fallo, `ROLLBACK` total.
-- La **apertura** actualiza `stock_cerrado` y `unidades_sueltas` en la misma transacción y consume FIFO las `entrada_cerrada` correspondientes.
+- La **apertura** actualiza `closed_stock` y `loose_units` en la misma transacción y consume FIFO las `entrada_cerrada` correspondientes.
 - Las `salida_cerrada` y las compensaciones consumen y actualizan los contadores FIFO dentro de la misma transacción.
 - Las operaciones concurrentes no pueden confirmarse sobre disponibilidad obsoleta.
 - Sin stock negativo ni cambios parciales.
 
 ## Esquema SQLite
 
-- `productos`: `id`, `sku` (único), `nombre`, `unidad_base`, `stock_minimo` (INTEGER), `unidades_sueltas` (INTEGER), `activo`.
-- `presentaciones`: `id`, `producto_id`, `nombre`, `factor` (INTEGER), `precio_venta` (TEXT Decimal), `stock_cerrado` (INTEGER).
-- `movimientos`: `id`, `producto_id`, `presentacion_id`, `kind`, `cantidad` (INTEGER), `motivo`, `fecha_utc`, `costo` (TEXT, opcional), `precio_aplicado` (TEXT, opcional), `es_stock_inicial`, `movimiento_original_id`, `cantidad_consumida` (INTEGER), `cantidad_compensada` (INTEGER).
-- `propuestas`: `id`, `tipo_accion`, `datos`, `estado`, `instante_creacion`.
+- `products`: `id`, `sku` (único), `name`, `base_unit`, `minimum_stock` (INTEGER), `loose_units` (INTEGER), `active`.
+- `presentations`: `id`, `product_id`, `name`, `factor` (INTEGER), `sale_price` (TEXT Decimal), `closed_stock` (INTEGER).
+- `movements`: `id`, `product_id`, `presentation_id`, `kind`, `quantity` (INTEGER), `reason`, `occurred_at`, `cost` (TEXT, opcional), `applied_price` (TEXT, opcional), `is_initial_stock`, `original_movement_id`, `consumed_quantity` (INTEGER), `compensated_quantity` (INTEGER).
+- `proposals`: `id`, `action_type`, `data`, `status`, `created_at`.
+
+Los nombres de tablas y columnas se expresan en inglés, conforme al código en inglés de la constitución (§4) y a los nombres del dominio (`Product`, `Presentation`, `ClosedEntry`). Los valores persistidos de `movements.kind` se mantienen en español (`entrada_cerrada`, `entrada_suelta`, `salida_cerrada`, `salida_suelta`, `apertura`, `compensacion`), coherentes con `MovementKind` del dominio.
 
 Se crea como esquema nuevo; no hay datos previos que migrar.
 
@@ -158,7 +161,7 @@ requirements.txt
 ## Estrategia de pruebas
 
 - Reglas de negocio: unitarias de dominio (producto, presentaciones, stock compuesto, apertura, total equivalente, compensaciones con FIFO, costo y precio).
-- Persistencia SQLite: integración (unicidad, inmutabilidad, filtros por producto/kind/período).
+- Persistencia SQLite: integración (unicidad, inmutabilidad, filtros por producto/kind/período; conversión de períodos locales de `America/Argentina/Buenos_Aires` a UTC con semántica `[inicio, fin)`).
 - Herramientas: devuelven datos reales (stock suelto, cerrado y total) o crean propuestas (incluida apertura), sin escribir movimientos.
 - Agentes y supervisor: modelo falso determinista, sin DeepSeek real.
 - Confirmación y compensación: propuesta editable sin efectos; confirmación revalida; compensación que excede la cantidad compensable se rechaza; apertura no compensable.
@@ -179,5 +182,4 @@ requirements.txt
 ## Decisiones pendientes
 
 - Identificador del modelo DeepSeek (antes de Fase 3).
-- Zona horaria concreta de Argentina (antes de consultas por período).
 - Ciclo de vida de propuestas y topología de despliegue (deferibles).
