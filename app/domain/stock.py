@@ -1,13 +1,16 @@
-"""Reglas de dominio del stock compuesto y las aperturas (RF-02, RF-03).
+"""Reglas de dominio del stock, las aperturas y las alertas de stock bajo.
 
-Este módulo contiene reglas puras: no accede a SQLite, a la interfaz ni a
+Corresponde a RF-02, RF-03 (aperturas) y RF-04 (stock bajo y reposición). Este
+módulo contiene reglas puras: no accede a SQLite, a la interfaz ni a
 servicios externos. Los saldos persistidos son las unidades sueltas del
 producto y el stock cerrado de cada presentación; el total equivalente se
-deriva y nunca se persiste como saldo independiente.
+deriva y nunca se persiste como saldo independiente. El stock bajo y el
+faltante se evalúan sobre ese total equivalente derivado (RF-04).
 """
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Protocol
 
 from app.domain.quantities import (
     validate_factor,
@@ -256,3 +259,163 @@ def open_presentations(
         + validated_quantity * validated_factor,
         closed_stock=validated_closed_stock - validated_quantity,
     )
+
+
+class StockAlertItem(Protocol):
+    """
+    Contrato estructural de un ítem evaluado para stock bajo y reposición
+    (RF-04).
+
+    El dominio no modela un producto con un flag de activación: cada ítem
+    aporta el flag `active` y los datos necesarios para derivar su total
+    equivalente (`loose_units` y `closed_stocks`) junto con su `minimum_stock`.
+    De ese modo, las consultas globales solo filtran por actividad y delegan
+    las reglas de stock bajo y faltante en `is_low_stock` y
+    `calculate_shortage`, sin duplicar reglas ni crear entidades nuevas.
+
+    Cualquier objeto con esos cuatro atributos cumple el contrato; no es
+    necesario heredar de este protocolo.
+    """
+
+    active: bool
+    loose_units: int
+    closed_stocks: Iterable[ClosedStock]
+    minimum_stock: int
+
+
+def is_low_stock(
+    *,
+    loose_units: int,
+    closed_stocks: Iterable[ClosedStock] = (),
+    minimum_stock: int,
+) -> bool:
+    """
+    Indica si un producto tiene stock bajo (RF-04).
+
+    Un producto tiene stock bajo cuando su total equivalente es menor o igual
+    que su stock mínimo. El total equivalente se obtiene con
+    `total_equivalent(...)`, de modo que la regla se evalúa siempre sobre el
+    total derivado de los saldos y no sobre una copia almacenada.
+
+    Args:
+        loose_units: Unidades sueltas vigentes del producto, en unidades base.
+        closed_stocks: Saldos cerrados por presentación que aportan al total.
+        minimum_stock: Stock mínimo del producto, en unidades base.
+
+    Returns:
+        `True` si el total equivalente es menor o igual que el stock mínimo.
+
+    Raises:
+        QuantityError:
+            Si las unidades sueltas o el stock mínimo no son enteros mayores o
+            iguales que cero. Los saldos cerrados se validan al construir cada
+            `ClosedStock`.
+    """
+    validated_minimum_stock = validate_stock(minimum_stock)
+    equivalent_units = total_equivalent(loose_units, closed_stocks)
+
+    return equivalent_units <= validated_minimum_stock
+
+
+def calculate_shortage(
+    *,
+    loose_units: int,
+    closed_stocks: Iterable[ClosedStock] = (),
+    minimum_stock: int,
+) -> int:
+    """
+    Calcula el faltante de un producto respecto de su stock mínimo (RF-04).
+
+    El faltante es `max(0, stock_minimo - total_equivalente)`: nunca es
+    negativo, de modo que un producto con existencias suficientes tiene
+    faltante cero y no requiere reposición.
+
+    Args:
+        loose_units: Unidades sueltas vigentes del producto, en unidades base.
+        closed_stocks: Saldos cerrados por presentación que aportan al total.
+        minimum_stock: Stock mínimo del producto, en unidades base.
+
+    Returns:
+        El faltante del producto, en unidades base, siempre mayor o igual que
+        cero.
+
+    Raises:
+        QuantityError:
+            Si las unidades sueltas o el stock mínimo no son enteros mayores o
+            iguales que cero. Los saldos cerrados se validan al construir cada
+            `ClosedStock`.
+    """
+    validated_minimum_stock = validate_stock(minimum_stock)
+    equivalent_units = total_equivalent(loose_units, closed_stocks)
+
+    return max(0, validated_minimum_stock - equivalent_units)
+
+
+def low_stock_items(
+    items: Iterable[StockAlertItem],
+) -> list[StockAlertItem]:
+    """
+    Filtra los productos activos con stock bajo (RF-04).
+
+    La consulta global de stock bajo incluye únicamente productos activos y
+    considera la condición `total_equivalente <= stock_minimo`; los ítems cuyo
+    flag `active` es falso se excluyen.
+
+    Args:
+        items: Ítems del inventario que cumplen `StockAlertItem`.
+
+    Returns:
+        Una lista nueva con los ítems activos con stock bajo, en el orden de
+        entrada.
+
+    Raises:
+        QuantityError:
+            Si los datos de stock de algún ítem no son enteros mayores o
+            iguales que cero.
+    """
+    return [
+        item
+        for item in items
+        if item.active
+        and is_low_stock(
+            loose_units=item.loose_units,
+            closed_stocks=item.closed_stocks,
+            minimum_stock=item.minimum_stock,
+        )
+    ]
+
+
+def replenishment_items(
+    items: Iterable[StockAlertItem],
+) -> list[StockAlertItem]:
+    """
+    Filtra los productos activos que requieren reposición (RF-04).
+
+    La consulta global de reposición incluye únicamente productos activos cuyo
+    faltante es mayor que cero; un producto con stock bajo y faltante cero (por
+    ejemplo, stock mínimo y total equivalente iguales) no se propone para
+    reposición.
+
+    Args:
+        items: Ítems del inventario que cumplen `StockAlertItem`.
+
+    Returns:
+        Una lista nueva con los ítems activos que requieren reposición, en el
+        orden de entrada.
+
+    Raises:
+        QuantityError:
+            Si los datos de stock de algún ítem no son enteros mayores o
+            iguales que cero.
+    """
+    return [
+        item
+        for item in items
+        if item.active
+        and calculate_shortage(
+            loose_units=item.loose_units,
+            closed_stocks=item.closed_stocks,
+            minimum_stock=item.minimum_stock,
+        )
+        > 0
+    ]
