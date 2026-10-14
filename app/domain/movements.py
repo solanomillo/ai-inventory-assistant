@@ -71,10 +71,10 @@ class MovementKind(str, Enum):
 
 # Tipos de movimiento compensables y su tipo opuesto (RF-03). Las aperturas y
 # las compensaciones no tienen tipo opuesto: no pueden compensarse ni ser
-# destino de una compensación.
+# destino de una compensación. Las salidas cerradas tampoco disponen de tipo
+# opuesto porque su compensación queda fuera del MVP.
 _OPPOSITE_KINDS: dict[MovementKind, MovementKind] = {
     MovementKind.CLOSED_ENTRY: MovementKind.CLOSED_EXIT,
-    MovementKind.CLOSED_EXIT: MovementKind.CLOSED_ENTRY,
     MovementKind.LOOSE_ENTRY: MovementKind.LOOSE_EXIT,
     MovementKind.LOOSE_EXIT: MovementKind.LOOSE_ENTRY,
 }
@@ -138,7 +138,7 @@ def validate_compensable_kind(kind: MovementKind | str) -> MovementKind:
 
     Todo movimiento compensatorio se vincula a un movimiento original que no
     sea compensatorio; las aperturas no pueden ser compensadas ni ser destino
-    de una compensación.
+    de una compensación y las salidas cerradas quedan excluidas del MVP.
 
     Args:
         kind: Tipo del movimiento original que se compensa.
@@ -153,6 +153,9 @@ def validate_compensable_kind(kind: MovementKind | str) -> MovementKind:
             Si el movimiento original es una apertura.
         ChainedCompensationError:
             Si el movimiento original es otra compensación.
+        NotCompensableError:
+            Si el movimiento original es una salida cerrada, cuya compensación
+            queda fuera del MVP.
     """
     validated_kind = validate_movement_kind(kind)
 
@@ -165,6 +168,11 @@ def validate_compensable_kind(kind: MovementKind | str) -> MovementKind:
     if validated_kind is MovementKind.COMPENSATION:
         raise ChainedCompensationError(
             "Una compensación no puede compensar a otra compensación."
+        )
+
+    if validated_kind is MovementKind.CLOSED_EXIT:
+        raise NotCompensableError(
+            "Las compensaciones de salidas cerradas quedan fuera del MVP."
         )
 
     return validated_kind
@@ -187,6 +195,9 @@ def opposite_kind(kind: MovementKind | str) -> MovementKind:
             Si el movimiento original es una apertura.
         ChainedCompensationError:
             Si el movimiento original es otra compensación.
+        NotCompensableError:
+            Si el movimiento original es una salida cerrada, cuya compensación
+            queda fuera del MVP.
     """
     validated_kind = validate_compensable_kind(kind)
 
@@ -484,7 +495,8 @@ def compensate(
 
     La compensación es de tipo opuesto al movimiento original y no puede
     encadenarse: el movimiento original no puede ser una apertura ni otra
-    compensación. La cantidad compensada puede ser parcial o total, no puede
+    compensación, y la compensación de una salida cerrada queda fuera del MVP.
+    La cantidad compensada puede ser parcial o total, no puede
     superar la cantidad compensable pendiente del movimiento original y, en el
     caso de una entrada, tampoco puede dejar el stock afectado en negativo. La
     operación es pura: devuelve el movimiento compensatorio sin persistirlo ni
@@ -511,6 +523,9 @@ def compensate(
             Si el movimiento original es una apertura.
         ChainedCompensationError:
             Si el movimiento original es otra compensación.
+        NotCompensableError:
+            Si el movimiento original es una salida cerrada, cuya compensación
+            queda fuera del MVP.
         QuantityError:
             Si la cantidad no es un entero mayor que cero o si la cantidad
             compensable o el stock no son enteros mayores o iguales que cero.

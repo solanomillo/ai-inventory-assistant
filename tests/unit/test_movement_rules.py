@@ -95,11 +95,10 @@ def test_validate_movement_kind_rejects_case_variant() -> None:
 
 
 def test_validate_compensable_kind_accepts_entries_and_exits() -> None:
-    """Verifica que las entradas y las salidas pueden compensarse."""
+    """Verifica que las entradas y la salida suelta pueden compensarse."""
     compensable_kinds = (
         MovementKind.CLOSED_ENTRY,
         MovementKind.LOOSE_ENTRY,
-        MovementKind.CLOSED_EXIT,
         MovementKind.LOOSE_EXIT,
     )
 
@@ -110,6 +109,19 @@ def test_validate_compensable_kind_accepts_entries_and_exits() -> None:
         validate_compensable_kind("entrada_suelta")
         is MovementKind.LOOSE_ENTRY
     )
+
+
+def test_validate_compensable_kind_rejects_closed_exit() -> None:
+    """Verifica que una salida cerrada no puede compensarse (RF-03, MVP)."""
+    with pytest.raises(NotCompensableError) as error:
+        validate_compensable_kind(MovementKind.CLOSED_EXIT)
+
+    assert str(error.value) == (
+        "Las compensaciones de salidas cerradas quedan fuera del MVP."
+    )
+
+    with pytest.raises(NotCompensableError):
+        validate_compensable_kind("salida_cerrada")
 
 
 def test_validate_compensable_kind_rejects_aperture() -> None:
@@ -137,13 +149,21 @@ def test_opposite_kind_returns_the_opposite_movement_type() -> None:
     """Verifica que la compensación es del tipo opuesto al original."""
     opposite_kinds = {
         MovementKind.CLOSED_ENTRY: MovementKind.CLOSED_EXIT,
-        MovementKind.CLOSED_EXIT: MovementKind.CLOSED_ENTRY,
         MovementKind.LOOSE_ENTRY: MovementKind.LOOSE_EXIT,
         MovementKind.LOOSE_EXIT: MovementKind.LOOSE_ENTRY,
     }
 
     for kind, expected_kind in opposite_kinds.items():
         assert opposite_kind(kind) is expected_kind
+
+
+def test_opposite_kind_rejects_closed_exit() -> None:
+    """Verifica que una salida cerrada no tiene tipo opuesto (RF-03, MVP)."""
+    with pytest.raises(NotCompensableError):
+        opposite_kind(MovementKind.CLOSED_EXIT)
+
+    with pytest.raises(NotCompensableError):
+        opposite_kind("salida_cerrada")
 
 
 def test_opposite_kind_accepts_persisted_value() -> None:
@@ -788,18 +808,27 @@ def test_compensate_of_loose_entry_returns_opposite_effect() -> None:
     assert result.stock_after == 3
 
 
-def test_compensate_of_closed_exit_restores_closed_stock() -> None:
-    """Verifica que compensar una salida cerrada repone el stock cerrado."""
-    result = compensate(
-        original_kind=MovementKind.CLOSED_EXIT,
-        quantity=3,
-        compensable_quantity=3,
-        available_stock=0,
+def test_compensate_rejects_closed_exit() -> None:
+    """Verifica que compensar una salida cerrada queda fuera del MVP."""
+    with pytest.raises(NotCompensableError) as error:
+        compensate(
+            original_kind=MovementKind.CLOSED_EXIT,
+            quantity=3,
+            compensable_quantity=3,
+            available_stock=0,
+        )
+
+    assert str(error.value) == (
+        "Las compensaciones de salidas cerradas quedan fuera del MVP."
     )
 
-    assert result.effect_kind is MovementKind.CLOSED_ENTRY
-    assert result.stock_before == 0
-    assert result.stock_after == 3
+    with pytest.raises(NotCompensableError):
+        compensate(
+            original_kind="salida_cerrada",
+            quantity=3,
+            compensable_quantity=3,
+            available_stock=0,
+        )
 
 
 def test_compensate_of_loose_exit_restores_loose_units() -> None:
@@ -1064,6 +1093,29 @@ def test_compensation_result_rejects_compensation_original() -> None:
             quantity=1,
             stock_before=3,
             stock_after=2,
+        )
+
+
+def test_compensation_result_rejects_closed_exit_original() -> None:
+    """Verifica que un resultado no puede compensar una salida cerrada."""
+    with pytest.raises(NotCompensableError) as error:
+        CompensationResult(
+            original_kind=MovementKind.CLOSED_EXIT,
+            quantity=1,
+            stock_before=0,
+            stock_after=1,
+        )
+
+    assert str(error.value) == (
+        "Las compensaciones de salidas cerradas quedan fuera del MVP."
+    )
+
+    with pytest.raises(NotCompensableError):
+        CompensationResult(
+            original_kind="salida_cerrada",
+            quantity=1,
+            stock_before=0,
+            stock_after=1,
         )
 
 
