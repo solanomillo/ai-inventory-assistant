@@ -1,4 +1,4 @@
-"""Servicios de aplicación de movimientos de inventario (T012 y T013).
+"""Servicios de aplicación de movimientos de inventario (T012, T013 y T014).
 
 Implementa el registro de entradas y salidas cerradas y sueltas conforme a
 RF-02, RF-03 y RF-07, reutilizando las reglas del dominio: las cantidades, el
@@ -32,12 +32,27 @@ cantidad abierta al stock cerrado, suma `cantidad × factor` a las unidades
 sueltas, no modifica el total equivalente y registra un movimiento de apertura
 que no es compensable y que no lleva costo ni precio aplicado.
 
+La compensación de un movimiento confirmado (T014) también reutiliza las reglas
+del dominio: `validate_compensable_kind` rechaza las aperturas, las
+compensaciones encadenadas y las salidas cerradas (fuera del MVP) antes de
+cualquier escritura, y `compensate` acota la cantidad a la cantidad compensable
+pendiente y al stock vigente del tipo afectado. El servicio solo reúne esas
+reglas con la persistencia: registra el movimiento de tipo `COMPENSATION`
+vinculado al original y actualiza el stock y el contador de compensaciones de
+una entrada cerrada, o las unidades sueltas en las operaciones sueltas. El
+movimiento original conserva todos sus datos históricos y un producto
+desactivado admite sus compensaciones históricas válidas.
+
 Cada confirmación se ejecuta dentro de una única transacción: la verificación
 de la disponibilidad vigente, el alta del movimiento, la actualización del
 saldo y, en las salidas cerradas, la actualización de los contadores FIFO de
 las entradas consumidas se aplican juntos o se revierten juntos. La transacción
-es la ordinaria del proyecto (`BEGIN`); la protección frente a operaciones
-simultáneas corresponde a T016.
+la abre este mismo servicio con el helper compartido `transaction` de
+`app/infrastructure/sqlite/connection.py`, que comienza con `BEGIN IMMEDIATE`:
+SQLite toma el bloqueo de escritura antes de leer, así que las lecturas y las
+validaciones se hacen sobre el estado vigente y dos operaciones simultáneas no
+pueden confirmar sobre un estado obsoleto. La protección de concurrencia forma
+parte de esta implementación (T016).
 """
 
 from __future__ import annotations
@@ -48,9 +63,12 @@ from decimal import Decimal
 
 from app.domain.movements import (
     ClosedEntry,
+    CompensationResult,
     FifoConsumptionResult,
     MovementKind,
+    compensate,
     consume_closed_entries_fifo,
+    validate_compensable_kind,
 )
 from app.domain.products import normalize_required_text
 from app.domain.quantities import (
@@ -93,7 +111,7 @@ class InsufficientLooseUnitsError(MovementServiceError):
 
 
 class MovementService:
-    """Casos de uso de entradas y salidas ordinarias (T012)."""
+    """Casos de uso de movimientos, aperturas y compensaciones."""
 
     def __init__(
         self,
@@ -478,6 +496,92 @@ class MovementService:
 
         return movement
 
+    def register_compensation(
+        self,
+        product_id: int,
+        *,
+        movement_id: int,
+        quantity: int,
+        reason: str,
+    ) -> MovementRecord:
+        """
+        Registra la compensación de un movimiento confirmado (RF-03).
+
+        La compensación neutraliza total o parcialmente la cantidad del
+        movimiento original y se registra como un movimiento de tipo
+        `COMPENSATION` vinculado a él, cuyo efecto sobre el stock es el opuesto
+        al del movimiento original. El movimiento original no se modifica ni se
+        elimina: de una entrada cerrada solo cambia su contador de
+        compensaciones, que es la traza de las compensaciones ya confirmadas.
+
+        La validez la decide el dominio: `validate_compensable_kind` rechaza
+        las aperturas, las compensaciones encadenadas y las salidas cerradas
+        (fuera del MVP) antes de cualquier escritura, y `compensate` acota la
+        cantidad a la cantidad compensable pendiente y, en las entradas, al
+        stock vigente del tipo afectado. Un producto desactivado admite una
+        compensación histórica válida (RF-03), por lo que esta operación no
+        exige que el producto esté activo.
+
+        Args:
+            product_id: Producto al que pertenece el movimiento compensado.
+            movement_id: Movimiento original que se compensa.
+            quantity: Cantidad neutralizada, entero mayor que cero; puede ser
+                parcial o total respecto de la cantidad compensable pendiente.
+            reason: Motivo de la compensación; se recorta y no puede quedar
+                vacío.
+
+        Returns:
+            El movimiento compensatorio persistido.
+
+        Raises:
+            RecordNotFoundError: Si el movimiento original no existe o no
+                pertenece al producto indicado.
+            ApertureNotCompensableError: Si el movimiento original es una
+                apertura, regla validada por el dominio.
+            ChainedCompensationError: Si el movimiento original es otra
+                compensación, regla validada por el dominio.
+            NotCompensableError: Si el movimiento original es una salida
+                cerrada, cuya compensación queda fuera del MVP; regla validada
+                por el dominio.
+            QuantityError: Si la cantidad es inválida.
+            InvalidMovementReasonError: Si el motivo queda vacío después de
+                recortarlo.
+            ExcessCompensationError: Si la cantidad supera la cantidad
+                compensable pendiente del movimiento original.
+            InsufficientMovementStockError: Si la compensación de una entrada
+                dejaría el stock afectado en negativo.
+            sqlite3.IntegrityError: Si una escritura incumple el esquema; la
+                transacción se revierte por completo.
+        """
+        validated_quantity = validate_movement_quantity(quantity)
+        validated_reason = _validate_movement_reason(reason)
+        occurred_at = _utc_now()
+
+        with self._transaction():
+            original = self._compensated_movement(product_id, movement_id)
+            kind = validate_compensable_kind(original.kind)
+            compensable_quantity, available_stock = (
+                self._compensation_availability(original, kind)
+            )
+            result = compensate(
+                original_kind=kind,
+                quantity=validated_quantity,
+                compensable_quantity=compensable_quantity,
+                available_stock=available_stock,
+            )
+            movement = self._movements.add(
+                product_id=original.product_id,
+                presentation_id=original.presentation_id,
+                kind=MovementKind.COMPENSATION,
+                quantity=result.quantity,
+                reason=validated_reason,
+                occurred_at=occurred_at,
+                original_movement_id=original.id,
+            )
+            self._apply_compensation(original, kind, result)
+
+        return movement
+
     def _apply_fifo_consumption(
         self,
         entries: Sequence[ClosedEntry],
@@ -535,6 +639,119 @@ class MovementService:
                 compensated_quantity=record.compensated_quantity,
             )
             for record in records
+        )
+
+    def _compensated_movement(
+        self, product_id: int, movement_id: int
+    ) -> MovementRecord:
+        """
+        Devuelve el movimiento original que se compensa (RF-03).
+
+        Raises:
+            RecordNotFoundError: Si el movimiento no existe o no pertenece al
+                producto indicado.
+        """
+        original = self._movements.get(movement_id)
+        if original is None or original.product_id != product_id:
+            raise RecordNotFoundError(
+                f"No existe el movimiento con id {movement_id} en el "
+                f"producto {product_id}."
+            )
+
+        return original
+
+    def _compensation_availability(
+        self, original: MovementRecord, kind: MovementKind
+    ) -> tuple[int, int]:
+        """
+        Calcula la cantidad compensable pendiente y el stock afectado (RF-03).
+
+        En una entrada cerrada, la cantidad compensable es la que el dominio
+        deriva de su trazabilidad FIFO (`cantidad − consumida − compensada`) y
+        el stock afectado es el stock cerrado vigente de su presentación. En
+        una entrada o salida suelta, que el MVP no traza por lote, la cantidad
+        pendiente es la cantidad original menos las compensaciones ya
+        vinculadas al movimiento y el stock afectado son las unidades sueltas
+        vigentes del producto.
+
+        Args:
+            original: Movimiento original que se compensa.
+            kind: Tipo validado del movimiento original.
+
+        Returns:
+            La cantidad compensable pendiente y el stock vigente del tipo
+            afectado por la compensación.
+        """
+        if kind is MovementKind.CLOSED_ENTRY:
+            presentation = self._presentations.get(original.presentation_id)
+            if presentation is None:
+                raise RecordNotFoundError(
+                    "No existe la presentación con id "
+                    f"{original.presentation_id}."
+                )
+
+            entry = ClosedEntry(
+                entry_id=original.id,
+                presentation_id=original.presentation_id,
+                quantity=original.quantity,
+                consumed_quantity=original.consumed_quantity,
+                compensated_quantity=original.compensated_quantity,
+            )
+
+            return entry.compensable_quantity, presentation.closed_stock
+
+        product = self._products.get(original.product_id)
+        if product is None:
+            raise RecordNotFoundError(
+                f"No existe el producto con id {original.product_id}."
+            )
+
+        compensated_quantity = sum(
+            record.quantity
+            for record in self._movements.list_by_product(
+                original.product_id, MovementKind.COMPENSATION
+            )
+            if record.original_movement_id == original.id
+        )
+
+        return original.quantity - compensated_quantity, product.loose_units
+
+    def _apply_compensation(
+        self,
+        original: MovementRecord,
+        kind: MovementKind,
+        result: CompensationResult,
+    ) -> None:
+        """
+        Persiste el efecto de una compensación válida (RF-03).
+
+        La compensación de una entrada cerrada resta stock cerrado a su
+        presentación y actualiza el contador de compensaciones del movimiento
+        original; la de una entrada o salida suelta actualiza las unidades
+        sueltas del producto. Los demás datos del movimiento original quedan
+        intactos.
+
+        Args:
+            original: Movimiento original que se compensa, con sus contadores
+                vigentes.
+            kind: Tipo validado del movimiento original.
+            result: Resultado de la compensación calculado por el dominio.
+        """
+        if kind is MovementKind.CLOSED_ENTRY:
+            self._presentations.set_closed_stock(
+                original.presentation_id,
+                validate_closed_stock(result.stock_after),
+            )
+            self._movements.set_compensated_quantity(
+                original.id,
+                original.compensated_quantity + result.quantity,
+            )
+
+            return
+
+        self._products.set_loose_units(
+            original.product_id,
+            validate_loose_units(result.stock_after),
         )
 
     def _require_active_product(self, product_id: int) -> ProductRecord:

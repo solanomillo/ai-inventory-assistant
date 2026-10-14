@@ -25,9 +25,10 @@ Convenciones de la capa:
 - Las conexiones se reciben ya abiertas y configuradas por
   `app/infrastructure/sqlite/connection.py`; abrir transacciones es
   responsabilidad de los servicios de confirmación.
-- La actualización del contador de consumo FIFO se aplica solo sobre entradas
-  cerradas, reemplaza únicamente `consumed_quantity` y respeta el límite
-  `consumida + compensada <= cantidad` que el esquema impone con `CHECK`.
+- La actualización de los contadores FIFO de una entrada cerrada (consumo y
+  compensación) se aplica solo sobre entradas cerradas, reemplaza únicamente el
+  contador indicado y respeta el límite `consumida + compensada <= cantidad`
+  que el esquema impone con `CHECK`.
 """
 
 import sqlite3
@@ -36,7 +37,10 @@ from decimal import Decimal
 from typing import NoReturn
 
 from app.domain.movements import MovementKind
-from app.domain.presentations import DuplicatePresentationNameError
+from app.domain.presentations import (
+    DuplicatePresentationNameError,
+    PresentationError,
+)
 from app.domain.products import DuplicateSkuError
 from app.infrastructure.sqlite.instants import (
     from_utc_text,
@@ -130,10 +134,13 @@ def _text_to_decimal(value: str | None) -> Decimal | None:
 
 def _consumed_quantity_value(value: int) -> int:
     """
-    Valida la cantidad consumida por FIFO de una entrada cerrada.
+    Valida un contador FIFO de una entrada cerrada.
+
+    Se usa para el contador de consumo y para el de compensaciones: ambos son
+    cantidades acumuladas de la misma entrada cerrada.
 
     Args:
-        value: Cantidad consumida informada para la entrada cerrada.
+        value: Valor informado para el contador FIFO de la entrada cerrada.
 
     Returns:
         El valor validado.
@@ -217,6 +224,41 @@ def _presentation_record(row: sqlite3.Row) -> PresentationRecord:
         factor=int(row["factor"]),
         sale_price=Decimal(str(row["sale_price"])),
         closed_stock=int(row["closed_stock"]),
+    )
+
+
+def _is_duplicate_presentation_name(error: sqlite3.IntegrityError) -> bool:
+    """
+    Indica si el error corresponde al nombre de presentación duplicado.
+
+    El esquema impone la unicidad del nombre dentro del producto con
+    `UNIQUE (product_id, name)`; SQLite informa ese conflicto nombrando las dos
+    columnas de la restricción.
+    """
+    return "presentations.name" in str(error)
+
+
+def _is_single_base_conflict(error: sqlite3.IntegrityError) -> bool:
+    """
+    Indica si el error corresponde al índice único de presentación base.
+
+    El índice parcial `idx_presentations_single_base` impide más de una
+    presentación con `factor = 1` por producto (RF-07). SQLite informa ese
+    conflicto nombrando solo `presentations.product_id`, a diferencia del
+    nombre duplicado, que nombra también `presentations.name`.
+    """
+    message = str(error)
+    return (
+        "presentations.name" not in message
+        and "presentations.product_id" in message
+    )
+
+
+def _single_base_presentation_error() -> PresentationError:
+    """Construye el error de la invariante de base única (RF-07)."""
+    return PresentationError(
+        "El producto debe tener exactamente una presentación base con "
+        "factor 1."
     )
 
 
@@ -450,12 +492,16 @@ class SqlitePresentationRepository:
         Registra una presentación y devuelve su versión persistida.
 
         La unicidad del nombre dentro del producto la impone el esquema sin
-        distinguir mayúsculas de minúsculas.
+        distinguir mayúsculas de minúsculas. El índice único parcial del
+        esquema impide además más de una presentación base (factor 1) por
+        producto; su conflicto se traduce al error de dominio de la invariante.
 
         Raises:
             DuplicatePresentationNameError: Si el nombre ya existe dentro del
                 producto.
-            sqlite3.IntegrityError: Si la presentación incumple las
+            PresentationError: Si el producto ya tiene una presentación base
+                con factor 1.
+            sqlite3.IntegrityError: Si la presentación incumple otras
                 restricciones del esquema.
         """
         try:
@@ -474,10 +520,12 @@ class SqlitePresentationRepository:
                 ),
             )
         except sqlite3.IntegrityError as error:
-            if "presentations.name" in str(error):
+            if _is_duplicate_presentation_name(error):
                 raise DuplicatePresentationNameError(
                     f"La presentación '{name}' ya existe en el producto."
                 ) from error
+            if _is_single_base_conflict(error):
+                raise _single_base_presentation_error() from error
             raise
 
         return self._required(int(cursor.lastrowid))
@@ -561,15 +609,26 @@ class SqlitePresentationRepository:
         """
         Actualiza el factor de equivalencia de la presentación.
 
+        Si el factor nuevo deja al producto con más de una presentación base
+        (factor 1), el índice único parcial del esquema lo rechaza y su
+        conflicto se traduce al error de dominio de la invariante (RF-07).
+
         Raises:
             RecordNotFoundError: Si la presentación no existe.
-            sqlite3.IntegrityError: Si el factor incumple las restricciones
+            PresentationError: Si el factor nuevo produciría más de una
+                presentación base en el producto.
+            sqlite3.IntegrityError: Si el factor incumple otras restricciones
                 del esquema.
         """
-        self._connection.execute(
-            "UPDATE presentations SET factor = ? WHERE id = ?",
-            (factor, presentation_id),
-        )
+        try:
+            self._connection.execute(
+                "UPDATE presentations SET factor = ? WHERE id = ?",
+                (factor, presentation_id),
+            )
+        except sqlite3.IntegrityError as error:
+            if _is_single_base_conflict(error):
+                raise _single_base_presentation_error() from error
+            raise
 
         return self._required(presentation_id)
 
@@ -780,6 +839,54 @@ class SqliteMovementRepository:
 
         return self._required(movement_id)
 
+    def set_compensated_quantity(
+        self, movement_id: int, compensated_quantity: int
+    ) -> MovementRecord:
+        """
+        Actualiza la cantidad compensada de una entrada cerrada (RF-03).
+
+        Solo se reemplaza `compensated_quantity`: los datos históricos del
+        movimiento y su contador de consumo se conservan intactos. La
+        actualización se ejecuta con una única sentencia condicionada que exige
+        que el registro exista, sea una entrada cerrada y respete el límite
+        `consumida + compensada <= cantidad` que el esquema impone con `CHECK`,
+        de modo que el rechazo se informe como `ValueError` y no como
+        `sqlite3.IntegrityError`.
+
+        No abre transacciones: se ejecuta dentro de la transacción del servicio
+        que la invoca.
+
+        Raises:
+            RecordNotFoundError: Si el movimiento no existe.
+            NotAClosedEntryError: Si el movimiento no es una entrada cerrada,
+                porque solo las entradas cerradas tienen cantidad compensable.
+            ValueError: Si la cantidad compensada no es un entero mayor o igual
+                que cero o si viola el límite de la entrada.
+        """
+        validated_quantity = _consumed_quantity_value(compensated_quantity)
+
+        cursor = self._connection.execute(
+            """
+            UPDATE movements
+            SET compensated_quantity = ?
+            WHERE id = ?
+                AND kind = ?
+                AND consumed_quantity + ? <= quantity
+            """,
+            (
+                validated_quantity,
+                movement_id,
+                MovementKind.CLOSED_ENTRY.value,
+                validated_quantity,
+            ),
+        )
+        if cursor.rowcount == 0:
+            self._reject_compensated_quantity_update(
+                movement_id, validated_quantity
+            )
+
+        return self._required(movement_id)
+
     def _reject_consumed_quantity_update(
         self, movement_id: int, consumed_quantity: int
     ) -> NoReturn:
@@ -815,6 +922,43 @@ class SqliteMovementRepository:
             f"({movement.quantity}): se intentaron consumir "
             f"{consumed_quantity} con {movement.compensated_quantity} ya "
             "compensadas."
+        )
+
+    def _reject_compensated_quantity_update(
+        self, movement_id: int, compensated_quantity: int
+    ) -> NoReturn:
+        """
+        Informa el rechazo de una actualización del contador de compensaciones.
+
+        Se invoca cuando la actualización condicionada no modificó ninguna
+        fila, para distinguir la causa del rechazo con el estado vigente del
+        movimiento.
+
+        Raises:
+            RecordNotFoundError: Si el movimiento no existe.
+            NotAClosedEntryError: Si el movimiento no es una entrada cerrada.
+            ValueError: Si la cantidad compensada viola el límite de la
+                entrada.
+        """
+        movement = self.get(movement_id)
+        if movement is None:
+            raise RecordNotFoundError(
+                f"No existe el movimiento con id {movement_id}."
+            )
+
+        if movement.kind is not MovementKind.CLOSED_ENTRY:
+            raise NotAClosedEntryError(
+                f"El movimiento {movement_id} no es una entrada cerrada "
+                f"({movement.kind.value}): solo las entradas cerradas tienen "
+                "cantidad compensable."
+            )
+
+        raise ValueError(
+            "La cantidad consumida y compensada de la entrada "
+            f"{movement_id} no puede superar su cantidad original "
+            f"({movement.quantity}): se intentaron compensar "
+            f"{compensated_quantity} con {movement.consumed_quantity} ya "
+            "consumidas."
         )
 
     def _required(self, movement_id: int) -> MovementRecord:

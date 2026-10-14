@@ -8,9 +8,10 @@ que los servicios dependen de estas interfaces y no del motor de persistencia.
 Los contratos ofrecen altas y consultas, además de la actualización de los
 datos vigentes de productos y presentaciones y de los contadores FIFO de las
 entradas cerradas. Ninguno permite editar ni eliminar movimientos confirmados
-(RF-03 y RF-06): los datos históricos de un movimiento no cambian, el contador
-de consumo es lo único que se actualiza sobre una entrada cerrada y toda
-corrección de un movimiento se registra como una compensación.
+(RF-03 y RF-06): los datos históricos de un movimiento no cambian, sus
+contadores FIFO (consumo y compensación) son lo único que se actualiza sobre
+una entrada cerrada y toda corrección de un movimiento se registra como una
+compensación.
 
 Los contratos no repiten las reglas del dominio: reciben valores ya validados y
 solo fallan ante las restricciones de la persistencia. Las consultas del
@@ -24,10 +25,11 @@ Un período no válido se informa con `InvalidPeriodError`, que la persistencia
 define como subclase de `ValueError`. El contrato nombra esa excepción para
 documentarla sin importar `app/infrastructure`, de modo que los servicios
 puedan tratarla como `ValueError` sin acoplarse al motor de persistencia
-(constitución, §3). Del mismo modo, la actualización del contador de consumo
-solo es válida sobre una entrada cerrada: la persistencia informa el rechazo
-de un movimiento no elegible con un error que define como subclase de
-`ValueError`, y rechaza una cantidad consumida inválida con `ValueError`.
+(constitución, §3). Del mismo modo, la actualización de los contadores FIFO
+(consumo y compensación) solo es válida sobre una entrada cerrada: la
+persistencia informa el rechazo de un movimiento no elegible con un error que
+define como subclase de `ValueError`, y rechaza un valor de contador inválido
+con `ValueError`.
 """
 
 from dataclasses import dataclass
@@ -279,10 +281,10 @@ class MovementRepository(Protocol):
     """
     Contrato de persistencia de los movimientos (RF-03).
 
-    Permite registrar y consultar movimientos y actualizar el contador de
-    consumo FIFO de las entradas cerradas. No expone ninguna operación para
-    editar ni eliminar movimientos confirmados: los datos históricos de un
-    movimiento no cambian.
+    Permite registrar y consultar movimientos y actualizar los contadores FIFO
+    de las entradas cerradas (consumo y compensación). No expone ninguna
+    operación para editar ni eliminar movimientos confirmados: los datos
+    históricos de un movimiento no cambian.
     """
 
     def add(
@@ -412,6 +414,44 @@ class MovementRepository(Protocol):
                 persistencia la define como subclase de `ValueError`.
             ValueError: Si la cantidad consumida no es un entero mayor o igual
                 que cero o si, sumada a la cantidad compensada, supera la
+                cantidad original de la entrada.
+        """
+        ...
+
+    def set_compensated_quantity(
+        self, movement_id: int, compensated_quantity: int
+    ) -> MovementRecord:
+        """
+        Actualiza la cantidad compensada de una entrada cerrada (RF-03).
+
+        Solo se reemplaza el contador de compensaciones: los datos históricos
+        del movimiento (producto, presentación, tipo, cantidad, motivo,
+        instante, costo, precio aplicado, stock inicial y movimiento original)
+        y su contador de consumo se conservan intactos. La cantidad compensada
+        es la traza de las compensaciones confirmadas sobre esa entrada, no una
+        corrección de sus datos históricos.
+
+        Solo las entradas cerradas tienen una cantidad compensable por FIFO: la
+        cantidad consumida y la compensada no pueden superar, en conjunto, la
+        cantidad original de la entrada.
+
+        La operación no abre transacciones: se ejecuta dentro de la
+        transacción del servicio que la invoca.
+
+        Args:
+            movement_id: Entrada cerrada cuya cantidad compensada se actualiza.
+            compensated_quantity: Cantidad compensada acumulada de la entrada.
+
+        Returns:
+            El movimiento actualizado y persistido.
+
+        Raises:
+            RecordNotFoundError: Si el movimiento no existe.
+            NotAClosedEntryError: Si el movimiento no es una entrada cerrada,
+                porque solo las entradas cerradas tienen cantidad compensable.
+                La persistencia la define como subclase de `ValueError`.
+            ValueError: Si la cantidad compensada no es un entero mayor o igual
+                que cero o si, sumada a la cantidad consumida, supera la
                 cantidad original de la entrada.
         """
         ...

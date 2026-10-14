@@ -24,6 +24,7 @@ from app.domain.products import DuplicateSkuError
 from app.domain.stock import ClosedStock, total_equivalent
 from app.infrastructure.sqlite.connection import IN_MEMORY_DATABASE, connect
 from app.infrastructure.sqlite.repositories import (
+    NotAClosedEntryError,
     SqliteMovementRepository,
     SqlitePresentationRepository,
     SqliteProductRepository,
@@ -153,6 +154,18 @@ def public_operations(repository: type) -> set[str]:
         for name, _ in getmembers(repository, isfunction)
         if not name.startswith("_")
     }
+
+
+def stored_row(
+    connection: sqlite3.Connection, movement_id: int
+) -> dict[str, Any]:
+    """Devuelve la fila persistida del movimiento como diccionario."""
+    row = connection.execute(
+        "SELECT * FROM movements WHERE id = ?", (movement_id,)
+    ).fetchone()
+    assert row is not None
+
+    return dict(row)
 
 
 # --- Unicidad sin distinguir mayúsculas de minúsculas (criterio 1) ---
@@ -336,10 +349,10 @@ def test_movement_repository_exposes_no_edit_or_delete_operations(
     """
     Verifica qué escrituras admite el contrato de movimientos.
 
-    La actualización controlada del contador de consumo FIFO de una entrada
-    cerrada (corrección I2) es la única escritura admitida sobre un movimiento
-    confirmado: no modifica sus datos históricos ni su contador de
-    compensaciones.
+    Las actualizaciones controladas de los contadores FIFO de una entrada
+    cerrada (corrección I2 y T014) son las únicas escrituras admitidas sobre un
+    movimiento confirmado: no modifican sus datos históricos ni el contador que
+    no se reemplaza.
     """
     operations = public_operations(repository)
 
@@ -349,6 +362,7 @@ def test_movement_repository_exposes_no_edit_or_delete_operations(
         "list_by_product",
         "list_by_presentation",
         "set_consumed_quantity",
+        "set_compensated_quantity",
     }
     for operation in operations:
         for forbidden in FORBIDDEN_MOVEMENT_OPERATIONS:
@@ -940,3 +954,123 @@ def test_product_repository_exposes_no_sku_update_operation() -> None:
     }
 
     assert sku_operations == {"find_by_sku"}
+
+
+# --- Actualización controlada del contador de compensaciones (T014) ---
+
+
+def test_update_compensated_quantity_persists_the_new_value(
+    connection: sqlite3.Connection,
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    movements: SqliteMovementRepository,
+) -> None:
+    """
+    Verifica que el contador de compensaciones se actualiza y se persiste.
+
+    Solo cambia `compensated_quantity`: los datos históricos del movimiento
+    confirmado se conservan.
+    """
+    product = register_product(products)
+    presentation = register_presentation(presentations, product.id)
+    entry = register_movement(
+        movements,
+        product.id,
+        presentation.id,
+        quantity=5,
+        reason="Carga inicial",
+        cost=Decimal("0.30"),
+    )
+    before_row = stored_row(connection, entry.id)
+
+    updated = movements.set_compensated_quantity(entry.id, 2)
+
+    assert stored_row(connection, entry.id) == {
+        **before_row,
+        "compensated_quantity": 2,
+    }
+    assert updated.compensated_quantity == 2
+    assert movements.get(entry.id) == updated
+    assert updated.kind is MovementKind.CLOSED_ENTRY
+    assert updated.quantity == 5
+    assert updated.reason == "Carga inicial"
+    assert updated.cost == Decimal("0.30")
+    assert updated.consumed_quantity == 0
+    assert updated.is_initial_stock is False
+    assert updated.original_movement_id is None
+
+
+def test_update_compensated_quantity_requires_an_existing_movement(
+    movements: SqliteMovementRepository,
+) -> None:
+    """Verifica que compensar un movimiento inexistente se rechaza."""
+    with pytest.raises(RecordNotFoundError):
+        movements.set_compensated_quantity(999, 1)
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        MovementKind.CLOSED_EXIT,
+        MovementKind.LOOSE_ENTRY,
+        MovementKind.LOOSE_EXIT,
+        MovementKind.APERTURE,
+    ],
+)
+def test_update_compensated_quantity_requires_a_closed_entry(
+    connection: sqlite3.Connection,
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    movements: SqliteMovementRepository,
+    kind: MovementKind,
+) -> None:
+    """Verifica que solo las entradas cerradas tienen cantidad compensable."""
+    product = register_product(products)
+    presentation = register_presentation(presentations, product.id)
+    movement = register_movement(
+        movements, product.id, presentation.id, kind=kind, quantity=2
+    )
+    before_row = stored_row(connection, movement.id)
+
+    with pytest.raises(NotAClosedEntryError):
+        movements.set_compensated_quantity(movement.id, 1)
+
+    assert stored_row(connection, movement.id) == before_row
+
+
+def test_update_compensated_quantity_rejects_a_quantity_that_exceeds_the_entry(
+    connection: sqlite3.Connection,
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    movements: SqliteMovementRepository,
+) -> None:
+    """
+    Verifica el límite `consumida + compensada <= cantidad` de la entrada.
+
+    El rechazo no altera el registro: la cantidad consumida y la compensada
+    quedan como estaban.
+    """
+    product = register_product(products)
+    presentation = register_presentation(presentations, product.id)
+    entry = register_movement(
+        movements, product.id, presentation.id, quantity=3
+    )
+    consumed = movements.set_consumed_quantity(entry.id, 2)
+    before_row = stored_row(connection, entry.id)
+
+    with pytest.raises(ValueError):
+        movements.set_compensated_quantity(entry.id, 2)
+
+    assert stored_row(connection, entry.id) == before_row
+    assert movements.get(entry.id) == consumed
+    assert consumed.consumed_quantity == 2
+    assert consumed.compensated_quantity == 0
+
+    allowed = movements.set_compensated_quantity(entry.id, 1)
+
+    assert stored_row(connection, entry.id) == {
+        **before_row,
+        "compensated_quantity": 1,
+    }
+    assert allowed.consumed_quantity == 2
+    assert allowed.compensated_quantity == 1
