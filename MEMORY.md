@@ -66,7 +66,63 @@
     implementación y `InvalidPeriodError` documentado).
   - Resultados reportados por implementer (no verificados independientemente por el coordinator
     ni el reviewer): 17 pruebas específicas y 433 en la suite completa.
-- Próxima tarea técnica: T011, pendiente de autorización.
+- I3 resuelto (corrección previa a T011): representación canónica de `Decimal` en
+  `app/infrastructure/sqlite/repositories.py` (serialización) y corrección de su docstring.
+  - Serialización: texto decimal de punto fijo, sin notación científica ni ceros fraccionarios
+    finales innecesarios; normaliza el cero negativo y preserva el valor numérico exacto.
+  - Revisión independiente: APROBADO, sin bloqueantes ni hallazgos importantes.
+  - El implementer reportó `pytest -q → 474 passed`; el coordinator y el reviewer no
+    ejecutaron las pruebas independientemente.
+- T011 cerrada y aprobada (tras revisión independiente): servicio de productos y presentaciones.
+  - Archivos nuevos: `app/services/products.py`, `app/services/presentations.py`,
+    `tests/integration/test_product_service.py`, `tests/integration/test_presentation_service.py`.
+  - Archivo modificado: `app/infrastructure/sqlite/connection.py` (helper `transaction`:
+    `BEGIN`/`COMMIT`/`ROLLBACK`, sin `BEGIN IMMEDIATE`).
+  - Corrección I-1: validación de presentación base única en alta y cambio de factor, con
+    dos pruebas de rechazo.
+  - Los 11 criterios cubiertos según revisión estática.
+  - Resultados reportados por implementer (no verificados mediante ejecución independiente por
+    el coordinator ni el reviewer): 29 pruebas específicas y 531 en la suite completa.
+- I2 resuelto (corrección previa a T012/T013/T014): contadores FIFO.
+  - Contrato y persistencia: `MovementRepository.set_consumed_quantity(movement_id, consumed_quantity)`
+    (`app/services/ports.py`) con implementación SQLite (`app/infrastructure/sqlite/repositories.py`):
+    `UPDATE` condicional que solo cambia `consumed_quantity`, exige `entrada_cerrada` y respeta
+    `consumed_quantity + compensated_quantity <= quantity`, preservando los campos históricos y
+    `compensated_quantity`; se añadió `NotAClosedEntryError(ValueError)`.
+  - T012 y T013 pueden reutilizar el mecanismo de consumo FIFO (junto con
+    `consume_closed_entries_fifo` del dominio), sin duplicar la lógica.
+  - T014 sigue necesitando una operación segura/condicional análoga para `compensated_quantity`
+    (`set_compensated_quantity`, aún no implementada).
+  - Pruebas reportadas por implementer (el reviewer no ejecutó pytest independientemente):
+    21 específicas y 552 en la suite completa.
+  - Revisión independiente: APROBADO; los cuatro hallazgos menores quedan como mejoras opcionales
+    (sin abrir nueva corrección).
+- T012 completada y aprobada (tras revisión independiente): entradas y salidas ordinarias.
+  - Archivos: `app/services/movements.py`, `tests/integration/test_movement_service.py`.
+  - Funcionalidad: entradas/salidas sueltas y cerradas; validación de motivo, costo (solo
+    entradas) y precio histórico (`applied_price`); transacciones atómicas; consumo FIFO.
+  - I1 resuelto: el `reason` se normaliza con `normalize_required_text()` (rechaza vacío,
+    espacios, tabs y saltos).
+  - Decisión confirmada: las operaciones cerradas (`entrada_cerrada`, `salida_cerrada`) se
+    rechazan sobre presentaciones base (factor 1).
+  - Pruebas reportadas por implementer (el reviewer no ejecutó pytest independientemente):
+    91 específicas y 643 en la suite completa.
+  - Revisión independiente: APROBADO, sin bloqueantes ni hallazgos importantes; los hallazgos
+    menores quedan como mejoras opcionales (sin abrir nueva corrección).
+- T013 completada y aprobada (tras revisión independiente): apertura de presentaciones cerradas.
+  - Archivos: `app/services/movements.py` (`register_aperture()`), `tests/integration/test_aperture_service.py`.
+  - Reutiliza `open_presentations()` (valida cantidad, factor y stock; la presentación base,
+    factor 1, se rechaza con `BasePresentationApertureError` del dominio),
+    `consume_closed_entries_fifo()` y `set_consumed_quantity()`.
+  - Atomicidad: movimiento + `closed_stock` + `loose_units` + contadores FIFO en una única
+    transacción; sin `BEGIN IMMEDIATE` (corresponde a T016).
+  - Pruebas reportadas por implementer: 30 específicas, 91 de regresión de T012 y 673 en la
+    suite completa; el código de salida de pytest no fue observable y el reviewer no ejecutó
+    las pruebas. `git diff --check` sin errores.
+  - Revisión independiente: APROBADO, sin bloqueantes ni hallazgos importantes; los hallazgos
+    M1–M6 quedan como mejoras opcionales (sin abrir nueva corrección).
+- T014 y T016 permanecen pendientes (no implementadas).
+- Próxima tarea técnica: T014, pendiente de autorización.
 
 ## Especificación vigente (resumen)
 - RF-01 a RF-07. Cantidades de inventario enteras (unidades discretas).
@@ -104,17 +160,23 @@
   `plan.md` y `tasks.md`.
 - No reabrir revisiones cosméticas; corregir solo defectos funcionales importantes.
 - Documentado en spec/tasks: prohibición de aperturas de la presentación base
-  (factor 1); el dominio la valida y T013 la reutiliza.
+  (factor 1); la valida el dominio y T013 la reutiliza ya implementada.
 
 ## Git
-- Existen commits/push pendientes de confirmar (T004 a T010 y ajustes documentales).
+- Existen commits/push pendientes de confirmar (T004 a T013, correcciones I3, I-1 e I2 y ajustes documentales).
   No asumir que se ejecutaron.
 
 ## Decisiones pendientes
-- Antes de T012: normalizar el motivo (recorte de espacios/tabs/saltos) antes de persistir,
-  porque el `CHECK` de SQLite solo elimina espacios (hallazgo I1 de T009).
-- Antes de T013/T014: definir la actualización controlada de los contadores FIFO sin editar
-  el movimiento confirmado (hallazgo I2 de T009).
-- Antes de T012/T014: resolver la representación canónica de Decimal y la compatibilidad
-  entre el dominio y los CHECK de SQLite (hallazgo importante de la revisión de T008).
+- T014/T015 (riesgo registrado, sin diseñar): las compensaciones de salidas cerradas pueden
+  afectar la relación entre `closed_stock` y las cantidades todavía compensables por FIFO.
+- T014: falta una operación segura/condicional análoga a `set_consumed_quantity` para
+  actualizar `compensated_quantity` (ver I2 resuelto).
+- Antes de T016 (a evaluar): el invariante de presentación base única (factor 1) no está
+  protegido frente a operaciones concurrentes (ni el esquema ni una transacción lo garantizan
+  aún); hallazgo O-A de T011.
 - Identificador del modelo DeepSeek (antes de Fase 3).
+- Mejoras opcionales de T013 (M1–M6, sin abrir corrección): unificar
+  `_required_presentation` con `_closed_presentation`; orden de validación de cantidad/motivo
+  (hoist al estilo T012 o documentar y probar); acotar una aserción no discriminante del
+  rollback; actualizar los docstrings de la clase/`__init__`; reducir duplicación de pruebas;
+  cubrir `closed_stock = 0` sin entradas cerradas.
