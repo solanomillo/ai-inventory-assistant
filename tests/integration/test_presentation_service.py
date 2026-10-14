@@ -103,6 +103,7 @@ def product_service(
 
 @pytest.fixture
 def presentation_service(
+    connection: sqlite3.Connection,
     products: SqliteProductRepository,
     presentations: SqlitePresentationRepository,
     movements: SqliteMovementRepository,
@@ -112,6 +113,7 @@ def presentation_service(
         products=products,
         presentations=presentations,
         movements=movements,
+        transaction=partial(transaction, connection),
     )
 
 

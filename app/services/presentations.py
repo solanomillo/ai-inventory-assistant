@@ -1,4 +1,4 @@
-"""Servicios de aplicación de presentaciones (T011).
+"""Servicios de aplicación de presentaciones (T011 y T016).
 
 Implementa el alta y la modificación de presentaciones conforme a RF-07,
 reutilizando las reglas del dominio de `app/domain/presentations.py` y los
@@ -13,7 +13,11 @@ presentación no tiene stock cerrado ni movimientos históricos.
 El servicio conserva el invariante de RF-07 —exactamente una presentación base
 con factor 1 por producto— reutilizando `validate_single_base_presentation` del
 dominio sobre el conjunto resultante de cada operación, sin reimplementar la
-regla.
+regla. El alta y el cambio de factor se ejecutan dentro de la transacción
+compartida (`BEGIN IMMEDIATE`, T016): la lectura, la validación y la escritura
+quedan en el mismo bloque, de modo que dos operaciones simultáneas no pueden
+crear dos presentaciones base. La base refuerza además la invariante con el
+índice único parcial `idx_presentations_single_base` (defensa en profundidad).
 """
 
 from __future__ import annotations
@@ -34,7 +38,7 @@ from app.services.ports import (
     ProductRepository,
     RecordNotFoundError,
 )
-from app.services.products import InactiveProductError
+from app.services.products import InactiveProductError, TransactionScope
 
 
 class PresentationService:
@@ -46,6 +50,7 @@ class PresentationService:
         products: ProductRepository,
         presentations: PresentationRepository,
         movements: MovementRepository,
+        transaction: TransactionScope,
     ) -> None:
         """
         Args:
@@ -54,10 +59,14 @@ class PresentationService:
             presentations: Repositorio de presentaciones.
             movements: Repositorio de movimientos, para determinar si una
                 presentación tiene historial y si su factor es inmutable.
+            transaction: Fábrica de transacciones que envuelve el alta y el
+                cambio de factor, para que la lectura, la validación y la
+                escritura se apliquen dentro de la misma transacción.
         """
         self._products = products
         self._presentations = presentations
         self._movements = movements
+        self._transaction = transaction
 
     def add(
         self,
@@ -74,7 +83,9 @@ class PresentationService:
         saldos ni las equivalencias existentes. El nombre es único dentro del
         producto, sin distinguir mayúsculas de minúsculas. La operación solo se
         admite si el producto conserva exactamente una presentación base: con
-        factor 1 se rechaza cuando el producto ya tiene una.
+        factor 1 se rechaza cuando el producto ya tiene una. La lectura, la
+        validación y el alta se ejecutan dentro de la misma transacción, y el
+        índice único parcial de la base también lo impide (T016).
 
         Args:
             product_id: Producto al que se agrega la presentación.
@@ -93,31 +104,32 @@ class PresentationService:
                 presentación base.
             QuantityError: Si el factor o el precio son inválidos.
         """
-        self._require_active_product(product_id)
+        with self._transaction():
+            self._require_active_product(product_id)
 
-        existing = self._presentations.list_by_product(product_id)
-        validated_name = validate_presentation_name_unique(
-            name, [presentation.name for presentation in existing]
-        )
-        presentation = Presentation(
-            name=validated_name,
-            factor=factor,
-            sale_price=sale_price,
-            has_history=False,
-        )
-        projected = [
-            self._domain_presentation(record) for record in existing
-        ]
-        projected.append(presentation)
-        validate_single_base_presentation(projected)
+            existing = self._presentations.list_by_product(product_id)
+            validated_name = validate_presentation_name_unique(
+                name, [presentation.name for presentation in existing]
+            )
+            presentation = Presentation(
+                name=validated_name,
+                factor=factor,
+                sale_price=sale_price,
+                has_history=False,
+            )
+            projected = [
+                self._domain_presentation(record) for record in existing
+            ]
+            projected.append(presentation)
+            validate_single_base_presentation(projected)
 
-        return self._presentations.add(
-            product_id=product_id,
-            name=presentation.name,
-            factor=presentation.factor,
-            sale_price=presentation.sale_price,
-            closed_stock=0,
-        )
+            return self._presentations.add(
+                product_id=product_id,
+                name=presentation.name,
+                factor=presentation.factor,
+                sale_price=presentation.sale_price,
+                closed_stock=0,
+            )
 
     def change_sale_price(
         self, presentation_id: int, sale_price: Decimal
@@ -158,7 +170,9 @@ class PresentationService:
         (factor 1): la regla la valida el dominio y este servicio no la
         reimplementa. Tampoco se admite un factor nuevo que deje al producto
         con más de una presentación base: la operación se rechaza sobre el
-        conjunto proyectado con el cambio aplicado.
+        conjunto proyectado con el cambio aplicado. La lectura, la validación y
+        la escritura se ejecutan dentro de la misma transacción, y el índice
+        único parcial de la base también lo impide (T016).
 
         Args:
             presentation_id: Presentación que se modifica.
@@ -176,24 +190,25 @@ class PresentationService:
                 presentación base en el producto.
             QuantityError: Si el factor no es un entero mayor o igual que uno.
         """
-        record = self._required_presentation(presentation_id)
-        self._require_active_product(record.product_id)
+        with self._transaction():
+            record = self._required_presentation(presentation_id)
+            self._require_active_product(record.product_id)
 
-        current = self._domain_presentation(record)
-        updated = current.change_factor(factor)
-        projected = [
-            updated
-            if presentation.id == presentation_id
-            else self._domain_presentation(presentation)
-            for presentation in self._presentations.list_by_product(
-                record.product_id
+            current = self._domain_presentation(record)
+            updated = current.change_factor(factor)
+            projected = [
+                updated
+                if presentation.id == presentation_id
+                else self._domain_presentation(presentation)
+                for presentation in self._presentations.list_by_product(
+                    record.product_id
+                )
+            ]
+            validate_single_base_presentation(projected)
+
+            return self._presentations.set_factor(
+                presentation_id, updated.factor
             )
-        ]
-        validate_single_base_presentation(projected)
-
-        return self._presentations.set_factor(
-            presentation_id, updated.factor
-        )
 
     def _domain_presentation(
         self, record: PresentationRecord

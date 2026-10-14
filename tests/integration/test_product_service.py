@@ -175,6 +175,34 @@ class _FailingMovementRepository:
         )
 
 
+class _FailingProductRepository:
+    """
+    Repositorio de productos que delega y falla al ejecutar una escritura.
+
+    Permite provocar un error después de la primera escritura de una
+    modificación, de modo que el error ocurra una vez aplicada la escritura
+    indicada y se verifique la reversión de todo el cambio.
+    """
+
+    def __init__(
+        self, delegate: SqliteProductRepository, failing_method: str
+    ) -> None:
+        self._delegate = delegate
+        self._failing_method = failing_method
+
+    def __getattr__(self, name: str) -> Any:
+        """Delega el atributo y hace fallar la operación indicada."""
+        attribute = getattr(self._delegate, name)
+        if name != self._failing_method:
+            return attribute
+
+        def failing_operation(*args: Any, **kwargs: Any) -> Any:
+            attribute(*args, **kwargs)
+            raise RuntimeError(f"Fallo simulado en '{name}'.")
+
+        return failing_operation
+
+
 # --- Alta válida y SKU duplicado (criterio 1) ---
 
 
@@ -303,6 +331,43 @@ def test_update_modifies_the_name_and_the_minimum_stock(
     assert updated.name == "Nombre nuevo"
     assert updated.minimum_stock == 15
     assert products.get(stored.id) == updated
+
+
+# --- Atomicidad de la modificación conjunta (T015) ---
+
+
+def test_update_rolls_back_both_writes_when_the_second_one_fails(
+    connection: sqlite3.Connection,
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    movements: SqliteMovementRepository,
+) -> None:
+    """Verifica que un fallo tras la primera escritura no deja cambios."""
+    product_service = ProductService(
+        products=products,
+        presentations=presentations,
+        movements=movements,
+        transaction=partial(transaction, connection),
+    )
+    stored = product_service.register(
+        make_registration(name="Producto", minimum_stock=2)
+    )
+    failing_service = ProductService(
+        products=_FailingProductRepository(products, "set_minimum_stock"),
+        presentations=presentations,
+        movements=movements,
+        transaction=partial(transaction, connection),
+    )
+
+    with pytest.raises(RuntimeError):
+        failing_service.update(
+            stored.id, name="Nombre nuevo", minimum_stock=15
+        )
+
+    reloaded = products.get(stored.id)
+    assert reloaded is not None
+    assert reloaded.name == "Producto"
+    assert reloaded.minimum_stock == 2
 
 
 # --- Stock inicial suelto y/o cerrado (criterios 3, 4, 5 y 6) ---

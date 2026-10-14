@@ -116,6 +116,13 @@ CREATE TABLE proposals (
 CREATE INDEX idx_movements_product_id ON movements (product_id);
 CREATE INDEX idx_movements_presentation_id ON movements (presentation_id);
 CREATE INDEX idx_movements_occurred_at ON movements (occurred_at);
+
+-- Una única presentación base (factor 1) por producto (RF-07). Refuerza en la
+-- base la invariante que el dominio valida: es la defensa en profundidad de
+-- T016 frente a altas y cambios de factor simultáneos.
+CREATE UNIQUE INDEX idx_presentations_single_base
+    ON presentations (product_id)
+    WHERE factor = 1;
 """
 
 

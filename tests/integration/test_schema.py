@@ -2,8 +2,9 @@
 
 Verifican que el esquema se crea desde una base vacía con las tablas del MVP,
 que las cantidades y contadores usan `INTEGER`, que los precios y costos se
-almacenan como texto decimal exacto y que las restricciones de integridad del
-esquema rechazan los datos inválidos.
+almacenan como texto decimal exacto, que el índice único parcial de la
+presentación base existe y restringe como corresponde y que las restricciones
+de integridad del esquema rechazan los datos inválidos.
 """
 
 import sqlite3
@@ -810,3 +811,89 @@ def test_movement_query_indexes_exist(
         "idx_movements_presentation_id",
         "idx_movements_occurred_at",
     } <= index_names
+
+
+# --- Índice único parcial de la presentación base ---
+
+
+def test_single_base_index_is_unique_and_partial(
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica que el índice de base única existe, es único y es parcial.
+
+    El índice se inspecciona con `PRAGMA index_list` e `PRAGMA index_info`, no
+    solo por su nombre en `sqlite_master`: debe declararse único, con la marca
+    `partial`, sobre `presentations.product_id` y con la condición
+    `factor = 1` (RF-07).
+    """
+    indexes = {
+        str(row["name"]): row
+        for row in connection.execute("PRAGMA index_list(presentations)")
+    }
+    assert "idx_presentations_single_base" in indexes
+    index = indexes["idx_presentations_single_base"]
+    assert index["unique"] == 1
+    assert index["partial"] == 1
+
+    indexed_columns = tuple(
+        str(row["name"])
+        for row in connection.execute(
+            "PRAGMA index_info(idx_presentations_single_base)"
+        )
+    )
+    assert indexed_columns == ("product_id",)
+
+    definition = connection.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?",
+        ("idx_presentations_single_base",),
+    ).fetchone()
+    assert definition is not None
+    assert "WHERE factor = 1" in str(definition["sql"])
+
+
+def test_single_base_index_rejects_a_second_base_of_the_product(
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica que el índice parcial impide dos bases del mismo producto.
+
+    El índice solo alcanza a las presentaciones con factor 1 y a cada producto
+    por separado: una presentación no base y la base de otro producto se
+    aceptan (RF-07).
+    """
+    first_product_id = insert_product(connection, sku="SKU-1")
+    second_product_id = insert_product(connection, sku="SKU-2")
+    insert_presentation(
+        connection,
+        first_product_id,
+        name="Unidad",
+        factor=1,
+        sale_price="30.00",
+    )
+    insert_presentation(connection, first_product_id, name="Caja x6")
+    insert_presentation(
+        connection,
+        second_product_id,
+        name="Unidad",
+        factor=1,
+        sale_price="30.00",
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_presentation(
+            connection,
+            first_product_id,
+            name="Otra unidad",
+            factor=1,
+            sale_price="40.00",
+        )
+
+    bases = [
+        row["product_id"]
+        for row in connection.execute(
+            "SELECT product_id FROM presentations WHERE factor = 1 "
+            "ORDER BY product_id"
+        )
+    ]
+    assert bases == [first_product_id, second_product_id]

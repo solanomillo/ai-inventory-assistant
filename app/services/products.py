@@ -1,4 +1,4 @@
-"""Servicios de aplicación de productos (T011).
+"""Servicios de aplicación de productos (T011 y T016).
 
 Implementa los casos de uso de alta, modificación y desactivación de productos,
 incluido el registro del stock inicial suelto y cerrado (RF-01, RF-02 y RF-07).
@@ -12,8 +12,10 @@ ante un fallo, la transacción se revierte por completo.
 
 La restricción de los productos desactivados se aplica aquí: un producto
 desactivado conserva su historial y solo admite consultas, historial y
-compensaciones históricas válidas (RF-01). La concurrencia de las
-confirmaciones simultáneas no se aborda en este módulo.
+compensaciones históricas válidas (RF-01). Cada caso de uso de escritura se
+ejecuta dentro de la transacción compartida (`BEGIN IMMEDIATE`, T016), de modo
+que la lectura, la validación y la escritura no se separan frente a
+operaciones simultáneas.
 """
 
 from __future__ import annotations
@@ -133,6 +135,11 @@ class ProductService:
         saldos se escriben una sola vez, junto con sus movimientos, dentro de
         una única transacción.
 
+        El prechequeo de unicidad del SKU se ejecuta dentro de la transacción,
+        de modo que la comprobación y el alta no se separen; la garantía final
+        sigue siendo la restricción `UNIQUE` del esquema, que también cubre dos
+        altas simultáneas con el mismo SKU (T016).
+
         Args:
             registration: Datos del alta del producto.
 
@@ -157,10 +164,6 @@ class ProductService:
             base_unit=registration.base_unit,
             minimum_stock=registration.minimum_stock,
         )
-        sku = validate_sku_unique(
-            product.sku,
-            [record.sku for record in self._products.list_all()],
-        )
         base, extra_presentations = self._prepare_presentations(
             registration, product.base_unit
         )
@@ -168,6 +171,10 @@ class ProductService:
         occurred_at = _utc_now()
 
         with self._transaction():
+            sku = validate_sku_unique(
+                product.sku,
+                [record.sku for record in self._products.list_all()],
+            )
             stored = self._products.add(
                 sku=sku,
                 name=product.name,
@@ -219,6 +226,10 @@ class ProductService:
 
         El SKU es inmutable: si se informa uno distinto del vigente, la
         operación se rechaza. Un producto desactivado no admite modificaciones.
+        La lectura del producto, la validación del SKU, la del estado activo,
+        la de los cambios y las escrituras del nombre y del stock mínimo se
+        ejecutan dentro de una única transacción: si una falla, no queda
+        ninguna escritura aplicada (T016).
 
         Args:
             product_id: Producto que se modifica.
@@ -237,36 +248,37 @@ class ProductService:
             ProductError: Si el nombre es inválido.
             QuantityError: Si el stock mínimo es inválido.
         """
-        record = self._required_product(product_id)
+        with self._transaction():
+            record = self._required_product(product_id)
 
-        if sku is not None:
-            validate_sku_unchanged(record.sku, sku)
+            if sku is not None:
+                validate_sku_unchanged(record.sku, sku)
 
-        self._require_active(record)
+            self._require_active(record)
 
-        current = Product(
-            sku=record.sku,
-            name=record.name,
-            base_unit=record.base_unit,
-            minimum_stock=record.minimum_stock,
-        )
-        updated = current
-        if name is not None:
-            updated = updated.with_name(name)
-        if minimum_stock is not None:
-            updated = updated.with_minimum_stock(minimum_stock)
-
-        if name is not None:
-            self._products.set_name(product_id, updated.name)
-        if minimum_stock is not None:
-            self._products.set_minimum_stock(
-                product_id, updated.minimum_stock
+            current = Product(
+                sku=record.sku,
+                name=record.name,
+                base_unit=record.base_unit,
+                minimum_stock=record.minimum_stock,
             )
+            updated = current
+            if name is not None:
+                updated = updated.with_name(name)
+            if minimum_stock is not None:
+                updated = updated.with_minimum_stock(minimum_stock)
 
-        if name is None and minimum_stock is None:
-            return record
+            if name is None and minimum_stock is None:
+                return record
 
-        return self._required_product(product_id)
+            if name is not None:
+                self._products.set_name(product_id, updated.name)
+            if minimum_stock is not None:
+                self._products.set_minimum_stock(
+                    product_id, updated.minimum_stock
+                )
+
+            return self._required_product(product_id)
 
     def deactivate(self, product_id: int) -> ProductRecord:
         """
