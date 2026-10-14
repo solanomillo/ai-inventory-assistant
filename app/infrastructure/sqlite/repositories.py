@@ -8,9 +8,10 @@ invocarlos.
 Convenciones de la capa:
 
 - Los identificadores, cantidades, factores, saldos y contadores son enteros.
-- Los precios y costos viajan como `Decimal` exacto y se almacenan con el
-  texto que produce `str(value)`; la representación canónica definitiva queda
-  pendiente de decisión antes de T012/T014.
+- Los precios y costos viajan como `Decimal` exacto y se serializan como
+  texto decimal de punto fijo, sin notación científica ni ceros fraccionarios
+  finales innecesarios; el cero negativo se normaliza a `0` y el valor
+  numérico exacto se preserva.
 - Los instantes viajan como `datetime` con zona horaria y se almacenan en UTC
   con la representación uniforme de `app/infrastructure/sqlite/instants.py`,
   que permite compararlos por rango como texto.
@@ -24,11 +25,15 @@ Convenciones de la capa:
 - Las conexiones se reciben ya abiertas y configuradas por
   `app/infrastructure/sqlite/connection.py`; abrir transacciones es
   responsabilidad de los servicios de confirmación.
+- La actualización del contador de consumo FIFO se aplica solo sobre entradas
+  cerradas, reemplaza únicamente `consumed_quantity` y respeta el límite
+  `consumida + compensada <= cantidad` que el esquema impone con `CHECK`.
 """
 
 import sqlite3
 from datetime import datetime
 from decimal import Decimal
+from typing import NoReturn
 
 from app.domain.movements import MovementKind
 from app.domain.presentations import DuplicatePresentationNameError
@@ -44,6 +49,16 @@ from app.services.ports import (
     ProductRecord,
     RecordNotFoundError,
 )
+
+
+class NotAClosedEntryError(ValueError):
+    """
+    Error que indica que el movimiento no es una entrada cerrada elegible.
+
+    Solo las entradas cerradas tienen consumo FIFO: el contador de consumo de
+    los demás tipos de movimiento no se actualiza.
+    """
+
 
 _PRODUCT_COLUMNS = (
     "id, sku, name, base_unit, minimum_stock, loose_units, active"
@@ -62,15 +77,39 @@ _MOVEMENT_COLUMNS = (
 
 def _decimal_to_text(value: Decimal) -> str:
     """
-    Serializa un `Decimal` exacto para almacenarlo en una columna `TEXT`.
+    Serializa un `Decimal` exacto con su representación textual canónica.
+
+    La representación canónica es un decimal en notación fija, sin notación
+    científica y sin ceros finales, que conserva el valor exacto del `Decimal`:
+    nunca pasa por `float` ni se redondea con la precisión del contexto.
+
+    - `Decimal("10.50")` se serializa como `"10.5"` y `Decimal("0.300")` como
+      `"0.3"`.
+    - `Decimal("1E+2")` se serializa como `"100"` y un valor entero como
+      `Decimal("100")` no agrega el sufijo `.0` innecesario.
+    - `Decimal("-0")` se serializa como `"0"`: el cero nunca lleva signo.
+    - Un valor negativo conserva su signo, por ejemplo `Decimal("-5")` se
+      serializa como `"-5"`. Que un precio o un costo admitan ese valor lo
+      decide la validación del dominio, no esta función.
+
+    El resultado es compatible con las restricciones `CHECK` del esquema, que
+    exigen que el texto empiece con un dígito y que su valor sea mayor que cero
+    (precios y precios aplicados) o mayor o igual que cero (costos).
 
     Args:
         value: Precio o costo ya validado por el dominio.
 
     Returns:
-        El texto del `Decimal`, que conserva su valor exacto.
+        El texto canónico del `Decimal`, que conserva su valor exacto.
     """
-    return str(value)
+    if value == 0:
+        return "0"
+
+    text = format(value, "f")
+    if "." not in text:
+        return text
+
+    return text.rstrip("0").rstrip(".")
 
 
 def _text_to_decimal(value: str | None) -> Decimal | None:
@@ -87,6 +126,29 @@ def _text_to_decimal(value: str | None) -> Decimal | None:
         return None
 
     return Decimal(value)
+
+
+def _consumed_quantity_value(value: int) -> int:
+    """
+    Valida la cantidad consumida por FIFO de una entrada cerrada.
+
+    Args:
+        value: Cantidad consumida informada para la entrada cerrada.
+
+    Returns:
+        El valor validado.
+
+    Raises:
+        ValueError:
+            Si el valor no es un entero mayor o igual que cero.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("La cantidad consumida debe ser un entero.")
+
+    if value < 0:
+        raise ValueError("La cantidad consumida no puede ser negativa.")
+
+    return value
 
 
 def _period_conditions(
@@ -531,9 +593,10 @@ class SqliteMovementRepository:
     """
     Repositorio de movimientos sobre SQLite (RF-03).
 
-    Solo registra y consulta movimientos: no expone ninguna operación para
-    editar ni eliminar movimientos confirmados. La corrección de un movimiento
-    se registra como una compensación.
+    Registra y consulta movimientos, y actualiza el contador de consumo FIFO de
+    las entradas cerradas. No expone ninguna operación para editar ni eliminar
+    movimientos confirmados: los datos históricos no cambian y la corrección de
+    un movimiento se registra como una compensación.
     """
 
     def __init__(self, connection: sqlite3.Connection) -> None:
@@ -560,8 +623,9 @@ class SqliteMovementRepository:
         """
         Registra un movimiento confirmado y devuelve su versión persistida.
 
-        Los contadores FIFO se inicializan en cero, según el esquema, y no se
-        editan desde este repositorio.
+        Los contadores FIFO se inicializan en cero, según el esquema. La
+        actualización del consumo de una entrada cerrada corresponde a
+        `set_consumed_quantity`.
 
         Raises:
             sqlite3.IntegrityError: Si el movimiento incumple las restricciones
@@ -667,6 +731,91 @@ class SqliteMovementRepository:
         ).fetchall()
 
         return [_movement_record(row) for row in rows]
+
+    def set_consumed_quantity(
+        self, movement_id: int, consumed_quantity: int
+    ) -> MovementRecord:
+        """
+        Actualiza la cantidad consumida por FIFO de una entrada cerrada.
+
+        Solo se reemplaza `consumed_quantity`: los datos históricos del
+        movimiento y su contador de compensaciones se conservan intactos. La
+        actualización se ejecuta con una única sentencia condicionada que exige
+        que el registro exista, sea una entrada cerrada y respete el límite
+        `consumida + compensada <= cantidad` que el esquema impone con `CHECK`,
+        de modo que el rechazo se informe como `ValueError` y no como
+        `sqlite3.IntegrityError`.
+
+        No abre transacciones: se ejecuta dentro de la transacción del servicio
+        que la invoca.
+
+        Raises:
+            RecordNotFoundError: Si el movimiento no existe.
+            NotAClosedEntryError: Si el movimiento no es una entrada cerrada,
+                porque solo las entradas cerradas tienen consumo FIFO.
+            ValueError: Si la cantidad consumida no es un entero mayor o igual
+                que cero o si viola el límite de la entrada.
+        """
+        validated_quantity = _consumed_quantity_value(consumed_quantity)
+
+        cursor = self._connection.execute(
+            """
+            UPDATE movements
+            SET consumed_quantity = ?
+            WHERE id = ?
+                AND kind = ?
+                AND compensated_quantity + ? <= quantity
+            """,
+            (
+                validated_quantity,
+                movement_id,
+                MovementKind.CLOSED_ENTRY.value,
+                validated_quantity,
+            ),
+        )
+        if cursor.rowcount == 0:
+            self._reject_consumed_quantity_update(
+                movement_id, validated_quantity
+            )
+
+        return self._required(movement_id)
+
+    def _reject_consumed_quantity_update(
+        self, movement_id: int, consumed_quantity: int
+    ) -> NoReturn:
+        """
+        Informa el rechazo de una actualización del contador de consumo.
+
+        Se invoca cuando la actualización condicionada no modificó ninguna
+        fila, para distinguir la causa del rechazo con el estado vigente del
+        movimiento.
+
+        Raises:
+            RecordNotFoundError: Si el movimiento no existe.
+            NotAClosedEntryError: Si el movimiento no es una entrada cerrada.
+            ValueError: Si la cantidad consumida viola el límite de la
+                entrada.
+        """
+        movement = self.get(movement_id)
+        if movement is None:
+            raise RecordNotFoundError(
+                f"No existe el movimiento con id {movement_id}."
+            )
+
+        if movement.kind is not MovementKind.CLOSED_ENTRY:
+            raise NotAClosedEntryError(
+                f"El movimiento {movement_id} no es una entrada cerrada "
+                f"({movement.kind.value}): solo las entradas cerradas tienen "
+                "consumo FIFO."
+            )
+
+        raise ValueError(
+            "La cantidad consumida y compensada de la entrada "
+            f"{movement_id} no puede superar su cantidad original "
+            f"({movement.quantity}): se intentaron consumir "
+            f"{consumed_quantity} con {movement.compensated_quantity} ya "
+            "compensadas."
+        )
 
     def _required(self, movement_id: int) -> MovementRecord:
         """

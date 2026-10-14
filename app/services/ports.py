@@ -6,9 +6,11 @@ estructuras de datos que estos devuelven. La infraestructura SQLite
 que los servicios dependen de estas interfaces y no del motor de persistencia.
 
 Los contratos ofrecen altas y consultas, además de la actualización de los
-datos vigentes de productos y presentaciones. Ninguno permite editar ni
-eliminar movimientos confirmados (RF-03 y RF-06): toda corrección de un
-movimiento se registra como una compensación.
+datos vigentes de productos y presentaciones y de los contadores FIFO de las
+entradas cerradas. Ninguno permite editar ni eliminar movimientos confirmados
+(RF-03 y RF-06): los datos históricos de un movimiento no cambian, el contador
+de consumo es lo único que se actualiza sobre una entrada cerrada y toda
+corrección de un movimiento se registra como una compensación.
 
 Los contratos no repiten las reglas del dominio: reciben valores ya validados y
 solo fallan ante las restricciones de la persistencia. Las consultas del
@@ -22,7 +24,10 @@ Un período no válido se informa con `InvalidPeriodError`, que la persistencia
 define como subclase de `ValueError`. El contrato nombra esa excepción para
 documentarla sin importar `app/infrastructure`, de modo que los servicios
 puedan tratarla como `ValueError` sin acoplarse al motor de persistencia
-(constitución, §3).
+(constitución, §3). Del mismo modo, la actualización del contador de consumo
+solo es válida sobre una entrada cerrada: la persistencia informa el rechazo
+de un movimiento no elegible con un error que define como subclase de
+`ValueError`, y rechaza una cantidad consumida inválida con `ValueError`.
 """
 
 from dataclasses import dataclass
@@ -274,8 +279,10 @@ class MovementRepository(Protocol):
     """
     Contrato de persistencia de los movimientos (RF-03).
 
-    Solo permite registrar movimientos y consultarlos: no expone ninguna
-    operación para editar ni eliminar movimientos confirmados.
+    Permite registrar y consultar movimientos y actualizar el contador de
+    consumo FIFO de las entradas cerradas. No expone ninguna operación para
+    editar ni eliminar movimientos confirmados: los datos históricos de un
+    movimiento no cambian.
     """
 
     def add(
@@ -372,5 +379,39 @@ class MovementRepository(Protocol):
                 final es anterior al inicio o si un límite sin zona horaria no
                 existe en la hora local. La persistencia la define como
                 subclase de `ValueError`.
+        """
+        ...
+
+    def set_consumed_quantity(
+        self, movement_id: int, consumed_quantity: int
+    ) -> MovementRecord:
+        """
+        Actualiza la cantidad consumida por FIFO de una entrada cerrada.
+
+        Solo se reemplaza el contador de consumo: los datos históricos del
+        movimiento (producto, presentación, tipo, cantidad, motivo, instante,
+        costo, precio aplicado, stock inicial y movimiento original) y su
+        contador de compensaciones se conservan intactos. El consumo es una
+        traza de las aperturas y las salidas cerradas que consumieron la
+        entrada (RF-03), no una corrección del movimiento confirmado.
+
+        La operación no abre transacciones: se ejecuta dentro de la
+        transacción del servicio que la invoca.
+
+        Args:
+            movement_id: Movimiento cuya cantidad consumida se actualiza.
+            consumed_quantity: Cantidad consumida acumulada de la entrada.
+
+        Returns:
+            El movimiento actualizado y persistido.
+
+        Raises:
+            RecordNotFoundError: Si el movimiento no existe.
+            NotAClosedEntryError: Si el movimiento no es una entrada cerrada,
+                porque solo las entradas cerradas tienen consumo FIFO. La
+                persistencia la define como subclase de `ValueError`.
+            ValueError: Si la cantidad consumida no es un entero mayor o igual
+                que cero o si, sumada a la cantidad compensada, supera la
+                cantidad original de la entrada.
         """
         ...

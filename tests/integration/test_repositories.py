@@ -333,7 +333,14 @@ def test_add_movement_keeps_the_reason(
 def test_movement_repository_exposes_no_edit_or_delete_operations(
     repository: type,
 ) -> None:
-    """Verifica que el contrato y la implementación no permiten editar."""
+    """
+    Verifica qué escrituras admite el contrato de movimientos.
+
+    La actualización controlada del contador de consumo FIFO de una entrada
+    cerrada (corrección I2) es la única escritura admitida sobre un movimiento
+    confirmado: no modifica sus datos históricos ni su contador de
+    compensaciones.
+    """
     operations = public_operations(repository)
 
     assert operations == {
@@ -341,6 +348,7 @@ def test_movement_repository_exposes_no_edit_or_delete_operations(
         "get",
         "list_by_product",
         "list_by_presentation",
+        "set_consumed_quantity",
     }
     for operation in operations:
         for forbidden in FORBIDDEN_MOVEMENT_OPERATIONS:
@@ -774,7 +782,7 @@ def test_movement_keeps_the_optional_cost_and_applied_price(
     assert stored_entry is not None
     assert stored_exit is not None
     assert stored_entry.cost == Decimal("0.30")
-    assert str(stored_entry.cost) == "0.30"
+    assert str(stored_entry.cost) == "0.3"
     assert stored_entry.applied_price is None
     assert stored_exit.applied_price == Decimal("12345.6789")
     assert stored_exit.cost is None
