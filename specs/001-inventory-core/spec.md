@@ -88,6 +88,7 @@ El sistema debe conservar un historial verificable de entradas, salidas, apertur
 ### Requisitos
 
 - El sistema debe registrar movimientos de los tipos: entrada cerrada, entrada suelta, salida cerrada, salida suelta, apertura y compensación.
+- El uso de la presentación base y de las presentaciones cerradas en las operaciones ordinarias de entrada y salida se rige por la regla de presentaciones cerradas y unidades sueltas definida en las reglas de negocio transversales.
 - Cada movimiento debe estar asociado a un producto y, cuando corresponda, a una presentación.
 - Cada movimiento debe incluir un motivo.
 - El sistema debe registrar automáticamente la fecha y hora de cada movimiento confirmado.
@@ -137,6 +138,7 @@ El sistema debe conservar un historial verificable de entradas, salidas, apertur
 - Dada una apertura de `N` presentaciones con stock cerrado suficiente, el sistema debe restar `N` al stock cerrado y sumar `N × factor` a las unidades sueltas en una única transacción, sin alterar el total equivalente.
 - Dada una apertura sin stock cerrado suficiente, el sistema debe rechazarla.
 - Dada la presentación base (factor 1), cuando se solicite una apertura, el sistema debe rechazarla sin modificar el stock ni registrar el movimiento.
+- Dada la presentación base (factor 1), cuando se solicite una entrada o salida cerrada, el sistema debe rechazarla sin modificar el stock ni registrar el movimiento.
 - Dado un producto desactivado, cuando se solicite una apertura, el sistema debe rechazarla.
 - Cuando se solicite compensar una apertura, el sistema debe rechazarla.
 - Dada una entrada cerrada A (+2), una apertura de 1, y una entrada cerrada B (+1) de la misma presentación, el sistema debe rechazar compensar A por 2 y debe permitir compensar A por 1.
@@ -226,6 +228,7 @@ El sistema debe permitir administrar un producto por distintas presentaciones co
 ### Requisitos
 
 - Cada producto debe tener exactamente una presentación base, correspondiente a la unidad base y con factor igual a 1. Puede tener además otras presentaciones.
+- El uso de la presentación base y de las presentaciones cerradas en las operaciones ordinarias de entrada y salida se rige por la regla de presentaciones cerradas y unidades sueltas definida en las reglas de negocio transversales.
 - Cada presentación debe tener un nombre único dentro del producto, comparado sin distinguir mayúsculas de minúsculas, un factor entero mayor o igual que 1 que expresa su equivalencia en unidades base, y un precio de venta mayor que cero.
 - Los precios de las presentaciones son independientes: el precio de una presentación no se calcula automáticamente a partir del precio de otra.
 - El factor de una presentación no debe modificarse cuando esa presentación tiene stock cerrado o movimientos históricos; para representar un cambio debe crearse otra presentación.
@@ -261,6 +264,7 @@ El sistema debe permitir administrar un producto por distintas presentaciones co
 - Los instantes se almacenan en UTC; los períodos se interpretan en la hora local de Argentina (`America/Argentina/Buenos_Aires`), convirtiendo las fechas locales a UTC, y aplican la semántica `[inicio, fin)` (inicio inclusivo y final exclusivo); los filtros combinados se aplican de forma conjunta.
 - Los movimientos confirmados son inmutables.
 - Las aperturas son atómicas, inmutables y no compensables; solo aplican a presentaciones con factor mayor que 1, por lo que la presentación base (factor 1) no puede abrirse, y no cambian el total equivalente.
+- Las operaciones ordinarias de entrada y salida de presentaciones cerradas requieren una presentación con factor mayor que 1; la presentación base (factor 1) se utiliza para las operaciones de unidades sueltas.
 - Las correcciones se realizan mediante movimientos compensatorios vinculados al original.
 - Una compensación es un movimiento de tipo compensación cuyo efecto es opuesto al del movimiento original; no puede encadenarse a otra compensación y puede ser parcial o total.
 - Para las entradas cerradas, el consumo FIFO de aperturas y salidas cerradas reduce la cantidad compensable; la cantidad compensable es `cantidad − cantidad_consumida − cantidad_compensada`.
@@ -284,6 +288,7 @@ El sistema debe permitir administrar un producto por distintas presentaciones co
 - Salida que supera el stock suelto o cerrado disponible.
 - Apertura sin stock cerrado suficiente.
 - Apertura de la presentación base (factor 1).
+- Entrada o salida cerrada sobre la presentación base (factor 1).
 - Compensación de una apertura.
 - Compensación de una entrada cerrada que supera su cantidad compensable (stock ya transformado o consumido).
 - Compensación cuyo efecto no es opuesto al del movimiento original, o compensación encadenada.

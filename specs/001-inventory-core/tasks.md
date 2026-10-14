@@ -194,10 +194,16 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 ### T012 — Servicio de entradas y salidas (costo y snapshot de precio)
 
 - **Fase:** 2.
+- **Estado:** **Cerrada y aprobada** (tras revisión independiente). Implementada en `app/services/movements.py`: entradas y salidas sueltas y cerradas, con validación del motivo, del costo (solo en entradas) y del precio histórico (`applied_price`); transacciones atómicas; consumo FIFO mediante `consume_closed_entries_fifo` y `set_consumed_quantity`.
 - **Objetivo:** registrar entradas y salidas cerradas y sueltas con confirmación transaccional.
 - **Archivos previstos:** `app/services/movements.py`.
 - **Dependencias:** T005, T009.
+- **Nota (I1):** el motivo (`reason`) se normaliza con `normalize_required_text()`, que rechaza valores vacíos, solo espacios, tabs y saltos de línea antes de persistir (hallazgo I1 de T009 resuelto).
+- **Nota (I2):** puede reutilizar el consumo FIFO del dominio (`consume_closed_entries_fifo`) y la actualización condicional `MovementRepository.set_consumed_quantity(...)` para descontar `consumed_quantity` de las entradas cerradas afectadas por salidas cerradas, sin duplicar la lógica.
+- **Nota (decisión confirmada):** las operaciones cerradas (`entrada_cerrada` y `salida_cerrada`) se rechazan sobre presentaciones base de factor `1`; la presentación base solo admite operaciones sueltas. La regla es coherente con la prohibición de apertura de la presentación base (T005/T013).
 - **Pruebas:** `tests/integration/test_movement_service.py` (incluye costo y snapshot de precio).
+- **Pruebas reportadas (no verificadas por ejecución):** el implementer reportó 91 pruebas específicas y 643 en la suite completa. El reviewer no ejecutó `pytest` de forma independiente; por lo tanto, estos resultados no están verificados.
+- **Revisión independiente: APROBADO.** Sin bloqueantes ni hallazgos importantes; los hallazgos menores quedan como mejoras opcionales sin abrir una nueva ronda de correcciones (ver «Decisiones pendientes»).
 - **Criterios de aceptación:**
   - Una entrada válida persiste el movimiento y actualiza el stock correspondiente.
   - El costo de una entrada es opcional y, cuando se informa, debe ser mayor o igual que cero.
@@ -213,10 +219,15 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 ### T013 — Servicio de apertura
 
 - **Fase:** 2.
+- **Estado:** **Cerrada y aprobada** (tras revisión independiente). Implementada en `app/services/movements.py` mediante `MovementService.register_aperture()`, con pruebas en `tests/integration/test_aperture_service.py`. Reutiliza `open_presentations()` del dominio (valida cantidad, factor y stock; la presentación base, factor `1`, se rechaza con `BasePresentationApertureError` del dominio), `consume_closed_entries_fifo()` y `set_consumed_quantity()`, resolviendo la presentación por existencia y pertenencia, sin duplicar reglas. Atomicidad: el movimiento de apertura, `closed_stock`, `loose_units` y los contadores FIFO se actualizan en una única transacción, sin `BEGIN IMMEDIATE` (corresponde a T016).
 - **Objetivo:** registrar aperturas atómicas y consumir FIFO.
 - **Archivos previstos:** `app/services/movements.py` (o módulo de apertura).
 - **Dependencias:** T012.
+- **Nota (I2):** reutiliza el consumo FIFO del dominio (`consume_closed_entries_fifo`) y la actualización condicional `MovementRepository.set_consumed_quantity(...)` para actualizar los contadores de consumo de las entradas cerradas afectadas, sin duplicar la lógica FIFO.
+- **Nota (decisión confirmada):** el rechazo de las operaciones cerradas (`entrada_cerrada` y `salida_cerrada`) sobre la presentación base de factor `1` (ver T012) es coherente con el rechazo de la apertura de la presentación base que ya define esta tarea; ambas reglas provienen del dominio y no se reimplementan.
 - **Pruebas:** `tests/integration/test_aperture_service.py`.
+- **Pruebas reportadas (no verificadas por ejecución):** el implementador reportó 30 pruebas específicas, 91 de regresión de T012 y 673 en la suite completa. El código de salida de `pytest` no fue observable y el reviewer no ejecutó las pruebas de forma independiente; por lo tanto, estos resultados no están verificados. `git diff --check` sin errores.
+- **Revisión independiente: APROBADO.** Sin bloqueantes ni hallazgos importantes; los hallazgos menores M1–M6 quedan como mejoras opcionales sin abrir una nueva ronda de correcciones (ver «Decisiones pendientes»).
 - **Criterios de aceptación:**
   - La apertura de `N ≥ 1` presentaciones resta `N` al stock cerrado y suma `N × factor` a las unidades sueltas en una única transacción.
   - El movimiento de apertura conserva la presentación, cantidad y motivo.
@@ -235,6 +246,8 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 - **Objetivo:** registrar compensaciones parciales o totales con límite compensable.
 - **Archivos previstos:** `app/services/movements.py` (o módulo de compensaciones).
 - **Dependencias:** T006, T012.
+- **Nota (I2):** a diferencia de `consumed_quantity`, `compensated_quantity` aún no cuenta con una operación segura y condicional análoga a `set_consumed_quantity`; T014 requiere dicha operación antes de implementar la actualización consistente de los contadores de compensación (ver «Decisiones pendientes»).
+- **Nota (riesgo):** las compensaciones de salidas cerradas pueden afectar la relación entre `closed_stock` y las cantidades todavía compensables por FIFO. Se registra como riesgo para T014/T015; no se diseña ni implementa una solución en este documento.
 - **Pruebas:** `tests/integration/test_compensation_service.py`.
 - **Criterios de aceptación:**
   - Una compensación válida crea un movimiento vinculado al movimiento original.
@@ -253,6 +266,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 - **Objetivo:** crear, editar y confirmar propuestas con revalidación transaccional.
 - **Archivos previstos:** `app/services/proposals.py`.
 - **Dependencias:** T009, T011, T012, T013, T014.
+- **Nota (riesgo heredado de T014):** la confirmación revalida la cantidad compensable (ver criterios). El efecto de las compensaciones de salidas cerradas sobre `closed_stock` y las cantidades compensables por FIFO (ver nota en T014) queda registrado como riesgo pendiente de resolución, sin diseñar aquí la solución.
 - **Pruebas:** `tests/integration/test_proposal_service.py`.
 - **Criterios de aceptación:**
   - Una propuesta pendiente no modifica el inventario ni crea movimientos confirmados.
@@ -389,10 +403,26 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 | RF-06     | T009, T012, T014, T026                         | Único inventario/ubicación; sin usuarios, proveedores, compras o ventas; sin edición directa de confirmados; corrección por compensación, salvo aperturas.                                                                                                                                                                                                                                                |
 | RF-07     | T003, T004, T008, T009, T011, T012             | Presentación base con factor 1; factor y precio válidos; factor inmutable con stock/historial; precio independiente; costo opcional sin distribución; se rechaza crear o modificar presentaciones de un producto desactivado.                                                                                                                                                                             |
 
+## Correcciones previas resueltas
+
+- **I1 — normalización del motivo de los movimientos: RESUELTO** (corrección previa a T012).
+  - **Normalización:** el `reason` se normaliza con `normalize_required_text()` antes de persistir; rechaza valores vacíos, cadenas con solo espacios, tabs y saltos de línea. Cierra el hallazgo I1 de T009 (el `CHECK` de SQLite solo eliminaba espacios).
+  - **Aplicación:** T012 aplica esta normalización en el servicio de entradas y salidas (`app/services/movements.py`), de modo que los motivos inválidos se rechazan antes de crear el movimiento.
+- **I2 — actualización de contadores FIFO sin editar movimientos confirmados: RESUELTO** (corrección previa a T012/T013/T014).
+  - **Contrato y persistencia:** existe `MovementRepository.set_consumed_quantity(movement_id, consumed_quantity)` en `app/services/ports.py`, con implementación SQLite en `app/infrastructure/sqlite/repositories.py`. Es un `UPDATE` condicional que solo cambia `consumed_quantity`, exige que el movimiento sea una entrada cerrada y respeta `consumed_quantity + compensated_quantity <= quantity`, preservando los campos históricos y `compensated_quantity`. Se añadió `NotAClosedEntryError(ValueError)`.
+  - **Reutilización:** T012 y T013 pueden reutilizar este mecanismo junto con `consume_closed_entries_fifo` del dominio (`app/domain/movements.py`) para consumir entradas cerradas, sin duplicar la lógica FIFO (ver notas en T012 y T013).
+  - **Pendiente para T014:** la actualización de `compensated_quantity` aún necesita una operación segura y condicional análoga a `set_consumed_quantity` (ver nota en T014 y «Decisiones pendientes»).
+  - **Pruebas reportadas (no verificadas por ejecución):** el implementer reportó 21 pruebas específicas y 552 en la suite completa. El reviewer no ejecutó `pytest` de forma independiente; por lo tanto, estos resultados no están verificados.
+  - **Revisión independiente: APROBADO.** Quedan cuatro hallazgos menores/opcionales sin abrir corrección (ver «Decisiones pendientes»).
+
 ## Decisiones pendientes
 
 - **Identificador del modelo DeepSeek:** bloquea la ejecución real en Fase 3/5, pero no las pruebas con modelo falso.
 - **Ciclo de vida de propuestas y topología de despliegue:** deferibles; no deben ampliar el alcance sin una decisión posterior.
+- **Actualización segura de `compensated_quantity` (T014):** pendiente; se requiere una operación condicional análoga a `set_consumed_quantity`, que aún no existe. Bloquea el cierre de la actualización consistente de los contadores de compensación en T014.
+- **Riesgo T014/T015 — compensaciones de salidas cerradas:** las compensaciones de salidas cerradas pueden afectar la relación entre `closed_stock` y las cantidades todavía compensables por FIFO. Registrado como riesgo de diseño; no se diseña ni implementa la solución en este documento y no bloquea el registro de T012 (ver notas en T014 y T015).
+- **Hallazgos menores de I2 (opcionales):** se registran como mejoras opcionales, sin abrir corrección y sin bloquear T012/T013/T014: (1) reutilizar `validate_stock` en lugar de duplicar validaciones; (2) matizar el docstring del módulo; (3) revisar el rango entero extremo; (4) ajustar la precisión de una aserción.
+- **Hallazgos menores M1–M6 de T013 (opcionales):** se registran como mejoras opcionales tras la revisión independiente de T013, sin abrir una nueva ronda de correcciones y sin bloquear el cierre: (M1) unificar `_required_presentation` con `_closed_presentation`; (M2) revisar el orden de validación de cantidad/motivo (hoist al estilo T012, o documentar y probar); (M3) acotar una aserción no discriminante del rollback; (M4) actualizar los docstrings de la clase/`__init__`; (M5) reducir la duplicación de pruebas; (M6) cubrir el caso `closed_stock = 0` sin entradas cerradas. No se diseña aquí ninguna solución.
 
 ## Estrategia de ejecución
 
