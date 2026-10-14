@@ -119,6 +119,7 @@ El sistema debe conservar un historial verificable de entradas, salidas, apertur
 - Un movimiento compensatorio puede neutralizar total o parcialmente la cantidad del movimiento original.
 - Todo movimiento compensatorio es un movimiento de tipo compensación cuyo efecto sobre el stock es el opuesto al del movimiento original, y debe vincularse a un movimiento original que no sea compensatorio.
 - Las aperturas no pueden ser compensadas ni ser destino de una compensación.
+- La compensación de una salida cerrada queda fuera del MVP: reponer el stock cerrado de la presentación sin revertir el consumo FIFO ya aplicado a las entradas cerradas afectadas rompería la coherencia entre el stock cerrado y las cantidades todavía compensables.
 - La confirmación de una compensación no debe modificar ni eliminar el movimiento original.
 
 ### Consumo FIFO de presentaciones cerradas
@@ -141,6 +142,7 @@ El sistema debe conservar un historial verificable de entradas, salidas, apertur
 - Dada la presentación base (factor 1), cuando se solicite una entrada o salida cerrada, el sistema debe rechazarla sin modificar el stock ni registrar el movimiento.
 - Dado un producto desactivado, cuando se solicite una apertura, el sistema debe rechazarla.
 - Cuando se solicite compensar una apertura, el sistema debe rechazarla.
+- Cuando se solicite compensar una salida cerrada, el sistema debe rechazarla sin modificar el stock cerrado ni los contadores de consumo y compensación de las entradas cerradas.
 - Dada una entrada cerrada A (+2), una apertura de 1, y una entrada cerrada B (+1) de la misma presentación, el sistema debe rechazar compensar A por 2 y debe permitir compensar A por 1.
 - Dada una entrada cerrada con una compensación que exceda su cantidad compensable, el sistema debe rechazarla e informar el motivo.
 - Cuando se confirme una compensación válida, el sistema debe crear un nuevo movimiento vinculado al original y conservar ambos en el historial.
@@ -217,7 +219,7 @@ El MVP debe mantener un alcance reducido y centrado en el control esencial de un
 - El sistema debe operar sobre una única ubicación de inventario.
 - El sistema no debe exponer operaciones para múltiples usuarios, proveedores, compras o ventas formales.
 - El sistema debe rechazar la edición o eliminación directa de un movimiento confirmado.
-- Cualquier corrección de un movimiento confirmado debe realizarse mediante un movimiento compensatorio relacionado, salvo las aperturas, que no son compensables.
+- Cualquier corrección de un movimiento confirmado debe realizarse mediante un movimiento compensatorio relacionado, salvo las aperturas y las salidas cerradas, que no son compensables en el MVP.
 
 ## RF-07. Presentaciones y costo de ingreso
 
@@ -266,6 +268,7 @@ El sistema debe permitir administrar un producto por distintas presentaciones co
 - Las aperturas son atómicas, inmutables y no compensables; solo aplican a presentaciones con factor mayor que 1, por lo que la presentación base (factor 1) no puede abrirse, y no cambian el total equivalente.
 - Las operaciones ordinarias de entrada y salida de presentaciones cerradas requieren una presentación con factor mayor que 1; la presentación base (factor 1) se utiliza para las operaciones de unidades sueltas.
 - Las correcciones se realizan mediante movimientos compensatorios vinculados al original.
+- En el MVP las salidas cerradas no son compensables; toda compensación se vincula a un movimiento original compensable (entrada cerrada, entrada suelta o salida suelta).
 - Una compensación es un movimiento de tipo compensación cuyo efecto es opuesto al del movimiento original; no puede encadenarse a otra compensación y puede ser parcial o total.
 - Para las entradas cerradas, el consumo FIFO de aperturas y salidas cerradas reduce la cantidad compensable; la cantidad compensable es `cantidad − cantidad_consumida − cantidad_compensada`.
 - Las entradas sueltas no tienen trazabilidad individual por entrada; se conservan la validación de stock disponible y el límite de cantidad pendiente de compensar.
@@ -290,6 +293,7 @@ El sistema debe permitir administrar un producto por distintas presentaciones co
 - Apertura de la presentación base (factor 1).
 - Entrada o salida cerrada sobre la presentación base (factor 1).
 - Compensación de una apertura.
+- Compensación de una salida cerrada (no compensable en el MVP).
 - Compensación de una entrada cerrada que supera su cantidad compensable (stock ya transformado o consumido).
 - Compensación cuyo efecto no es opuesto al del movimiento original, o compensación encadenada.
 - Movimiento sin motivo.

@@ -102,7 +102,7 @@ Para `entrada_cerrada`, además: `consumed_quantity` y `compensated_quantity` (e
 
 ### Compensación
 
-Es un movimiento de `kind = compensacion`, opuesto al original, vinculado a un original no compensatorio, con límite de cantidad compensable. Las aperturas no son compensables.
+Es un movimiento de `kind = compensacion`, opuesto al original, vinculado a un original no compensatorio, con límite de cantidad compensable. Las aperturas no son compensables. En el MVP las salidas cerradas tampoco son compensables: compensarlas repondría `closed_stock` sin revertir los contadores FIFO (`consumed_quantity` y `compensated_quantity`) de las entradas cerradas afectadas.
 
 ## Representación de cantidades, stock, precio y costo
 
@@ -123,9 +123,10 @@ Decisiones pendientes documentadas: identificador del modelo DeepSeek.
 
 - Confirmación en una única transacción: `BEGIN IMMEDIATE` → leer propuesta/producto/disponibilidad vigente → revalidar reglas (incluido el estado activo del producto) → aplicar cambios → `COMMIT`; ante fallo, `ROLLBACK` total.
 - La **apertura** actualiza `closed_stock` y `loose_units` en la misma transacción y consume FIFO las `entrada_cerrada` correspondientes.
-- Las `salida_cerrada` y las compensaciones consumen y actualizan los contadores FIFO dentro de la misma transacción.
+- Las `salida_cerrada` consumen entradas cerradas y actualizan `consumed_quantity` dentro de la misma transacción; las compensaciones de entradas cerradas actualizan `compensated_quantity` del movimiento original. Ninguna operación del MVP revierte el consumo FIFO ya aplicado, por lo que las compensaciones de salidas cerradas quedan fuera del MVP.
 - Las operaciones concurrentes no pueden confirmarse sobre disponibilidad obsoleta.
 - Sin stock negativo ni cambios parciales.
+- **Nota de límite:** la exclusión de las compensaciones de `salida_cerrada` se aplica en el **dominio y el servicio**; la relación salida→entrada consumida por FIFO **no se persiste** y el esquema SQLite no la restringe, por lo que no se introduce ninguna restricción nueva en la base de datos.
 
 ## Esquema SQLite
 
@@ -164,7 +165,7 @@ requirements.txt
 - Persistencia SQLite: integración (unicidad, inmutabilidad, filtros por producto/kind/período; conversión de períodos locales de `America/Argentina/Buenos_Aires` a UTC con semántica `[inicio, fin)`).
 - Herramientas: devuelven datos reales (stock suelto, cerrado y total) o crean propuestas (incluida apertura), sin escribir movimientos.
 - Agentes y supervisor: modelo falso determinista, sin DeepSeek real.
-- Confirmación y compensación: propuesta editable sin efectos; confirmación revalida; compensación que excede la cantidad compensable se rechaza; apertura no compensable.
+- Confirmación y compensación: propuesta editable sin efectos; confirmación revalida; compensación que excede la cantidad compensable se rechaza; apertura no compensable; se rechaza la compensación de una salida cerrada sin modificar `closed_stock` ni los contadores FIFO.
 - Productos desactivados: consultas e historial permitidos; se rechazan las operaciones ordinarias nuevas, las modificaciones de nombre o stock, la creación o modificación de presentaciones y las aperturas; se admiten las compensaciones históricas válidas.
 - Concurrencia: aperturas, salidas y compensaciones simultáneas sobre la misma presentación sin desincronizar suelto/cerrado ni negativos.
 - Errores de configuración/API: `get_llm()` sin key lanza error.
