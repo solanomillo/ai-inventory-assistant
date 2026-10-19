@@ -1,4 +1,4 @@
-"""Pruebas de integración del servicio de presentaciones (T011).
+"""Pruebas de integración del servicio de presentaciones (T011 y T031).
 
 Cubren los criterios de aceptación de T011 sobre RF-07: el alta y la
 modificación de presentaciones según las reglas del dominio, el rechazo de
@@ -6,14 +6,19 @@ operaciones sobre productos desactivados, la presentación nueva con stock
 cerrado cero sin alterar otros saldos y la inmutabilidad del factor cuando la
 presentación tiene stock cerrado o historial.
 
+Cubren además el cambio de precio atómico de T031 sobre RF-08: cada cambio se
+registra en el historial con el precio vigente antes de la actualización,
+dentro de la misma transacción; un fallo al registrar el historial revierte el
+precio completo sin dejar cambios parciales.
+
 Las pruebas usan la base SQLite en memoria con el esquema real, los
-repositorios de T009 y el servicio de productos de T011 para preparar el
+repositorios de T009 y T030 y el servicio de productos de T011 para preparar el
 estado.
 """
 
 import sqlite3
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from functools import partial
 from typing import Any
@@ -35,10 +40,13 @@ from app.infrastructure.sqlite.connection import (
 from app.infrastructure.sqlite.repositories import (
     SqliteMovementRepository,
     SqlitePresentationRepository,
+    SqlitePriceHistoryRepository,
     SqliteProductRepository,
 )
 from app.infrastructure.sqlite.schema import create_schema
 from app.services.ports import (
+    PRICE_CHANGE_EVENT_TYPE,
+    PriceChangeRecord,
     PresentationRecord,
     ProductRecord,
     RecordNotFoundError,
@@ -113,8 +121,35 @@ def presentation_service(
         products=products,
         presentations=presentations,
         movements=movements,
+        price_history=SqlitePriceHistoryRepository(connection),
         transaction=partial(transaction, connection),
     )
+
+
+@pytest.fixture
+def price_history(
+    connection: sqlite3.Connection,
+) -> SqlitePriceHistoryRepository:
+    """Repositorio del historial de precios sobre la base en memoria."""
+    return SqlitePriceHistoryRepository(connection)
+
+
+class _FailingPriceHistoryRepository:
+    """Doble local del historial que falla al registrar el cambio (T031)."""
+
+    def add(self, **values: Any) -> PriceChangeRecord:
+        """Falla siempre, dentro de la transacción del servicio."""
+        raise RuntimeError("Fallo simulado al registrar el cambio de precio.")
+
+    def list_by_presentation(
+        self, presentation_id: int
+    ) -> list[PriceChangeRecord]:
+        """No se usa en la prueba."""
+        raise AssertionError("No se esperaba consultar el historial.")
+
+    def list_by_product(self, product_id: int) -> list[PriceChangeRecord]:
+        """No se usa en la prueba."""
+        raise AssertionError("No se esperaba consultar el historial.")
 
 
 def make_registration(**overrides: Any) -> ProductRegistration:
@@ -338,37 +373,224 @@ def test_add_rejects_a_second_base_presentation(
 # --- Modificación del precio de venta (criterios 9 y 10) ---
 
 
-def test_change_sale_price_updates_the_price(
+def test_change_sale_price_updates_the_price_and_records_the_change(
     presentation_service: PresentationService,
     product_service: ProductService,
     presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
 ) -> None:
-    """Verifica la modificación del precio de una presentación."""
-    _, box = register_product_with_box(product_service, presentations)
+    """Verifica la modificación del precio y la fila del historial (RF-08)."""
+    stored, box = register_product_with_box(product_service, presentations)
 
     updated = presentation_service.change_sale_price(
         box.id, Decimal("650.50")
     )
+    changes = price_history.list_by_presentation(box.id)
 
     assert updated.sale_price == Decimal("650.50")
     assert updated.product_id == box.product_id
     assert presentations.get(box.id) == updated
+    assert len(changes) == 1
+    change = changes[0]
+    assert isinstance(change, PriceChangeRecord)
+    assert change.product_id == stored.id
+    assert change.presentation_id == box.id
+    assert change.previous_price == box.sale_price
+    assert change.new_price == Decimal("650.50")
+    assert change.event_type == PRICE_CHANGE_EVENT_TYPE
 
 
-@pytest.mark.parametrize("sale_price", [Decimal("0"), Decimal("-5")])
+def test_change_sale_price_records_the_price_before_each_change(
+    presentation_service: PresentationService,
+    product_service: ProductService,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+) -> None:
+    """Verifica el precio anterior de cada fila en una secuencia (RF-08)."""
+    _, box = register_product_with_box(product_service, presentations)
+
+    presentation_service.change_sale_price(box.id, Decimal("700"))
+    presentation_service.change_sale_price(box.id, Decimal("800"))
+
+    changes = price_history.list_by_presentation(box.id)
+
+    assert [
+        (change.previous_price, change.new_price) for change in changes
+    ] == [
+        (Decimal("600.00"), Decimal("700")),
+        (Decimal("700"), Decimal("800")),
+    ]
+
+
+def test_change_sale_price_records_the_instant_in_utc(
+    presentation_service: PresentationService,
+    product_service: ProductService,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+) -> None:
+    """Verifica que el instante del historial está en UTC y es actual."""
+    _, box = register_product_with_box(product_service, presentations)
+    before = datetime.now(timezone.utc)
+
+    presentation_service.change_sale_price(box.id, Decimal("650"))
+
+    after = datetime.now(timezone.utc)
+    change = price_history.list_by_presentation(box.id)[0]
+
+    assert change.occurred_at.tzinfo is not None
+    assert change.occurred_at.utcoffset() == timedelta(0)
+    assert before <= change.occurred_at <= after
+
+
+def test_change_sale_price_records_the_base_presentation(
+    presentation_service: PresentationService,
+    product_service: ProductService,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+) -> None:
+    """Verifica que el cambio de la presentación base también se registra."""
+    stored = product_service.register(make_registration())
+    base = presentations.list_by_product(stored.id)[0]
+
+    presentation_service.change_sale_price(base.id, Decimal("150"))
+
+    changes = price_history.list_by_presentation(base.id)
+
+    assert base.factor == 1
+    assert len(changes) == 1
+    assert changes[0].previous_price == base.sale_price
+    assert changes[0].new_price == Decimal("150")
+
+
+def test_change_sale_price_records_a_change_to_the_same_price(
+    presentation_service: PresentationService,
+    product_service: ProductService,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+) -> None:
+    """Verifica que un precio igual al vigente también se registra (RF-08)."""
+    _, box = register_product_with_box(product_service, presentations)
+
+    updated = presentation_service.change_sale_price(box.id, box.sale_price)
+
+    changes = price_history.list_by_presentation(box.id)
+
+    assert updated.sale_price == box.sale_price
+    assert len(changes) == 1
+    assert changes[0].previous_price == box.sale_price
+    assert changes[0].new_price == box.sale_price
+
+
+def test_registration_and_presentation_changes_record_no_price_change(
+    presentation_service: PresentationService,
+    product_service: ProductService,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+) -> None:
+    """Verifica que el alta y el cambio de factor no generan historial."""
+    stored, _ = register_product_with_box(
+        product_service, presentations, closed_stock=1
+    )
+    added = presentation_service.add(
+        stored.id,
+        name="Caja x12",
+        factor=12,
+        sale_price=Decimal("1200"),
+    )
+
+    presentation_service.change_factor(added.id, 24)
+
+    assert price_history.list_by_product(stored.id) == []
+
+
+def test_change_sale_price_does_not_touch_balances_or_history(
+    presentation_service: PresentationService,
+    product_service: ProductService,
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    movements: SqliteMovementRepository,
+) -> None:
+    """Verifica que el cambio de precio no altera saldos ni movimientos."""
+    stored, box = register_product_with_box(
+        product_service, presentations, closed_stock=2
+    )
+    exit_movement = movements.add(
+        product_id=stored.id,
+        presentation_id=box.id,
+        kind=MovementKind.CLOSED_EXIT,
+        quantity=1,
+        reason="Venta",
+        occurred_at=START,
+        applied_price=Decimal("900.00"),
+    )
+    balances_before = (
+        products.get(stored.id).loose_units,
+        presentations.get(box.id).closed_stock,
+    )
+    history_before = movements.list_by_product(stored.id)
+
+    presentation_service.change_sale_price(box.id, Decimal("650"))
+
+    reloaded_product = products.get(stored.id)
+    reloaded_box = presentations.get(box.id)
+
+    assert reloaded_product is not None
+    assert reloaded_box is not None
+    assert (
+        reloaded_product.loose_units,
+        reloaded_box.closed_stock,
+    ) == balances_before
+    assert movements.list_by_product(stored.id) == history_before
+    assert movements.get(exit_movement.id).applied_price == Decimal("900.00")
+
+
+@pytest.mark.parametrize(
+    "sale_price", [Decimal("0"), Decimal("-5"), Decimal("NaN"), 10.5, "650"]
+)
 def test_change_sale_price_rejects_an_invalid_price(
     presentation_service: PresentationService,
     product_service: ProductService,
     presentations: SqlitePresentationRepository,
-    sale_price: Decimal,
+    price_history: SqlitePriceHistoryRepository,
+    sale_price: Any,
 ) -> None:
-    """Verifica el rechazo de un precio inválido al modificar."""
+    """Verifica el rechazo de un precio inválido, sin cambio ni historial."""
     _, box = register_product_with_box(product_service, presentations)
 
     with pytest.raises(QuantityError):
         presentation_service.change_sale_price(box.id, sale_price)
 
     assert presentations.get(box.id).sale_price == Decimal("600.00")
+    assert price_history.list_by_presentation(box.id) == []
+
+
+def test_change_sale_price_rolls_back_when_the_history_fails(
+    connection: sqlite3.Connection,
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    movements: SqliteMovementRepository,
+    product_service: ProductService,
+) -> None:
+    """Verifica la reversión completa si el historial no se registra (T031)."""
+    _, box = register_product_with_box(product_service, presentations)
+    failing_service = PresentationService(
+        products=products,
+        presentations=presentations,
+        movements=movements,
+        price_history=_FailingPriceHistoryRepository(),
+        transaction=partial(transaction, connection),
+    )
+
+    with pytest.raises(RuntimeError):
+        failing_service.change_sale_price(box.id, Decimal("650.00"))
+
+    reloaded = presentations.get(box.id)
+
+    assert reloaded is not None
+    assert reloaded.sale_price == box.sale_price
+    assert connection.execute(
+        "SELECT COUNT(*) AS total FROM price_changes"
+    ).fetchone()["total"] == 0
 
 
 def test_change_sale_price_rejects_a_deactivated_product(
@@ -394,6 +616,47 @@ def test_change_sale_price_requires_an_existing_presentation(
     """Verifica que modificar el precio de una presentación faltante falla."""
     with pytest.raises(RecordNotFoundError):
         presentation_service.change_sale_price(999, Decimal("650.00"))
+
+
+def test_change_sale_price_records_the_immediately_previous_price(
+    presentation_service: PresentationService,
+    product_service: ProductService,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+) -> None:
+    """
+    Verifica que el precio anterior es el vigente al aplicar el cambio (T036).
+
+    Entre el alta de la presentación y el cambio hay una actualización externa
+    del precio con el puerto público: el historial debe registrar 620 —el valor
+    inmediatamente anterior, leído antes del `UPDATE`— y no 600, el precio que
+    tenía la presentación cuando se registró.
+    """
+    _, box = register_product_with_box(product_service, presentations)
+    presentations.set_sale_price(box.id, Decimal("620"))
+
+    presentation_service.change_sale_price(box.id, Decimal("700"))
+
+    changes = price_history.list_by_presentation(box.id)
+
+    assert len(changes) == 1
+    assert changes[0].previous_price == Decimal("620")
+    assert changes[0].previous_price != Decimal("600")
+    assert changes[0].new_price == Decimal("700")
+    assert presentations.get(box.id).sale_price == Decimal("700")
+
+
+def test_change_sale_price_of_a_missing_presentation_records_nothing(
+    connection: sqlite3.Connection,
+    presentation_service: PresentationService,
+) -> None:
+    """Verifica el rechazo de una presentación faltante sin filas (T036)."""
+    with pytest.raises(RecordNotFoundError):
+        presentation_service.change_sale_price(999, Decimal("650.00"))
+
+    assert connection.execute(
+        "SELECT COUNT(*) AS total FROM price_changes"
+    ).fetchone()["total"] == 0
 
 
 # --- Factor mutable solo sin stock cerrado ni historial (criterio 11) ---

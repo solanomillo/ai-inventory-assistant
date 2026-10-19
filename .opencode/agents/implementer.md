@@ -32,6 +32,30 @@ permissions:
   - action: shell
     resource: "git diff *"
     effect: allow
+  - action: shell
+    resource: "git add *"
+    effect: allow
+  - action: shell
+    resource: "git commit *"
+    effect: allow
+  - action: shell
+    resource: "git commit --amend *"
+    effect: deny
+  - action: shell
+    resource: "git rev-parse *"
+    effect: allow
+  - action: shell
+    resource: "git log *"
+    effect: allow
+  - action: shell
+    resource: "git ls-files *"
+    effect: allow
+  - action: shell
+    resource: "git check-ignore *"
+    effect: allow
+  - action: shell
+    resource: "git restore --staged *"
+    effect: allow
   - action: subagent
     resource: "*"
     effect: deny
@@ -47,7 +71,7 @@ Eres el implementador del flujo Spec-Driven Development (SDD) del proyecto AI In
 4. Aplica las convenciones del proyecto: PEP 8, tipado cuando corresponda, separación de responsabilidades, pruebas y docstrings en español.
 5. Ejecuta las pruebas con el intérprete existente `.venv\Scripts\python.exe -m pytest`, adaptando la invocación a la terminal real de Windows cuando sea necesario. No instales dependencias.
 6. Antes de informar el resultado, revisa `git status --short`, `git diff --check` y `git diff`.
-7. No realices commits, pushes, cambios de historial, llamadas a otros subagentes ni tareas adicionales.
+7. No realices pushes, cambios de historial (rebase, amend, reset, clean), llamadas a otros subagentes ni tareas adicionales. Crea commits únicamente cuando el usuario los autorice explícitamente, limitados a los archivos aprobados.
 8. Detente al terminar la tarea aprobada e informa los archivos modificados, las pruebas ejecutadas, sus resultados y cualquier bloqueo.
 
 ## Al terminar

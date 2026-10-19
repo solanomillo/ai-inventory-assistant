@@ -8,12 +8,13 @@ nombre y la recuperación de los datos necesarios para reconstruir saldos y
 consultar el historial de movimientos.
 """
 
+import ast
 import sqlite3
 from collections.abc import Iterator
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from inspect import getmembers, isfunction
+from inspect import getmembers, getsource, isfunction
 from typing import Any
 
 import pytest
@@ -22,17 +23,22 @@ from app.domain.movements import ClosedEntry, MovementKind
 from app.domain.presentations import DuplicatePresentationNameError
 from app.domain.products import DuplicateSkuError
 from app.domain.stock import ClosedStock, total_equivalent
+from app.infrastructure.sqlite import repositories as repositories_module
 from app.infrastructure.sqlite.connection import IN_MEMORY_DATABASE, connect
 from app.infrastructure.sqlite.repositories import (
     NotAClosedEntryError,
     SqliteMovementRepository,
     SqlitePresentationRepository,
+    SqlitePriceHistoryRepository,
     SqliteProductRepository,
 )
 from app.infrastructure.sqlite.schema import create_schema
 from app.services.ports import (
+    PRICE_CHANGE_EVENT_TYPE,
     MovementRecord,
     MovementRepository,
+    PriceChangeRecord,
+    PriceHistoryRepository,
     ProductRecord,
     PresentationRecord,
     RecordNotFoundError,
@@ -40,9 +46,25 @@ from app.services.ports import (
 
 START: datetime = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)
 
+EARLIER: datetime = datetime(2026, 3, 1, 10, 0, tzinfo=timezone.utc)
+
+LATER: datetime = datetime(2026, 3, 1, 14, 0, tzinfo=timezone.utc)
+
 # Operaciones que la persistencia no debe exponer sobre un movimiento
 # confirmado: los movimientos solo se registran y se consultan (RF-03, RF-06).
 FORBIDDEN_MOVEMENT_OPERATIONS: tuple[str, ...] = (
+    "update",
+    "delete",
+    "remove",
+    "edit",
+    "replace",
+    "truncate",
+    "drop",
+)
+
+# Operaciones que la persistencia no debe exponer sobre el historial de
+# precios: el historial solo se anexa y se consulta (RF-08, T030).
+FORBIDDEN_PRICE_CHANGE_OPERATIONS: tuple[str, ...] = (
     "update",
     "delete",
     "remove",
@@ -82,6 +104,14 @@ def presentations(
 def movements(connection: sqlite3.Connection) -> SqliteMovementRepository:
     """Repositorio de movimientos sobre la base en memoria."""
     return SqliteMovementRepository(connection)
+
+
+@pytest.fixture
+def price_history(
+    connection: sqlite3.Connection,
+) -> SqlitePriceHistoryRepository:
+    """Repositorio del historial de precios sobre la base en memoria."""
+    return SqlitePriceHistoryRepository(connection)
 
 
 def register_product(
@@ -154,6 +184,50 @@ def public_operations(repository: type) -> set[str]:
         for name, _ in getmembers(repository, isfunction)
         if not name.startswith("_")
     }
+
+
+def register_price_change(
+    price_history: SqlitePriceHistoryRepository,
+    product_id: int,
+    presentation_id: int,
+    *,
+    previous_price: Decimal | str = "10.5",
+    new_price: Decimal | str = "12",
+    occurred_at: datetime = START,
+) -> PriceChangeRecord:
+    """Registra un cambio de precio válido y devuelve su versión persistida."""
+    return price_history.add(
+        product_id=product_id,
+        presentation_id=presentation_id,
+        previous_price=Decimal(previous_price),
+        new_price=Decimal(new_price),
+        occurred_at=occurred_at,
+    )
+
+
+def stored_price_change(
+    connection: sqlite3.Connection, price_change_id: int
+) -> dict[str, Any]:
+    """Devuelve la fila persistida del cambio de precio como diccionario."""
+    row = connection.execute(
+        "SELECT * FROM price_changes WHERE id = ?", (price_change_id,)
+    ).fetchone()
+    assert row is not None
+
+    return dict(row)
+
+
+def sql_fragments_mentioning(source: str, table: str) -> list[str]:
+    """Devuelve los textos del módulo que mencionan la tabla indicada."""
+    tree = ast.parse(source)
+
+    return [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and table in node.value
+    ]
 
 
 def stored_row(
@@ -1074,3 +1148,342 @@ def test_update_compensated_quantity_rejects_a_quantity_that_exceeds_the_entry(
     }
     assert allowed.consumed_quantity == 2
     assert allowed.compensated_quantity == 1
+
+
+# --- Historial de precios: contrato de solo anexado (T030, RF-08) ---
+
+
+@pytest.mark.parametrize(
+    "repository", [PriceHistoryRepository, SqlitePriceHistoryRepository]
+)
+def test_price_history_repository_exposes_only_the_append_only_contract(
+    repository: type,
+) -> None:
+    """Verifica que el historial solo se anexa y se consulta (RF-08)."""
+    operations = public_operations(repository)
+
+    assert operations == {
+        "add",
+        "list_by_presentation",
+        "list_by_product",
+    }
+    for operation in operations:
+        for forbidden in FORBIDDEN_PRICE_CHANGE_OPERATIONS:
+            assert forbidden not in operation
+
+
+def test_the_repositories_module_never_mutates_a_price_change() -> None:
+    """
+    Verifica el contrato de solo anexado también en el código (T036, C13).
+
+    Cierra la garantía en el nivel del módulo, además del contrato público que
+    verifican las operaciones expuestas: ningún texto del código que menciona
+    `price_changes` contiene `UPDATE`, `DELETE` ni `DROP`, y el único escrito
+    es el `INSERT` del alta. No se prueba un `UPDATE` o un `DELETE` real porque
+    el esquema no los impide con disparadores: la garantía es la ausencia de la
+    operación en la persistencia, no un rechazo en tiempo de ejecución.
+    """
+    operations = public_operations(PriceHistoryRepository)
+    sqlite_operations = public_operations(SqlitePriceHistoryRepository)
+    fragments = sql_fragments_mentioning(
+        getsource(repositories_module), "price_changes"
+    )
+
+    assert operations == sqlite_operations == {
+        "add",
+        "list_by_presentation",
+        "list_by_product",
+    }
+    assert fragments
+    assert any(
+        "INSERT INTO price_changes" in fragment for fragment in fragments
+    )
+    for fragment in fragments:
+        normalized = fragment.upper()
+        assert "UPDATE" not in normalized, fragment
+        assert "DELETE" not in normalized, fragment
+        assert "DROP" not in normalized, fragment
+
+
+def test_add_price_change_persists_the_canonical_decimal_text(
+    connection: sqlite3.Connection,
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+) -> None:
+    """Verifica la serialización decimal exacta, sin `float` (RF-08)."""
+    product = register_product(products)
+    presentation = register_presentation(presentations, product.id)
+    exact_price = Decimal("123456789012345678.12345")
+
+    stored = register_price_change(
+        price_history,
+        product.id,
+        presentation.id,
+        previous_price=Decimal("10.50"),
+        new_price=exact_price,
+    )
+    row = stored_price_change(connection, stored.id)
+
+    assert stored.previous_price == Decimal("10.5")
+    assert stored.new_price == exact_price
+    assert row["previous_price"] == "10.5"
+    assert row["new_price"] == "123456789012345678.12345"
+    assert price_history.list_by_presentation(presentation.id) == [stored]
+
+
+def test_price_change_instants_are_stored_in_utc(
+    connection: sqlite3.Connection,
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+) -> None:
+    """Verifica que el instante se almacena y se lee en UTC (RF-08)."""
+    product = register_product(products)
+    presentation = register_presentation(presentations, product.id)
+    local_instant = START.astimezone(timezone(timedelta(hours=-3)))
+
+    stored = register_price_change(
+        price_history,
+        product.id,
+        presentation.id,
+        occurred_at=local_instant,
+    )
+
+    assert stored.occurred_at == START
+    assert stored.occurred_at.utcoffset() == timedelta(0)
+    assert stored_price_change(connection, stored.id)["occurred_at"] == (
+        "2026-03-01T12:00:00.000000+00:00"
+    )
+
+
+def test_price_change_instant_without_timezone_is_rejected(
+    connection: sqlite3.Connection,
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+) -> None:
+    """Verifica el rechazo de un instante sin zona horaria (RF-08)."""
+    product = register_product(products)
+    presentation = register_presentation(presentations, product.id)
+
+    with pytest.raises(ValueError):
+        register_price_change(
+            price_history,
+            product.id,
+            presentation.id,
+            occurred_at=datetime(2026, 3, 1, 12, 0),
+        )
+
+    assert price_history.list_by_presentation(presentation.id) == []
+
+
+def test_add_price_change_uses_the_constant_event_type(
+    connection: sqlite3.Connection,
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+) -> None:
+    """Verifica que el tipo de evento lo fija el repositorio (RF-08)."""
+    product = register_product(products)
+    presentation = register_presentation(presentations, product.id)
+
+    stored = register_price_change(
+        price_history, product.id, presentation.id
+    )
+    row = stored_price_change(connection, stored.id)
+
+    assert stored.event_type == PRICE_CHANGE_EVENT_TYPE
+    assert row["event_type"] == PRICE_CHANGE_EVENT_TYPE
+
+
+def test_add_price_change_persists_the_readable_event_type(
+    connection: sqlite3.Connection,
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+) -> None:
+    """Verifica el valor persistido del evento, no solo la constante."""
+    product = register_product(products)
+    presentation = register_presentation(presentations, product.id)
+
+    stored = register_price_change(
+        price_history, product.id, presentation.id
+    )
+
+    assert stored_price_change(connection, stored.id)["event_type"] == (
+        "cambio_precio"
+    )
+
+
+def test_add_price_change_requires_existing_references(
+    connection: sqlite3.Connection,
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+) -> None:
+    """Verifica las claves foráneas del historial (RF-08)."""
+    product = register_product(products)
+    presentation = register_presentation(presentations, product.id)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        register_price_change(
+            price_history, product.id + 1, presentation.id
+        )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        register_price_change(
+            price_history, product.id, presentation.id + 1
+        )
+
+    assert price_history.list_by_product(product.id) == []
+    assert price_history.list_by_presentation(presentation.id) == []
+
+
+@pytest.mark.parametrize(
+    "price", [Decimal("0"), Decimal("-1.5"), Decimal("NaN")]
+)
+def test_add_price_change_rejects_an_invalid_price(
+    connection: sqlite3.Connection,
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+    price: Decimal,
+) -> None:
+    """Verifica que el esquema rechaza un precio no positivo o malformado."""
+    product = register_product(products)
+    presentation = register_presentation(presentations, product.id)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        register_price_change(
+            price_history,
+            product.id,
+            presentation.id,
+            previous_price=price,
+        )
+
+    assert price_history.list_by_presentation(presentation.id) == []
+
+
+def test_list_by_presentation_returns_its_history_in_order(
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+) -> None:
+    """Verifica el orden cronológico y el desempate por `id` (RF-08)."""
+    product = register_product(products)
+    first = register_presentation(presentations, product.id)
+    second = register_presentation(
+        presentations, product.id, name="Caja x12", factor=12
+    )
+    earliest = register_price_change(
+        price_history, product.id, first.id, occurred_at=START
+    )
+    tie_first = register_price_change(
+        price_history, product.id, first.id, occurred_at=LATER
+    )
+    tie_second = register_price_change(
+        price_history,
+        product.id,
+        first.id,
+        occurred_at=LATER,
+        new_price="15",
+    )
+    register_price_change(
+        price_history, product.id, second.id, occurred_at=EARLIER
+    )
+
+    history = price_history.list_by_presentation(first.id)
+
+    assert history == [earliest, tie_first, tie_second]
+
+
+def test_list_by_product_returns_the_history_of_its_presentations(
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+) -> None:
+    """Verifica la consulta por producto, en orden cronológico (RF-08)."""
+    product = register_product(products)
+    first = register_presentation(presentations, product.id)
+    second = register_presentation(
+        presentations, product.id, name="Caja x12", factor=12
+    )
+    other_product = register_product(products, sku="SKU-2")
+    other_presentation = register_presentation(
+        presentations, other_product.id
+    )
+    latest = register_price_change(
+        price_history, product.id, second.id, occurred_at=LATER
+    )
+    earliest = register_price_change(
+        price_history, product.id, first.id, occurred_at=EARLIER
+    )
+    register_price_change(
+        price_history, other_product.id, other_presentation.id
+    )
+
+    history = price_history.list_by_product(product.id)
+
+    assert history == [earliest, latest]
+    assert all(
+        record.product_id == product.id for record in history
+    )
+
+
+def test_price_change_lists_are_empty_without_records(
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+) -> None:
+    """Verifica que leer un historial vacío no es un error (RF-08)."""
+    product = register_product(products)
+    presentation = register_presentation(presentations, product.id)
+
+    assert price_history.list_by_presentation(presentation.id) == []
+    assert price_history.list_by_product(product.id) == []
+    assert price_history.list_by_presentation(999) == []
+    assert price_history.list_by_product(999) == []
+
+
+def test_read_operations_do_not_change_the_price_history(
+    connection: sqlite3.Connection,
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+) -> None:
+    """Verifica que consultar el historial no modifica sus registros."""
+    product = register_product(products)
+    presentation = register_presentation(presentations, product.id)
+    stored = register_price_change(
+        price_history, product.id, presentation.id
+    )
+
+    price_history.list_by_presentation(presentation.id)
+    price_history.list_by_product(product.id)
+
+    assert stored_price_change(connection, stored.id) == {
+        "id": stored.id,
+        "product_id": product.id,
+        "presentation_id": presentation.id,
+        "previous_price": "10.5",
+        "new_price": "12",
+        "occurred_at": "2026-03-01T12:00:00.000000+00:00",
+        "event_type": PRICE_CHANGE_EVENT_TYPE,
+    }
+
+
+def test_price_change_records_are_immutable(
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    price_history: SqlitePriceHistoryRepository,
+) -> None:
+    """Verifica que un cambio de precio persistido no se modifica (RF-08)."""
+    product = register_product(products)
+    presentation = register_presentation(presentations, product.id)
+    stored = register_price_change(
+        price_history, product.id, presentation.id
+    )
+
+    with pytest.raises(FrozenInstanceError):
+        stored.new_price = Decimal("99")  # type: ignore[misc]

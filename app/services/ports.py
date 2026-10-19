@@ -30,6 +30,10 @@ puedan tratarla como `ValueError` sin acoplarse al motor de persistencia
 persistencia informa el rechazo de un movimiento no elegible con un error que
 define como subclase de `ValueError`, y rechaza un valor de contador inválido
 con `ValueError`.
+El historial de precios (RF-08) se registra con `PriceHistoryRepository`: solo
+anexa y consulta, sin editar ni eliminar registros, y no abre transacciones
+propias. La coherencia entre el producto y la presentación de un cambio de
+precio la valida el servicio que lo registra antes de persistir.
 """
 
 from dataclasses import dataclass
@@ -453,5 +457,92 @@ class MovementRepository(Protocol):
             ValueError: Si la cantidad compensada no es un entero mayor o igual
                 que cero o si, sumada a la cantidad consumida, supera la
                 cantidad original de la entrada.
+        """
+        ...
+
+
+PRICE_CHANGE_EVENT_TYPE: str = "cambio_precio"
+"""Tipo de evento con el que se registran los cambios de precio (RF-08)."""
+
+
+@dataclass(frozen=True)
+class PriceChangeRecord:
+    """
+    Cambio de precio de una presentación, ya persistido (RF-08).
+
+    Conserva el producto y la presentación afectados, el precio anterior y el
+    nuevo como `Decimal` exacto, el instante del cambio con zona horaria (UTC)
+    y el tipo de evento. El historial es de solo anexado: un registro no se
+    modifica ni se elimina.
+    """
+
+    id: int
+    product_id: int
+    presentation_id: int
+    previous_price: Decimal
+    new_price: Decimal
+    occurred_at: datetime
+    event_type: str
+
+
+class PriceHistoryRepository(Protocol):
+    """
+    Contrato de persistencia del historial de precios (RF-08).
+
+    Permite registrar un cambio de precio y consultar el historial por
+    presentación y por producto. No expone ninguna operación para editar ni
+    eliminar un cambio registrado: el historial es de solo anexado y una
+    corrección, si hiciera falta, correspondería a un registro nuevo.
+
+    El repositorio no abre transacciones: se ejecuta dentro de la transacción
+    del servicio que registra el cambio (T031), que valida antes de persistir
+    que la presentación pertenezca al producto indicado. Las claves foráneas
+    del esquema alcanzan a `products` y a `presentations` por separado, así que
+    no garantizan esa coherencia: la garantiza el servicio.
+    """
+
+    def add(
+        self,
+        *,
+        product_id: int,
+        presentation_id: int,
+        previous_price: Decimal,
+        new_price: Decimal,
+        occurred_at: datetime,
+    ) -> PriceChangeRecord:
+        """
+        Registra un cambio de precio y devuelve su versión persistida.
+
+        El tipo de evento lo fija el repositorio con
+        `PRICE_CHANGE_EVENT_TYPE`; no es un parámetro de esta operación.
+
+        `occurred_at` debe incluir zona horaria; se almacena en UTC.
+
+        Raises:
+            sqlite3.IntegrityError: Si el cambio incumple las restricciones
+                del esquema, por ejemplo un precio malformado, un evento vacío
+                o una referencia inexistente.
+            ValueError: Si el instante no incluye zona horaria.
+        """
+        ...
+
+    def list_by_presentation(
+        self, presentation_id: int
+    ) -> list[PriceChangeRecord]:
+        """
+        Devuelve el historial de la presentación, en orden cronológico.
+
+        El orden es ascendente por `occurred_at` con desempate estable por
+        `id`. Una presentación sin cambios registrados devuelve una lista
+        vacía: no es un error.
+        """
+        ...
+
+    def list_by_product(self, product_id: int) -> list[PriceChangeRecord]:
+        """
+        Devuelve el historial de todas las presentaciones del producto.
+
+        El orden es ascendente por `occurred_at` con desempate estable por
+        `id`. Un producto sin cambios registrados devuelve una lista vacía.
         """
         ...

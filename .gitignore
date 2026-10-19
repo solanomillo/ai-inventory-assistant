@@ -13,9 +13,23 @@ __pycache__/
 
 # Pruebas y cachés
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # Bases de datos locales
 *.db
+*.sqlite3
 
-# Streamlit
-.streamlit/
+# Secretos de Streamlit
+.streamlit/secrets.toml
+.streamlit/secrets.*
+!.streamlit/config.toml
+
+# Datos locales y archivos de ejecución
+data/
+
+# Skills locales instaladas por Streamlit
+.agents/skills/developing-with-streamlit
+.claude/skills/developing-with-streamlit

@@ -1,19 +1,35 @@
-"""Pruebas de integración del esquema SQLite (T008, RF-02, RF-03 y RF-07).
+"""Pruebas de integración del esquema SQLite (T008, T028, RF-02, RF-03, RF-07).
 
 Verifican que el esquema se crea desde una base vacía con las tablas del MVP,
 que las cantidades y contadores usan `INTEGER`, que los precios y costos se
 almacenan como texto decimal exacto, que el índice único parcial de la
 presentación base existe y restringe como corresponde y que las restricciones
 de integridad del esquema rechazan los datos inválidos.
+
+Cubren además la persistencia duradera y la migración versionada de T028: la
+ruta configurable e independiente del directorio de trabajo, la creación del
+esquema en una base en archivo con su versión registrada, la idempotencia, la
+adopción de una base legada con datos, la persistencia al cerrar y reabrir, el
+soporte de `:memory:` y el rechazo seguro de bases desconocidas o más nuevas,
+incluida la reversión completa ante el fallo de una migración.
 """
 
+import importlib
 import sqlite3
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
+from app import config
+from app.infrastructure.sqlite import schema as schema_module
 from app.infrastructure.sqlite.connection import IN_MEMORY_DATABASE, connect
-from app.infrastructure.sqlite.schema import create_schema
+from app.infrastructure.sqlite.schema import (
+    IncompatibleSchemaError,
+    create_schema,
+    schema_version,
+    user_tables,
+)
 
 MOVEMENT_KINDS: tuple[str, ...] = (
     "entrada_cerrada",
@@ -58,7 +74,24 @@ EXPECTED_COLUMNS: dict[str, tuple[str, ...]] = {
         "compensated_quantity",
     ),
     "proposals": ("id", "action_type", "data", "status", "created_at"),
+    "price_changes": (
+        "id",
+        "product_id",
+        "presentation_id",
+        "previous_price",
+        "new_price",
+        "occurred_at",
+        "event_type",
+    ),
 }
+
+LEGACY_TABLES: tuple[str, ...] = (
+    "products",
+    "presentations",
+    "movements",
+    "proposals",
+)
+"""Tablas del esquema legado: el esquema base sin el historial de precios."""
 
 INTEGER_COLUMNS: tuple[tuple[str, str], ...] = (
     ("products", "minimum_stock"),
@@ -74,6 +107,8 @@ DECIMAL_TEXT_COLUMNS: tuple[tuple[str, str], ...] = (
     ("presentations", "sale_price"),
     ("movements", "cost"),
     ("movements", "applied_price"),
+    ("price_changes", "previous_price"),
+    ("price_changes", "new_price"),
 )
 
 
@@ -188,13 +223,64 @@ def insert_movement(
     return int(cursor.lastrowid)
 
 
+def row_count(connection: sqlite3.Connection, table: str) -> int:
+    """Devuelve la cantidad de filas de una tabla."""
+    return int(
+        connection.execute(
+            f"SELECT COUNT(*) AS total FROM {table}"
+        ).fetchone()["total"]
+    )
+
+
+def build_legacy_schema(connection: sqlite3.Connection) -> None:
+    """
+    Crea el esquema legado: el esquema base sin el historial de precios (T029).
+
+    Es la estructura que deja una base anterior a T029: las sentencias base,
+    ejecutadas una por una, con `user_version` en 0.
+    """
+    for statement in schema_module.SCHEMA_STATEMENTS:
+        connection.execute(statement)
+    connection.execute("PRAGMA user_version = 0")
+
+
+def insert_price_change(
+    connection: sqlite3.Connection,
+    product_id: int,
+    presentation_id: int,
+    previous_price: str | None = "100.5",
+    new_price: str | None = "120",
+    occurred_at: str | None = "2026-01-01T00:00:00Z",
+    event_type: str | None = "cambio_precio",
+) -> int:
+    """Inserta un cambio de precio y devuelve su identificador."""
+    cursor = connection.execute(
+        """
+        INSERT INTO price_changes (
+            product_id, presentation_id, previous_price, new_price,
+            occurred_at, event_type
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            product_id,
+            presentation_id,
+            previous_price,
+            new_price,
+            occurred_at,
+            event_type,
+        ),
+    )
+
+    return int(cursor.lastrowid)
+
+
 # --- Creación del esquema desde una base vacía ---
 
 
-def test_create_schema_creates_the_four_tables(
+def test_create_schema_creates_the_five_tables(
     connection: sqlite3.Connection,
 ) -> None:
-    """Verifica que la base vacía queda con las tablas del MVP."""
+    """Verifica que la base vacía queda con las cinco tablas."""
     tables = {
         str(row["name"])
         for row in connection.execute(
@@ -213,12 +299,529 @@ def test_table_has_the_planned_columns(
     assert column_names(connection, table) == EXPECTED_COLUMNS[table]
 
 
-def test_schema_creation_on_an_existing_schema_fails(
+def test_create_schema_is_idempotent(
     connection: sqlite3.Connection,
 ) -> None:
-    """Verifica que no hay migración: crear el esquema dos veces falla."""
-    with pytest.raises(sqlite3.OperationalError):
+    """Verifica que crear el esquema dos veces no falla ni borra datos."""
+    product_id = insert_product(connection, sku="SKU-1")
+
+    create_schema(connection)
+
+    assert user_tables(connection) == set(EXPECTED_COLUMNS)
+    assert column_names(connection, "products") == EXPECTED_COLUMNS["products"]
+    assert schema_version(connection) == schema_module.SCHEMA_VERSION
+    assert [
+        row["id"] for row in connection.execute("SELECT id FROM products")
+    ] == [product_id]
+
+
+# --- Persistencia duradera y migración versionada (T028) ---
+
+
+def test_the_default_database_path_is_absolute_and_module_relative() -> None:
+    """Verifica que la ruta predeterminada es absoluta."""
+    expected = (
+        Path(config.__file__).resolve().parent.parent
+        / "data"
+        / "inventory.sqlite3"
+    )
+
+    assert config.DEFAULT_DATABASE_PATH == expected
+    assert config.DEFAULT_DATABASE_PATH.is_absolute()
+
+
+def test_an_empty_database_path_falls_back_to_the_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Verifica que un valor vacío usa la ruta predeterminada (I1).
+
+    La configuración se lee al importar el módulo, así que la prueba recarga
+    `app.config` con `INVENTORY_DB_PATH` vacío y neutraliza la creación del
+    directorio: se verifica la ruta resuelta, no el efecto en disco, de modo
+    que la prueba no deja rastros en el proyecto. Al terminar se restaura el
+    entorno y se recarga el módulo para no afectar a las demás pruebas.
+    """
+    created_directories: list[Path] = []
+    monkeypatch.setattr(
+        Path,
+        "mkdir",
+        lambda self, **kwargs: created_directories.append(self),
+    )
+    monkeypatch.setenv("INVENTORY_DB_PATH", "")
+    reloaded = importlib.reload(config)
+
+    try:
+        assert reloaded.INVENTORY_DB_PATH == str(
+            reloaded.DEFAULT_DATABASE_PATH
+        )
+        assert reloaded.resolve_database_path() == (
+            reloaded.DEFAULT_DATABASE_PATH
+        )
+        assert created_directories == [reloaded.DEFAULT_DATABASE_PATH.parent]
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_resolve_database_path_is_independent_from_the_working_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Verifica que la ruta configurada se resuelva fuera del CWD (R3, R6)."""
+    configured = tmp_path / "datos" / "inventario.sqlite3"
+    other_directory = tmp_path / "otro"
+    other_directory.mkdir()
+    monkeypatch.setattr(config, "INVENTORY_DB_PATH", str(configured))
+    monkeypatch.chdir(other_directory)
+
+    resolved = config.resolve_database_path()
+
+    assert resolved == configured
+    assert resolved.parent.is_dir()
+
+
+def test_create_schema_on_a_new_file_database_stamps_the_version(
+    tmp_path: Path,
+) -> None:
+    """Verifica el esquema y la versión de una base nueva en archivo (R4)."""
+    path = tmp_path / "inventory.sqlite3"
+    connection = connect(path)
+    try:
         create_schema(connection)
+
+        assert user_tables(connection) == set(EXPECTED_COLUMNS)
+        assert schema_version(connection) == schema_module.SCHEMA_VERSION
+    finally:
+        connection.close()
+
+
+def test_create_schema_adopts_a_legacy_database_with_data(
+    tmp_path: Path,
+) -> None:
+    """
+    Verifica la adopción y la migración de una base legada con datos (T029).
+
+    La base se construye como una base anterior a T029 —las cuatro tablas del
+    esquema base, sin `price_changes` y con `user_version = 0`—: la adopción la
+    valida, la migra a la versión 1 y conserva todas las filas.
+    """
+    path = tmp_path / "legacy.sqlite3"
+    connection = connect(path)
+    try:
+        build_legacy_schema(connection)
+        product_id = insert_product(connection, sku="SKU-1")
+        presentation_id = insert_presentation(connection, product_id)
+        insert_movement(connection, product_id, presentation_id)
+        insert_movement(
+            connection, product_id, presentation_id, kind="entrada_suelta"
+        )
+        before = {
+            table: row_count(connection, table) for table in LEGACY_TABLES
+        }
+
+        create_schema(connection)
+
+        assert schema_version(connection) == schema_module.SCHEMA_VERSION
+        assert user_tables(connection) == set(EXPECTED_COLUMNS)
+        assert {
+            table: row_count(connection, table) for table in LEGACY_TABLES
+        } == before
+        assert row_count(connection, "price_changes") == 0
+        stored_skus = [
+            row["sku"]
+            for row in connection.execute("SELECT sku FROM products")
+        ]
+
+        assert stored_skus == ["SKU-1"]
+    finally:
+        connection.close()
+
+
+def test_data_persists_after_closing_and_reopening_the_file(
+    tmp_path: Path,
+) -> None:
+    """Verifica que los datos persisten al cerrar y reabrir la base (T028)."""
+    path = tmp_path / "inventory.sqlite3"
+    first = connect(path)
+    try:
+        create_schema(first)
+        product_id = insert_product(first, sku="SKU-1", name="Producto")
+    finally:
+        first.close()
+
+    reopened = connect(path)
+    try:
+        create_schema(reopened)
+
+        stored = reopened.execute(
+            "SELECT id, sku, name FROM products"
+        ).fetchone()
+
+        assert stored["id"] == product_id
+        assert stored["sku"] == "SKU-1"
+        assert stored["name"] == "Producto"
+        assert schema_version(reopened) == schema_module.SCHEMA_VERSION
+    finally:
+        reopened.close()
+
+
+def test_connect_still_defaults_to_an_in_memory_database() -> None:
+    """Verifica que `connect()` conserva `:memory:` por defecto (R1)."""
+    default_connection = connect()
+    try:
+        databases = default_connection.execute(
+            "PRAGMA database_list"
+        ).fetchall()
+
+        assert not databases[0]["file"]
+        assert user_tables(default_connection) == set()
+    finally:
+        default_connection.close()
+
+
+def test_create_schema_still_supports_in_memory_databases() -> None:
+    """Verifica que `:memory:` sigue disponible para las pruebas (R1)."""
+    memory_connection = connect(IN_MEMORY_DATABASE)
+    try:
+        create_schema(memory_connection)
+        version = schema_version(memory_connection)
+
+        assert user_tables(memory_connection) == set(EXPECTED_COLUMNS)
+        assert version == schema_module.SCHEMA_VERSION
+    finally:
+        memory_connection.close()
+
+
+def test_create_schema_rejects_an_unknown_structure(
+    tmp_path: Path,
+) -> None:
+    """Verifica el rechazo de una base con tablas desconocidas (R4)."""
+    path = tmp_path / "desconocida.sqlite3"
+    connection = connect(path)
+    try:
+        connection.execute("CREATE TABLE otro (id INTEGER PRIMARY KEY)")
+        connection.execute("INSERT INTO otro (id) VALUES (1)")
+
+        with pytest.raises(IncompatibleSchemaError):
+            create_schema(connection)
+
+        assert user_tables(connection) == {"otro"}
+        assert schema_version(connection) == 0
+        assert connection.execute(
+            "SELECT COUNT(*) AS total FROM otro"
+        ).fetchone()["total"] == 1
+    finally:
+        connection.close()
+
+
+def test_create_schema_rejects_an_incomplete_legacy_structure(
+    tmp_path: Path,
+) -> None:
+    """Verifica el rechazo de las tablas del esquema con columnas ausentes."""
+    path = tmp_path / "incompleta.sqlite3"
+    connection = connect(path)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE products (id INTEGER PRIMARY KEY, sku TEXT);
+            CREATE TABLE presentations (id INTEGER PRIMARY KEY);
+            CREATE TABLE movements (id INTEGER PRIMARY KEY);
+            CREATE TABLE proposals (id INTEGER PRIMARY KEY);
+            """
+        )
+        connection.execute(
+            "INSERT INTO products (id, sku) VALUES (1, 'SKU-1')"
+        )
+
+        with pytest.raises(IncompatibleSchemaError):
+            create_schema(connection)
+
+        stored_skus = [
+            row["sku"]
+            for row in connection.execute("SELECT sku FROM products")
+        ]
+
+        assert stored_skus == ["SKU-1"]
+    finally:
+        connection.close()
+
+
+def test_create_schema_rejects_a_newer_schema_version(
+    tmp_path: Path,
+) -> None:
+    """Verifica el rechazo de una base con una versión más nueva (R4)."""
+    path = tmp_path / "futura.sqlite3"
+    newer_version = schema_module.SCHEMA_VERSION + 1
+    connection = connect(path)
+    try:
+        create_schema(connection)
+        connection.execute(f"PRAGMA user_version = {newer_version}")
+
+        with pytest.raises(IncompatibleSchemaError):
+            create_schema(connection)
+
+        assert schema_version(connection) == newer_version
+    finally:
+        connection.close()
+
+
+def test_a_failing_migration_rolls_back_the_version_and_the_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verifica la reversión completa ante el fallo de una migración (R6)."""
+    path = tmp_path / "migracion.sqlite3"
+    connection = connect(path)
+    try:
+        create_schema(connection)
+        product_id = insert_product(connection, sku="SKU-1")
+        monkeypatch.setattr(schema_module, "SCHEMA_VERSION", 2)
+        monkeypatch.setattr(
+            schema_module,
+            "MIGRATIONS",
+            [
+                (
+                    2,
+                    (
+                        "ALTER TABLE products ADD COLUMN note TEXT",
+                        "INVALID SQL",
+                    ),
+                )
+            ],
+        )
+
+        with pytest.raises(sqlite3.OperationalError):
+            create_schema(connection)
+
+        assert schema_version(connection) == 1
+        assert "note" not in column_names(connection, "products")
+        assert [
+            row["id"] for row in connection.execute("SELECT id FROM products")
+        ] == [product_id]
+    finally:
+        connection.close()
+
+
+# --- Historial de precios (T029) ---
+
+
+def test_create_schema_migrates_a_legacy_database_to_version_1(
+    tmp_path: Path,
+) -> None:
+    """Verifica la migración 0→1 sin perder tablas ni filas (T029)."""
+    path = tmp_path / "historial.sqlite3"
+    connection = connect(path)
+    try:
+        build_legacy_schema(connection)
+        product_id = insert_product(connection, sku="SKU-1")
+        insert_presentation(connection, product_id)
+        assert schema_version(connection) == 0
+        assert user_tables(connection) == set(LEGACY_TABLES)
+
+        create_schema(connection)
+
+        assert schema_version(connection) == 1
+        assert user_tables(connection) - set(LEGACY_TABLES) == {
+            "price_changes"
+        }
+        assert user_tables(connection) == set(EXPECTED_COLUMNS)
+        assert row_count(connection, "products") == 1
+        assert row_count(connection, "presentations") == 1
+        assert row_count(connection, "price_changes") == 0
+    finally:
+        connection.close()
+
+
+def test_price_changes_is_declared_only_in_the_migration() -> None:
+    """Verifica que el historial llega como migración 1 (D1)."""
+    base_statements = "\n".join(schema_module.SCHEMA_STATEMENTS)
+    migration_statements = "\n".join(
+        statement
+        for _, statements in schema_module.MIGRATIONS
+        for statement in statements
+    )
+
+    assert schema_module.SCHEMA_VERSION == 1
+    assert [version for version, _ in schema_module.MIGRATIONS] == [1]
+    assert "price_changes" not in base_statements
+    assert "CREATE TABLE IF NOT EXISTS price_changes" in migration_statements
+    assert "idx_price_changes_presentation_occurred_at" in (
+        migration_statements
+    )
+
+
+def test_price_changes_has_only_the_presentation_index(
+    connection: sqlite3.Connection,
+) -> None:
+    """Verifica el índice del historial y la ausencia de otro índice."""
+    indexes = {
+        str(row["name"]): row
+        for row in connection.execute("PRAGMA index_list(price_changes)")
+    }
+
+    assert set(indexes) == {"idx_price_changes_presentation_occurred_at"}
+    assert indexes["idx_price_changes_presentation_occurred_at"]["unique"] == 0
+
+    indexed_columns = tuple(
+        str(row["name"])
+        for row in connection.execute(
+            "PRAGMA index_info(idx_price_changes_presentation_occurred_at)"
+        )
+    )
+
+    assert indexed_columns == ("presentation_id", "occurred_at")
+
+
+def test_the_schema_defines_no_triggers(
+    connection: sqlite3.Connection,
+) -> None:
+    """Verifica que el esquema no define triggers (D3)."""
+    triggers = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'trigger'"
+    ).fetchall()
+
+    assert triggers == []
+
+
+def test_price_changes_references_existing_product_and_presentation(
+    connection: sqlite3.Connection,
+) -> None:
+    """Verifica las claves foráneas del historial (T029)."""
+    product_id = insert_product(connection)
+    presentation_id = insert_presentation(connection, product_id)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_price_change(connection, product_id + 1, presentation_id)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_price_change(connection, product_id, presentation_id + 1)
+
+    insert_price_change(connection, product_id, presentation_id)
+
+    assert row_count(connection, "price_changes") == 1
+
+
+@pytest.mark.parametrize("price", ["10.5", "10", "0.5", "1200"])
+def test_price_changes_accepts_canonical_decimal_text(
+    connection: sqlite3.Connection,
+    price: str,
+) -> None:
+    """Verifica los precios válidos del historial; iguales también (D6)."""
+    product_id = insert_product(connection)
+    presentation_id = insert_presentation(connection, product_id)
+    insert_price_change(
+        connection,
+        product_id,
+        presentation_id,
+        previous_price=price,
+        new_price=price,
+    )
+
+    stored = connection.execute(
+        "SELECT previous_price, new_price FROM price_changes"
+    ).fetchone()
+
+    assert stored["previous_price"] == price
+    assert stored["new_price"] == price
+
+
+@pytest.mark.parametrize(
+    "price",
+    [
+        "1.2.3",
+        ".5",
+        "5.",
+        "abc",
+        "1e5",
+        "-1",
+        "0",
+        "0.0",
+        " 10",
+        "10 ",
+        "",
+        None,
+    ],
+)
+def test_price_changes_rejects_malformed_decimal_text(
+    connection: sqlite3.Connection,
+    price: str | None,
+) -> None:
+    """Verifica que los precios malformados se rechazan (T029)."""
+    product_id = insert_product(connection)
+    presentation_id = insert_presentation(connection, product_id)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_price_change(
+            connection,
+            product_id,
+            presentation_id,
+            previous_price=price,
+            new_price="10",
+        )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_price_change(
+            connection,
+            product_id,
+            presentation_id,
+            previous_price="10",
+            new_price=price,
+        )
+
+    assert row_count(connection, "price_changes") == 0
+
+
+@pytest.mark.parametrize("event_type", ["", "   ", None])
+def test_price_changes_event_type_cannot_be_blank(
+    connection: sqlite3.Connection,
+    event_type: str | None,
+) -> None:
+    """Verifica que el tipo de evento del historial no queda vacío (D2)."""
+    product_id = insert_product(connection)
+    presentation_id = insert_presentation(connection, product_id)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        insert_price_change(
+            connection,
+            product_id,
+            presentation_id,
+            event_type=event_type,
+        )
+
+    assert row_count(connection, "price_changes") == 0
+
+
+def test_price_changes_stores_the_planned_data(
+    connection: sqlite3.Connection,
+) -> None:
+    """Verifica los datos mínimos de un cambio de precio válido (T029)."""
+    product_id = insert_product(connection)
+    presentation_id = insert_presentation(connection, product_id)
+    insert_price_change(
+        connection,
+        product_id,
+        presentation_id,
+        previous_price="10.5",
+        new_price="1200",
+        occurred_at="2026-02-01T12:00:00+00:00",
+        event_type="cambio_precio",
+    )
+
+    stored = connection.execute(
+        """
+        SELECT product_id, presentation_id, previous_price, new_price,
+               occurred_at, event_type
+        FROM price_changes
+        """
+    ).fetchone()
+
+    assert stored["product_id"] == product_id
+    assert stored["presentation_id"] == presentation_id
+    assert stored["previous_price"] == "10.5"
+    assert stored["new_price"] == "1200"
+    assert stored["occurred_at"] == "2026-02-01T12:00:00+00:00"
+    assert stored["event_type"] == "cambio_precio"
 
 
 # --- Representación persistida ---

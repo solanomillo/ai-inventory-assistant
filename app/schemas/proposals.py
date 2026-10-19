@@ -1,4 +1,4 @@
-"""Esquemas Pydantic de las propuestas del asistente (T015, RF-05).
+"""Esquemas Pydantic de las propuestas (T015 y T032, RF-05/RF-08).
 
 Define las acciones y los estados de una propuesta, el payload de cada acción,
 la propuesta y el resultado de su confirmación. Los payloads forman una unión
@@ -16,8 +16,10 @@ Las propuestas no se persisten en este alcance: no se escribe en la tabla
 modelos son inmutables y no dependen de estado global, de un registro interno ni
 de un singleton.
 
-Quedan fuera de T015 la desactivación de productos y los cambios de precio o de
-factor, que no forman parte de las acciones del asistente.
+Quedan fuera de estas acciones la desactivación de productos y los cambios de
+factor. El cambio de precio de una presentación sí es una acción
+(`cambio_precio`, T032) y su confirmación la ejecuta el servicio de
+presentaciones dentro de una única transacción (T031).
 """
 
 from __future__ import annotations
@@ -43,12 +45,13 @@ from app.services.ports import (
 
 class ProposalAction(str, Enum):
     """
-    Acción de una propuesta del asistente (RF-05).
+    Acción de una propuesta del asistente (RF-05, RF-08).
 
     Los valores son los identificadores del tipo de acción propuesta, en
     español, y cada acción tiene un payload propio y un servicio de destino que
     la ejecuta al confirmar. Quedan fuera de este alcance la desactivación de
-    productos y los cambios de precio o de factor.
+    productos y los cambios de factor; el cambio de precio (`cambio_precio`) sí
+    forma parte de las acciones del asistente.
     """
 
     PRODUCT_REGISTRATION = "alta_producto"
@@ -60,6 +63,7 @@ class ProposalAction(str, Enum):
     CLOSED_EXIT = "salida_cerrada"
     APERTURE = "apertura"
     COMPENSATION = "compensacion"
+    PRICE_UPDATE = "cambio_precio"
 
 
 class ProposalStatus(str, Enum):
@@ -261,6 +265,27 @@ class CompensationPayload(ProposalPayloadModel):
     reason: str
 
 
+class PriceUpdatePayload(ProposalPayloadModel):
+    """
+    Payload del cambio de precio de venta de una presentación (RF-08, T032).
+
+    `presentation_id` identifica la presentación cuyo precio se propone cambiar
+    y `new_price` es el precio nuevo. No se declara el producto: se deriva de
+    la presentación al confirmar, de modo que la coherencia entre ambos no
+    pueda proponerse de forma contradictoria.
+
+    La confirmación la ejecuta el servicio de presentaciones (T031) dentro de
+    una única transacción, que actualiza el precio y registra el cambio en el
+    historial; es ese servicio el que valida que la presentación exista y que
+    su producto esté activo, y el que revalida el precio con el estado vigente
+    (T033). Crear o editar esta propuesta no modifica el inventario.
+    """
+
+    action: Literal["cambio_precio"] = "cambio_precio"
+    presentation_id: int = Field(gt=0)
+    new_price: MonetaryValue = Field(gt=0)
+
+
 ProposalPayload = Annotated[
     ProductRegistrationPayload
     | ProductUpdatePayload
@@ -270,7 +295,8 @@ ProposalPayload = Annotated[
     | LooseExitPayload
     | ClosedExitPayload
     | AperturePayload
-    | CompensationPayload,
+    | CompensationPayload
+    | PriceUpdatePayload,
     Field(discriminator="action"),
 ]
 """Unión discriminada de los payloads: la acción selecciona el payload."""

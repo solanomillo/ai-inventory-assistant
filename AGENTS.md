@@ -29,6 +29,15 @@
 - Mantén los cambios simples y evita la sobreingeniería.
 - Utiliza commits que sigan Conventional Commits, con mensajes en inglés.
 
+
+## Skills de desarrollo
+
+- Para tareas relacionadas con Streamlit, consulta la skill local `developing-with-streamlit` cuando esté disponible y aplica únicamente las recomendaciones pertinentes al alcance autorizado.
+- Verifica las APIs contra la versión de Streamlit instalada en el proyecto.
+- No instales ni actualices dependencias por utilizar una skill sin autorización explícita.
+- No copies al repositorio las referencias de la skill salvo que una tarea lo requiera expresamente.
+- La skill es una guía de desarrollo, no una dependencia de ejecución de la aplicación.
+
 ## Calidad y seguridad
 
 - Sigue los principios establecidos en `docs/constitution.md`.

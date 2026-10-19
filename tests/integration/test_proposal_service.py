@@ -16,6 +16,7 @@ repositorios y consultas `SELECT` directas sobre la conexión.
 
 import sqlite3
 from collections.abc import Callable, Iterator
+from datetime import timedelta
 from decimal import Decimal
 from functools import partial
 from typing import Any
@@ -43,6 +44,7 @@ from app.infrastructure.sqlite.connection import (
 from app.infrastructure.sqlite.repositories import (
     SqliteMovementRepository,
     SqlitePresentationRepository,
+    SqlitePriceHistoryRepository,
     SqliteProductRepository,
 )
 from app.infrastructure.sqlite.schema import create_schema
@@ -55,6 +57,7 @@ from app.schemas.proposals import (
     LooseEntryPayload,
     LooseExitPayload,
     PresentationRegistrationPayload,
+    PriceUpdatePayload,
     ProductRegistrationPayload,
     ProductUpdatePayload,
     Proposal,
@@ -71,6 +74,7 @@ from app.services.movements import (
 from app.services.ports import (
     MovementRecord,
     PresentationRecord,
+    PriceChangeRecord,
     ProductRecord,
     RecordNotFoundError,
 )
@@ -120,6 +124,14 @@ def movements(connection: sqlite3.Connection) -> SqliteMovementRepository:
 
 
 @pytest.fixture
+def price_history(
+    connection: sqlite3.Connection,
+) -> SqlitePriceHistoryRepository:
+    """Repositorio del historial de precios sobre la base en memoria."""
+    return SqlitePriceHistoryRepository(connection)
+
+
+@pytest.fixture
 def product_service(
     connection: sqlite3.Connection,
     products: SqliteProductRepository,
@@ -147,6 +159,7 @@ def presentation_service(
         products=products,
         presentations=presentations,
         movements=movements,
+        price_history=SqlitePriceHistoryRepository(connection),
         transaction=partial(transaction, connection),
     )
 
@@ -179,6 +192,24 @@ def proposal_service(
         presentations=presentation_service,
         movements=movement_service,
     )
+
+
+class _FailingPriceHistoryRepository:
+    """Doble local del historial que falla al registrar el cambio (T036)."""
+
+    def add(self, **values: Any) -> PriceChangeRecord:
+        """Falla siempre, dentro de la transacción del servicio."""
+        raise RuntimeError("Fallo simulado al registrar el cambio de precio.")
+
+    def list_by_presentation(
+        self, presentation_id: int
+    ) -> list[PriceChangeRecord]:
+        """No se usa en la prueba."""
+        raise AssertionError("No se esperaba consultar el historial.")
+
+    def list_by_product(self, product_id: int) -> list[PriceChangeRecord]:
+        """No se usa en la prueba."""
+        raise AssertionError("No se esperaba consultar el historial.")
 
 
 def make_registration(**overrides: Any) -> ProductRegistration:
@@ -261,10 +292,11 @@ def database_state(
     Fotografía el estado persistido del inventario para comparar estados.
 
     Lee las tablas del inventario con consultas nuevas, incluidas las columnas
-    de saldo y los contadores FIFO. La tabla `proposals` se verifica por
-    separado, porque las propuestas de T015 no se persisten.
+    de saldo, los contadores FIFO y el historial de precios: crear o editar una
+    propuesta no debe escribir en ninguna. La tabla `proposals` se verifica por
+    separado, porque las propuestas no se persisten.
     """
-    tables = ("products", "presentations", "movements")
+    tables = ("products", "presentations", "movements", "price_changes")
 
     return tuple(
         [
@@ -316,6 +348,19 @@ def stored_movement(
     return movement
 
 
+def stored_price_changes(
+    connection: sqlite3.Connection, presentation_id: int
+) -> list[dict[str, Any]]:
+    """Devuelve las filas persistidas del historial de una presentación."""
+    rows = connection.execute(
+        "SELECT * FROM price_changes WHERE presentation_id = ? "
+        "ORDER BY occurred_at, id",
+        (presentation_id,),
+    ).fetchall()
+
+    return [dict(row) for row in rows]
+
+
 # --- Las nueve acciones crean propuestas válidas (criterio 1 y 2) ---
 
 
@@ -328,7 +373,16 @@ def test_create_records_the_nine_actions_without_touching_the_inventory(
     movement_service: MovementService,
     proposal_service: ProposalService,
 ) -> None:
-    """Verifica que las nueve acciones crean propuestas pendientes sin efectos."""
+    """
+    Verifica que las diez acciones crean propuestas pendientes sin efectos.
+
+    El cambio de precio (`PRICE_UPDATE`, T032 y T033) crea la propuesta como
+    cualquier otra y su confirmación se despacha al servicio de presentaciones:
+    aplica el precio nuevo y anexa el cambio al historial con el precio
+    anterior capturado al confirmar (RF-08). Crear la propuesta, en cambio, no
+    modifica el precio ni el historial; esa confirmación se verifica en detalle
+    en la sección del cambio de precio.
+    """
     stored, _, box = prepare_product(
         product_service,
         presentations,
@@ -412,6 +466,13 @@ def test_create_records_the_nine_actions_without_touching_the_inventory(
                 movement_id=entry.id,
                 quantity=2,
                 reason="Corrección",
+            ),
+        ),
+        (
+            ProposalAction.PRICE_UPDATE,
+            PriceUpdatePayload(
+                presentation_id=box.id,
+                new_price=Decimal("750"),
             ),
         ),
     )
@@ -1271,6 +1332,251 @@ def test_confirming_a_presentation_with_an_invalid_price_is_rejected(
         proposal_service.confirm(proposal)
 
     assert database_state(connection) == baseline
+
+
+# --- Cambio de precio: creación, confirmación y revalidación (T036) ---
+
+
+def test_creating_a_price_update_does_not_touch_the_price_or_the_history(
+    connection: sqlite3.Connection,
+    presentations: SqlitePresentationRepository,
+    product_service: ProductService,
+    movement_service: MovementService,
+    proposal_service: ProposalService,
+) -> None:
+    """Verifica que la propuesta de precio no escribe nada al crearse (C2)."""
+    _, _, box = prepare_product(
+        product_service, presentations, movement_service
+    )
+    baseline = database_state(connection)
+
+    proposal = proposal_service.create(
+        PriceUpdatePayload(
+            presentation_id=box.id, new_price=Decimal("700")
+        )
+    )
+
+    assert proposal.action is ProposalAction.PRICE_UPDATE
+    assert proposal.status is ProposalStatus.PENDING
+    assert stored_presentation(presentations, box.id).sale_price == (
+        box.sale_price
+    )
+    assert stored_price_changes(connection, box.id) == []
+    assert database_state(connection) == baseline
+    assert proposals_count(connection) == 0
+
+
+def test_confirming_a_price_update_applies_it_and_records_the_history(
+    connection: sqlite3.Connection,
+    presentations: SqlitePresentationRepository,
+    product_service: ProductService,
+    movement_service: MovementService,
+    price_history: SqlitePriceHistoryRepository,
+    proposal_service: ProposalService,
+) -> None:
+    """Verifica la confirmación del cambio de precio y su historial (C1)."""
+    stored, _, box = prepare_product(
+        product_service, presentations, movement_service
+    )
+    proposal = proposal_service.create(
+        PriceUpdatePayload(
+            presentation_id=box.id, new_price=Decimal("700")
+        )
+    )
+
+    confirmation = proposal_service.confirm(proposal)
+
+    assert confirmation.status is ProposalStatus.CONFIRMED
+    assert confirmation.action is ProposalAction.PRICE_UPDATE
+    assert confirmation.proposal.status is ProposalStatus.CONFIRMED
+    assert isinstance(confirmation.result, PresentationRecord)
+    assert confirmation.result.id == box.id
+    assert confirmation.result.sale_price == Decimal("700")
+
+    updated = stored_presentation(presentations, box.id)
+    changes = price_history.list_by_presentation(box.id)
+    rows = stored_price_changes(connection, box.id)
+
+    assert updated.sale_price == Decimal("700")
+    assert len(changes) == 1
+    change = changes[0]
+    assert change.product_id == stored.id
+    assert change.presentation_id == box.id
+    assert change.previous_price == box.sale_price
+    assert change.new_price == Decimal("700")
+    assert change.event_type == "cambio_precio"
+    assert change.occurred_at.tzinfo is not None
+    assert change.occurred_at.utcoffset() == timedelta(0)
+    assert len(rows) == 1
+    assert rows[0]["product_id"] == stored.id
+    assert rows[0]["previous_price"] == "600"
+    assert rows[0]["new_price"] == "700"
+    assert rows[0]["event_type"] == "cambio_precio"
+
+
+def test_confirming_a_price_update_uses_the_price_of_the_confirmation(
+    presentations: SqlitePresentationRepository,
+    product_service: ProductService,
+    movement_service: MovementService,
+    presentation_service: PresentationService,
+    price_history: SqlitePriceHistoryRepository,
+    proposal_service: ProposalService,
+) -> None:
+    """
+    Verifica que el precio anterior se captura al confirmar (C4).
+
+    El precio cambia de forma externa después de crear la propuesta: al
+    confirmar, el historial debe registrar ese precio vigente (650) como precio
+    anterior, no el que tenía la presentación cuando se creó la propuesta.
+    """
+    _, _, box = prepare_product(
+        product_service, presentations, movement_service
+    )
+    proposal = proposal_service.create(
+        PriceUpdatePayload(
+            presentation_id=box.id, new_price=Decimal("700")
+        )
+    )
+
+    presentation_service.change_sale_price(box.id, Decimal("650"))
+    proposal_service.confirm(proposal)
+
+    changes = price_history.list_by_presentation(box.id)
+
+    assert len(changes) == 2
+    assert changes[0].previous_price == box.sale_price
+    assert changes[0].new_price == Decimal("650")
+    assert changes[1].previous_price == Decimal("650")
+    assert changes[1].previous_price != Decimal("700")
+    assert changes[1].new_price == Decimal("700")
+    assert stored_presentation(presentations, box.id).sale_price == (
+        Decimal("700")
+    )
+
+
+def test_confirming_a_price_update_of_a_missing_presentation_is_rejected(
+    connection: sqlite3.Connection,
+    proposal_service: ProposalService,
+) -> None:
+    """Verifica el rechazo con la presentación inexistente, sin escrituras."""
+    proposal = proposal_service.create(
+        PriceUpdatePayload(presentation_id=999, new_price=Decimal("700"))
+    )
+    baseline = database_state(connection)
+
+    with pytest.raises(RecordNotFoundError):
+        proposal_service.confirm(proposal)
+
+    assert proposal.status is ProposalStatus.PENDING
+    assert database_state(connection) == baseline
+
+
+def test_confirming_a_price_update_of_an_inactive_product_is_rejected(
+    connection: sqlite3.Connection,
+    presentations: SqlitePresentationRepository,
+    product_service: ProductService,
+    movement_service: MovementService,
+    proposal_service: ProposalService,
+) -> None:
+    """Verifica el rechazo con el producto desactivado, sin escrituras."""
+    stored, _, box = prepare_product(
+        product_service, presentations, movement_service
+    )
+    proposal = proposal_service.create(
+        PriceUpdatePayload(
+            presentation_id=box.id, new_price=Decimal("700")
+        )
+    )
+    product_service.deactivate(stored.id)
+    baseline = database_state(connection)
+
+    with pytest.raises(InactiveProductError):
+        proposal_service.confirm(proposal)
+
+    assert proposal.status is ProposalStatus.PENDING
+    assert stored_presentation(presentations, box.id).sale_price == (
+        box.sale_price
+    )
+    assert stored_price_changes(connection, box.id) == []
+    assert database_state(connection) == baseline
+
+
+def test_confirming_a_price_update_with_an_invalid_price_is_rejected(
+    connection: sqlite3.Connection,
+    presentations: SqlitePresentationRepository,
+    product_service: ProductService,
+    movement_service: MovementService,
+    proposal_service: ProposalService,
+) -> None:
+    """
+    Verifica la revalidación del precio al confirmar, sin escrituras.
+
+    El esquema de la propuesta ya exige un precio mayor que cero, así que el
+    caso que llega al dominio es un precio no finito; el payload se construye
+    sin validación para comprobar que el servicio lo rechaza igualmente.
+    """
+    _, _, box = prepare_product(
+        product_service, presentations, movement_service
+    )
+    proposal = proposal_service.create(
+        PriceUpdatePayload.model_construct(
+            presentation_id=box.id, new_price=Decimal("Infinity")
+        )
+    )
+    baseline = database_state(connection)
+
+    with pytest.raises(QuantityError):
+        proposal_service.confirm(proposal)
+
+    assert proposal.status is ProposalStatus.PENDING
+    assert stored_presentation(presentations, box.id).sale_price == (
+        box.sale_price
+    )
+    assert stored_price_changes(connection, box.id) == []
+    assert database_state(connection) == baseline
+
+
+def test_a_price_update_rolls_back_when_the_history_fails(
+    connection: sqlite3.Connection,
+    products: SqliteProductRepository,
+    presentations: SqlitePresentationRepository,
+    movements: SqliteMovementRepository,
+    product_service: ProductService,
+    movement_service: MovementService,
+) -> None:
+    """Verifica que un fallo del historial revierte el precio (T036)."""
+    _, _, box = prepare_product(
+        product_service, presentations, movement_service
+    )
+    failing_presentations = PresentationService(
+        products=products,
+        presentations=presentations,
+        movements=movements,
+        price_history=_FailingPriceHistoryRepository(),
+        transaction=partial(transaction, connection),
+    )
+    failing_service = ProposalService(
+        products=product_service,
+        presentations=failing_presentations,
+        movements=movement_service,
+    )
+    proposal = failing_service.create(
+        PriceUpdatePayload(
+            presentation_id=box.id, new_price=Decimal("700")
+        )
+    )
+
+    with pytest.raises(RuntimeError):
+        failing_service.confirm(proposal)
+
+    assert proposal.status is ProposalStatus.PENDING
+    assert stored_presentation(presentations, box.id).sale_price == (
+        box.sale_price
+    )
+    assert stored_price_changes(connection, box.id) == []
+    assert connection.execute(
+        "SELECT COUNT(*) AS total FROM price_changes"
+    ).fetchone()["total"] == 0
 
 
 # --- Esquemas: valores monetarios, unión discriminada e inmutabilidad ---

@@ -40,6 +40,7 @@ from app.infrastructure.sqlite.connection import connect, transaction
 from app.infrastructure.sqlite.repositories import (
     SqliteMovementRepository,
     SqlitePresentationRepository,
+    SqlitePriceHistoryRepository,
     SqliteProductRepository,
 )
 from app.infrastructure.sqlite.schema import create_schema
@@ -71,6 +72,7 @@ class Services:
     products: SqliteProductRepository
     presentations: SqlitePresentationRepository
     movements: SqliteMovementRepository
+    price_history: SqlitePriceHistoryRepository
     product: ProductService
     presentation: PresentationService
     movement: MovementService
@@ -86,6 +88,7 @@ def open_services(database_path: Path) -> Services:
     products = SqliteProductRepository(connection)
     presentations = SqlitePresentationRepository(connection)
     movements = SqliteMovementRepository(connection)
+    price_history = SqlitePriceHistoryRepository(connection)
     scope = partial(transaction, connection)
 
     return Services(
@@ -93,6 +96,7 @@ def open_services(database_path: Path) -> Services:
         products=products,
         presentations=presentations,
         movements=movements,
+        price_history=price_history,
         product=ProductService(
             products=products,
             presentations=presentations,
@@ -103,6 +107,7 @@ def open_services(database_path: Path) -> Services:
             products=products,
             presentations=presentations,
             movements=movements,
+            price_history=price_history,
             transaction=scope,
         ),
         movement=MovementService(
@@ -985,3 +990,54 @@ def test_reduced_timeout_surfaces_sqlite_busy_without_retries(
             pass
     finally:
         released.close()
+
+
+# --- (10) Cambios de precio simultáneos sobre la misma presentación ---
+
+
+def test_concurrent_price_changes_keep_every_event(
+    database_path: Path,
+) -> None:
+    """
+    Dos cambios de precio simultáneos conservan ambos eventos (T031, RF-08).
+
+    Cada conexión lee el precio vigente dentro de su propia transacción
+    `BEGIN IMMEDIATE`, así que el `previous_price` de cada fila corresponde al
+    precio que esa transacción encontró y no se pierde ningún evento: los dos
+    cambios se serializan y el segundo ve el precio del primero. El estado
+    final se comprueba con una lectura nueva.
+    """
+    product_id, presentation_ids = seed_product(database_path)
+    presentation_id = presentation_ids[0]
+    barrier = threading.Barrier(2)
+
+    def change_to(price: str) -> Callable[[Services], Any]:
+        """Construye el cambio de precio de un trabajador."""
+
+        def action(services: Services) -> Any:
+            return services.presentation.change_sale_price(
+                presentation_id, Decimal(price)
+            )
+
+        return action
+
+    outcomes = run_workers(
+        run_with_services(database_path, barrier, change_to("700")),
+        run_with_services(database_path, barrier, change_to("800")),
+    )
+
+    assert [outcome.ok for outcome in outcomes] == [True, True]
+
+    with services_on(database_path) as final:
+        changes = final.price_history.list_by_presentation(presentation_id)
+        presentation = final.presentations.get(presentation_id)
+
+    assert presentation is not None
+    assert len(changes) == 2
+    assert changes[0].previous_price == Decimal("100.00")
+    assert changes[0].new_price == changes[1].previous_price
+    assert {changes[0].new_price, changes[1].new_price} == {
+        Decimal("700"),
+        Decimal("800"),
+    }
+    assert presentation.sale_price == changes[1].new_price

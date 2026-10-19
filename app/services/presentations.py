@@ -18,10 +18,20 @@ compartida (`BEGIN IMMEDIATE`, T016): la lectura, la validación y la escritura
 quedan en el mismo bloque, de modo que dos operaciones simultáneas no pueden
 crear dos presentaciones base. La base refuerza además la invariante con el
 índice único parcial `idx_presentations_single_base` (defensa en profundidad).
+
+El cambio de precio de venta (RF-08, T031) es atómico: dentro de la misma
+transacción se valida que la presentación exista, que su producto esté activo y
+que el precio sea válido, y recién entonces se actualiza el precio y se anexa
+el cambio al historial con el precio anterior leído antes del `UPDATE`. Si el
+historial no se pudiera registrar, la transacción revierte la actualización
+completa: no quedan precios cambiados sin su evento ni eventos sin su cambio.
+El cambio de precio no altera los saldos, los movimientos ni el precio aplicado
+de las salidas confirmadas.
 """
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from app.domain.presentations import (
@@ -34,6 +44,7 @@ from app.services.ports import (
     MovementRepository,
     PresentationRecord,
     PresentationRepository,
+    PriceHistoryRepository,
     ProductRecord,
     ProductRepository,
     RecordNotFoundError,
@@ -42,7 +53,7 @@ from app.services.products import InactiveProductError, TransactionScope
 
 
 class PresentationService:
-    """Casos de uso de las presentaciones de un producto (RF-07)."""
+    """Casos de uso de las presentaciones de un producto (RF-07 y RF-08)."""
 
     def __init__(
         self,
@@ -50,6 +61,7 @@ class PresentationService:
         products: ProductRepository,
         presentations: PresentationRepository,
         movements: MovementRepository,
+        price_history: PriceHistoryRepository,
         transaction: TransactionScope,
     ) -> None:
         """
@@ -59,13 +71,17 @@ class PresentationService:
             presentations: Repositorio de presentaciones.
             movements: Repositorio de movimientos, para determinar si una
                 presentación tiene historial y si su factor es inmutable.
-            transaction: Fábrica de transacciones que envuelve el alta y el
-                cambio de factor, para que la lectura, la validación y la
-                escritura se apliquen dentro de la misma transacción.
+            price_history: Historial de precios, donde se anexa cada cambio de
+                precio dentro de la transacción del cambio.
+            transaction: Fábrica de transacciones que envuelve el alta, el
+                cambio de factor y el cambio de precio, para que la lectura, la
+                validación y la escritura se apliquen dentro de la misma
+                transacción.
         """
         self._products = products
         self._presentations = presentations
         self._movements = movements
+        self._price_history = price_history
         self._transaction = transaction
 
     def add(
@@ -135,13 +151,21 @@ class PresentationService:
         self, presentation_id: int, sale_price: Decimal
     ) -> PresentationRecord:
         """
-        Modifica el precio de venta de una presentación (RF-07).
+        Modifica el precio de venta de una presentación y registra el cambio
+        (RF-07, RF-08).
 
         Las salidas ya confirmadas conservan su precio aplicado; este cambio
-        solo afecta a las operaciones futuras.
+        solo afecta a las operaciones futuras. La operación se ejecuta dentro
+        de una única transacción: primero se valida que la presentación
+        exista, que su producto esté activo y que el precio sea válido, y
+        recién entonces se actualiza el precio y se anexa el cambio al
+        historial con el precio anterior leído antes del `UPDATE`. Si el
+        historial no se pudiera registrar, la transacción revierte la
+        actualización completa. Un precio igual al vigente también se
+        registra: no es un no-op.
 
         Args:
-            presentation_id: Presentación que se modifica.
+            presentation_id: Presentación cuyo precio se modifica.
             sale_price: Precio de venta nuevo, mayor que cero.
 
         Returns:
@@ -151,13 +175,25 @@ class PresentationService:
             RecordNotFoundError: Si la presentación no existe.
             InactiveProductError: Si el producto está desactivado.
             QuantityError: Si el precio no es un Decimal finito mayor que cero.
+            sqlite3.IntegrityError: Si el historial incumple el esquema; la
+                transacción se revierte por completo.
         """
-        record = self._required_presentation(presentation_id)
-        self._require_active_product(record.product_id)
+        with self._transaction():
+            record = self._required_presentation(presentation_id)
+            self._require_active_product(record.product_id)
+            validated_price = validate_price(sale_price)
+            updated = self._presentations.set_sale_price(
+                presentation_id, validated_price
+            )
+            self._price_history.add(
+                product_id=record.product_id,
+                presentation_id=presentation_id,
+                previous_price=record.sale_price,
+                new_price=validated_price,
+                occurred_at=_utc_now(),
+            )
 
-        return self._presentations.set_sale_price(
-            presentation_id, validate_price(sale_price)
-        )
+            return updated
 
     def change_factor(
         self, presentation_id: int, factor: int
@@ -209,6 +245,26 @@ class PresentationService:
             return self._presentations.set_factor(
                 presentation_id, updated.factor
             )
+
+    def get_presentation(self, presentation_id: int) -> PresentationRecord:
+        """
+        Devuelve la presentación indicada (T034, RF-08).
+
+        Es una consulta de solo lectura: no exige que el producto esté activo,
+        no abre transacciones y no modifica precios, saldos ni historial, de
+        modo que el historial de precios de un producto desactivado siga siendo
+        consultable (RF-01, RF-08).
+
+        Args:
+            presentation_id: Presentación que se consulta.
+
+        Returns:
+            La presentación persistida.
+
+        Raises:
+            RecordNotFoundError: Si la presentación no existe.
+        """
+        return self._required_presentation(presentation_id)
 
     def _domain_presentation(
         self, record: PresentationRecord
@@ -271,3 +327,8 @@ class PresentationService:
             )
 
         return product
+
+
+def _utc_now() -> datetime:
+    """Devuelve el instante actual en UTC, con zona horaria."""
+    return datetime.now(timezone.utc)

@@ -35,6 +35,7 @@ from app.infrastructure.sqlite.connection import (
 from app.infrastructure.sqlite.repositories import (
     SqliteMovementRepository,
     SqlitePresentationRepository,
+    SqlitePriceHistoryRepository,
     SqliteProductRepository,
 )
 from app.infrastructure.sqlite.schema import create_schema
@@ -129,6 +130,7 @@ def presentation_service(
         products=products,
         presentations=presentations,
         movements=movements,
+        price_history=SqlitePriceHistoryRepository(connection),
         transaction=partial(transaction, connection),
     )
 

@@ -2,15 +2,16 @@
 
 ## Estado
 
-Aprobada.
+Aprobada. Ampliada con RF-08 (actualización del precio de venta e historial).
+RF-09 (interfaz de gestión del inventario) queda formalizada en este documento y **pendiente de aprobación explícita**: no modifica RF-01 a RF-08 ni las reglas de negocio transversales.
 
 ## Propósito
 
-El sistema debe permitir gestionar el inventario básico de productos mediante presentaciones (unidades, cajas, fardos), distinguiendo stock cerrado y stock suelto, con registro del costo de ingreso y del precio de venta por presentación. Debe conservar trazabilidad de los cambios de existencias, prevenir stock negativo y proporcionar información fiable para reposición.
+El sistema debe permitir gestionar el inventario básico de productos mediante presentaciones (unidades, cajas, fardos), distinguiendo stock cerrado y stock suelto, con registro del costo de ingreso y del precio de venta por presentación, y con el historial de los cambios de precio de venta. Debe conservar trazabilidad de los cambios de existencias, preservar el historial de los precios anteriores, prevenir stock negativo y proporcionar información fiable para reposición.
 
 ## Alcance
 
-Esta especificación cubre productos, presentaciones, existencias (sueltas y cerradas), movimientos, aperturas, compensaciones, costo de ingreso, alertas de stock bajo, reposición y las consultas o solicitudes gestionadas por el asistente.
+Esta especificación cubre productos, presentaciones, existencias (sueltas y cerradas), movimientos, aperturas, compensaciones, costo de ingreso, actualización del precio de venta con su historial de cambios, alertas de stock bajo, reposición, las consultas o solicitudes gestionadas por el asistente y la interfaz de gestión del inventario con navegación lateral, sus secciones de consulta y sus formularios de propuestas (RF-09).
 El MVP opera sobre un único inventario y una única ubicación. Las cantidades de inventario son unidades discretas enteras (botellas, paquetes, unidades); los productos fraccionables por peso o volumen quedan fuera del MVP.
 
 ## RF-01. Gestión de productos
@@ -181,7 +182,7 @@ El asistente debe permitir consultar el inventario y proponer operaciones median
 
 - El asistente debe responder consultas sobre stock actual (suelto, cerrado y total equivalente), productos con stock bajo, necesidades de reposición e historial de movimientos.
 - Para responder consultas, el asistente debe consultar los datos reales del inventario.
-- El asistente debe interpretar solicitudes para registrar productos, presentaciones, entradas, salidas, aperturas y modificaciones de productos.
+- El asistente debe interpretar solicitudes para registrar productos, presentaciones, entradas, salidas, aperturas, modificaciones de productos y actualizaciones del precio de venta.
 - Antes de cualquier modificación, el asistente debe mostrar la operación propuesta y solicitar confirmación.
 - Antes de confirmarse, una propuesta debe poder editarse sin crear movimientos ni modificar el inventario.
 - El asistente debe ejecutar una modificación únicamente después de recibir confirmación.
@@ -195,7 +196,7 @@ El asistente debe permitir consultar el inventario y proponer operaciones median
 - Cuando se consulte el stock de un producto identificado inequívocamente, el asistente debe responder con los datos reales de stock suelto, cerrado y total equivalente.
 - Cuando se soliciten productos con stock bajo o reposición, el asistente debe responder con los productos que cumplan la condición y su faltante calculado.
 - Cuando se solicite el historial de movimientos con filtros válidos, el asistente debe mostrar los movimientos que correspondan a esos filtros.
-- Antes de registrar un producto, presentación, movimiento, apertura, modificación o compensación, el asistente debe mostrar los datos propuestos y pedir confirmación.
+- Antes de registrar un producto, presentación, movimiento, apertura, modificación, compensación o actualización del precio de venta, el asistente debe mostrar los datos propuestos y pedir confirmación.
 - Dada una propuesta no confirmada, el sistema no debe crear ni modificar datos.
 - Dada una propuesta confirmada y válida, el sistema debe ejecutar la operación e informar el resultado.
 - Dada una propuesta que deje de cumplir una regla antes de confirmarse, el asistente debe rechazarla al confirmar y no guardar cambios parciales.
@@ -249,6 +250,101 @@ El sistema debe permitir administrar un producto por distintas presentaciones co
 - Dada una entrada con costo, el sistema debe almacenarlo tal como fue informado, sin distribuirlo ni derivar costo unitario.
 - Dado un producto desactivado, cuando se intente crear o modificar una presentación, el sistema debe rechazar la operación.
 
+## RF-08. Actualización del precio de venta e historial
+
+### Objetivo
+
+El sistema debe permitir actualizar el precio de venta de una presentación existente mediante una propuesta confirmada explícitamente, conservando el historial de los cambios de precio sin alterar las existencias ni los movimientos.
+
+### Requisitos
+
+- El sistema debe permitir actualizar el precio de venta de una presentación existente de un producto activo.
+- La presentación base (factor 1) admite la actualización de su precio de venta, porque es la presentación que se utiliza para las operaciones de unidades sueltas.
+- La actualización del precio de venta requiere confirmación explícita: no debe aplicarse al crear ni al editar la propuesta.
+- Antes de confirmarse, el sistema debe mostrar la presentación afectada, su precio vigente y el precio nuevo propuesto.
+- Al confirmar, el sistema debe capturar como precio anterior el valor vigente en ese momento, no el mostrado al preparar la propuesta.
+- El sistema debe registrar cada cambio de precio posterior confirmado —el precio de alta de una presentación no es un cambio de precio— con: producto, presentación, precio anterior, precio nuevo, fecha y hora en UTC e identificación del evento.
+- La identificación del evento es un identificador constante del tipo de cambio de precio; el MVP no registra el usuario que lo realizó, porque no admite múltiples usuarios (RF-06).
+- La actualización del precio de venta y el registro del cambio de precio deben ser atómicos: si una parte falla, no debe quedar aplicada la otra.
+- La actualización del precio de venta no debe alterar las unidades sueltas ni el stock cerrado, ni registrar entradas, salidas, aperturas o compensaciones.
+- Los precios aplicados a los movimientos ya confirmados deben conservarse como registros históricos inmutables.
+- El historial de cambios de precio es de solo anexado: sus registros no se editan ni se eliminan.
+- El sistema debe permitir consultar el historial de cambios de precio de una presentación y de un producto, en orden cronológico.
+- El sistema no debe admitir la actualización del precio de venta de una presentación de un producto desactivado.
+
+### Criterios de aceptación
+
+- Dada una presentación de un producto activo, cuando se confirme una propuesta de actualización de precio con un valor mayor que cero, el sistema debe actualizar el precio vigente de la presentación.
+- Dada una propuesta de actualización de precio no confirmada, el sistema no debe modificar el precio ni registrar ningún cambio de precio.
+- Al preparar la propuesta, el sistema debe mostrar el precio vigente de la presentación y el precio nuevo propuesto.
+- Dado un precio vigente que cambia entre la preparación de la propuesta y su confirmación, el sistema debe registrar como precio anterior el valor vigente al confirmar.
+- Cuando se confirme una actualización de precio válida, el sistema debe registrar el cambio con el producto, la presentación, el precio anterior, el precio nuevo, la fecha y hora en UTC y la identificación del evento; el alta de un producto o de una presentación no se registra como un cambio de precio.
+- Cuando la actualización del precio se rechace por incumplir una regla de negocio, el sistema no debe registrar ningún cambio de precio ni dejar cambios parciales.
+- Cuando falle el registro del cambio de precio, el sistema no debe dejar el precio actualizado.
+- Cuando se actualice el precio de venta, las unidades sueltas, el stock cerrado y los movimientos del producto deben conservarse sin cambios.
+- Cuando se actualice el precio de venta, los precios aplicados de las salidas ya confirmadas deben conservarse sin cambios.
+- Dada una presentación con cambios de precio confirmados, cuando se consulte su historial, el sistema debe devolver los cambios en orden cronológico.
+- Dado un producto desactivado, cuando se intente actualizar el precio de venta de una de sus presentaciones, el sistema debe rechazar la operación.
+- Dado un precio menor o igual que cero, no finito o no expresado como Decimal, el sistema debe rechazar la operación.
+- Dado un cambio de precio confirmado, cuando se intente editarlo o eliminarlo, el sistema debe rechazar la operación.
+
+### Persistencia y migración
+
+- El historial de cambios de precio es permanente solo cuando la persistencia es duradera: mientras la base de datos sea en memoria, el historial no sobrevive al reinicio ni a una sesión nueva.
+- La incorporación del historial de cambios de precio al esquema requiere resolver la migración del esquema antes de declarar la funcionalidad terminada; el esquema del MVP se crea íntegro sobre una base nueva y no migra los datos de una base existente.
+
+## RF-09. Interfaz de gestión del inventario
+
+### Objetivo
+
+El sistema debe permitir gestionar el inventario desde la aplicación Streamlit existente mediante una **navegación lateral** con secciones de consulta y de operación, de modo que las lecturas del inventario y de sus historiales puedan hacerse **sin depender del modelo de lenguaje**, y que las operaciones sigan requiriendo una **propuesta** y una **confirmación explícita** del usuario.
+
+### Requisitos
+
+- La navegación es lateral (**sidebar**) y de una sola página: la aplicación conserva un único punto de entrada y **no** adopta el modo multipágina de Streamlit.
+- La interfaz debe ofrecer secciones de **consulta** —inicio, productos, movimientos e historial de precios— y de **operación** —operaciones con formularios de propuestas, propuestas pendientes y asistente—. Los estados de la interfaz son **transversales** a las secciones: no constituyen una sección aparte con lógica propia.
+- Las secciones de consulta deben funcionar **sin modelo configurado**: la ausencia de `DEEPSEEK_API_KEY` solo debe afectar a la conversación del asistente, que debe informar su indisponibilidad sin impedir las demás secciones.
+- La interfaz **no** debe acceder directamente a la base de datos, a los repositorios de persistencia ni al dominio: debe usar los **servicios de aplicación**.
+- El listado de productos debe obtenerse de una **lectura pública** del servicio de inventario; la lectura interna de los repositorios de persistencia **no** es una API pública.
+- La búsqueda de productos debe reutilizar las lecturas existentes y debe advertir que la coincidencia es **exacta** y **no distingue mayúsculas de minúsculas**.
+- El filtro de estado (activo/inactivo) es un filtro de presentación y **no** debe alterar las consultas globales de alertas, que siguen considerando únicamente productos activos.
+- Los listados e historiales **no** se paginan en el MVP; cuando un listado exceda el espacio visible, debe informarse.
+- Los formularios deben permitir preparar operaciones ya admitidas por las propuestas vigentes; la interfaz **no** debe ofrecer operaciones fuera de las reglas actuales (en particular, **no** desactivar productos ni cambiar el factor de una presentación).
+- Enviar un formulario debe crear una **propuesta pendiente** y **no** debe escribir: el inventario y los movimientos solo cambian al confirmar.
+- La confirmación debe ser una acción **explícita del usuario**, ejecutada por el servicio de propuestas (que revalida contra los datos vigentes) y concentrada en un **único punto** de la interfaz.
+- La interfaz debe presentar la propuesta pendiente de forma **legible** antes de confirmarla; para el cambio de precio, además, debe mostrar la presentación afectada, el precio vigente y el precio nuevo.
+- La interfaz debe permitir **editar** una propuesta pendiente antes de confirmarla, sin escribir y sin cambiar su acción.
+- La interfaz debe permitir **descartar** una propuesta pendiente **localmente**: el descarte no se persiste, no crea estado nuevo en el dominio y no deja traza.
+- La interfaz **no** debe recalcular la cantidad compensable pendiente: cuando decida mostrarla, debe obtenerla de una lectura pública que reutilice las reglas de compensación vigentes.
+- La interfaz debe distinguir **carga**, **vacío**, **validación**, **rechazo** y **confirmación**, y **no** debe presentar un dato ausente como un valor real.
+- Las fechas y horas deben **mostrarse** en la zona horaria local `America/Argentina/Buenos_Aires`, conservando el **almacenamiento en UTC** y la semántica de período `[inicio, fin)`.
+- RF-09 **no** modifica RF-01 a RF-08 y **no** amplía su alcance: la desactivación de productos y el cambio de factor de presentación quedan **fuera** de esta funcionalidad.
+
+### Criterios de aceptación
+
+- **C1.** La aplicación debe ofrecer navegación lateral con las secciones de RF-09 (inicio, productos, operaciones, propuestas pendientes, movimientos, historial de precios y asistente) y conservar un único punto de entrada, sin multipágina.
+- **C2.** Sin modelo configurado, el sistema debe mostrar las secciones de consulta con datos reales y, en la sección del asistente, el motivo de su indisponibilidad, sin impedir las demás secciones.
+- **C3.** La sección de inicio debe mostrar las alertas de stock bajo y de reposición con el producto, el total equivalente y el faltante, y el conteo de productos activos e inactivos obtenido de la lectura pública de productos.
+- **C4.** Cuando una lectura no devuelva datos, la interfaz debe informarlo explícitamente, sin presentar un dato ausente como un valor real ni un cero.
+- **C5.** La sección de productos debe listar los productos con su SKU, nombre, unidad base, stock mínimo, unidades sueltas, stock cerrado y estado, obtenidos de una lectura pública del servicio de inventario.
+- **C6.** Dado un nombre o un SKU, cuando se busque desde la interfaz, el sistema debe devolver la coincidencia exacta y advertir que no distingue mayúsculas de minúsculas.
+- **C7.** Dado un filtro de estado (activo o inactivo) aplicado en la sección de productos, las alertas globales de stock bajo y de reposición deben seguir considerando únicamente productos activos.
+- **C8.** Dado un listado o un historial que exceda el espacio visible, la interfaz debe informar que no se pagina, sin ocultar registros por límites arbitrarios.
+- **C9.** Dado un producto seleccionado, la interfaz debe mostrar sus presentaciones con factor y stock cerrado, sus unidades sueltas y su total equivalente, sus movimientos y su historial de precios, todo por lectura.
+- **C10.** La sección de operaciones debe ofrecer formularios para las acciones admitidas por las propuestas y ninguno para la desactivación de productos ni el cambio de factor.
+- **C11.** Cuando se envíe un formulario válido, el sistema debe crear una propuesta pendiente y el inventario y los movimientos deben conservarse sin cambios.
+- **C12.** Cuando una propuesta se confirme, la escritura debe ejecutarse por el servicio de propuestas desde un único punto de la interfaz; ningún formulario debe invocar un servicio que escriba.
+- **C13.** Antes de la confirmación, la interfaz debe mostrar la propuesta con su acción y sus campos en lenguaje legible y, para un cambio de precio, la presentación afectada, el precio vigente y el precio nuevo.
+- **C14.** Dada una propuesta pendiente editada antes de confirmarse, el sistema no debe escribir ni cambiar su acción; una propuesta confirmada no debe poder editarse.
+- **C15.** Dada una propuesta pendiente descartada, el sistema no debe modificarla, no debe escribir, no debe persistir el descarte y no debe dejar traza.
+- **C16.** Dada una propuesta confirmada, la interfaz no debe volver a ofrecerla ni a ejecutarla dos veces, y debe impedir el reenvío mientras una confirmación está en curso.
+- **C17.** La sección de movimientos debe permitir filtrar por producto, tipo y período, interpretando el período `[inicio, fin)` en la zona horaria local, y no debe ofrecer compensaciones que las reglas vigentes rechacen.
+- **C18.** Cuando la interfaz muestre la cantidad compensable pendiente, debe obtenerla de una lectura pública que reutilice las reglas de compensación vigentes, sin recalcularla.
+- **C19.** Dada una presentación o un producto con cambios de precio, la interfaz debe mostrar su historial en orden cronológico e independientemente del asistente.
+- **C20.** La sección del asistente debe conservar la conversación y la confirmación vigentes, y ninguna sección de consulta debe depender de ella.
+- **C21.** Cuando una operación se rechace, la interfaz debe mostrar el motivo devuelto por el servicio y no debe presentarla como ejecutada, distinguiendo carga, vacío, validación, rechazo y confirmación.
+- **C22.** Cada sección debe declarar la fuente de sus datos y cada criterio de RF-09 debe estar vinculado a al menos una prueba identificable por archivo y caso.
+
 ## Reglas de negocio transversales
 
 - El SKU identifica de forma única a un producto y no puede modificarse; la unicidad del SKU y del nombre de presentación se evalúa sin distinguir mayúsculas de minúsculas.
@@ -275,6 +371,9 @@ El sistema debe permitir administrar un producto por distintas presentaciones co
 - Los productos desactivados solo admiten consultas, historial y compensaciones históricas válidas; no admiten operaciones ordinarias nuevas ni modificaciones, incluidas las modificaciones de nombre o stock, la creación o modificación de presentaciones y las aperturas.
 - Las propuestas no confirmadas pueden editarse sin efectos; toda modificación requiere confirmación previa y se revalida al confirmar.
 - Las operaciones de stock se validan contra la disponibilidad vigente y mantienen la integridad frente a ejecuciones simultáneas.
+- El precio de venta de una presentación solo cambia mediante una propuesta confirmada explícitamente; el precio anterior se captura al confirmar, con el estado vigente, y no al preparar la propuesta.
+- La actualización del precio de venta y el registro del cambio de precio son atómicos: si una parte falla, no queda aplicada la otra, y la operación no altera existencias ni movimientos.
+- El historial de cambios de precio es de solo anexado: conserva el texto decimal exacto del precio anterior y del nuevo, se consulta en orden cronológico y sus registros no se editan ni se eliminan.
 
 ## Casos de error relevantes
 
@@ -299,6 +398,10 @@ El sistema debe permitir administrar un producto por distintas presentaciones co
 - Movimiento sin motivo.
 - Producto inexistente.
 - Producto desactivado en una solicitud de operación ordinaria, modificación, creación o modificación de presentaciones o apertura.
+- Actualización del precio de venta de una presentación de un producto desactivado.
+- Actualización del precio de venta de una presentación inexistente.
+- Actualización del precio de venta sin confirmación previa.
+- Intento de editar o eliminar un cambio de precio registrado.
 - Consulta o solicitud ambigua que no identifica un producto u operación.
 - Intento de editar o eliminar un movimiento confirmado.
 - Solicitud de modificación sin confirmación.

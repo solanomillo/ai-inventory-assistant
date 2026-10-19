@@ -48,8 +48,10 @@ from app.infrastructure.sqlite.instants import (
     to_utc_text,
 )
 from app.services.ports import (
+    PRICE_CHANGE_EVENT_TYPE,
     MovementRecord,
     PresentationRecord,
+    PriceChangeRecord,
     ProductRecord,
     RecordNotFoundError,
 )
@@ -76,6 +78,11 @@ _MOVEMENT_COLUMNS = (
     "id, product_id, presentation_id, kind, quantity, reason, occurred_at, "
     "cost, applied_price, is_initial_stock, original_movement_id, "
     "consumed_quantity, compensated_quantity"
+)
+
+_PRICE_CHANGE_COLUMNS = (
+    "id, product_id, presentation_id, previous_price, new_price, "
+    "occurred_at, event_type"
 )
 
 
@@ -975,3 +982,130 @@ class SqliteMovementRepository:
             )
 
         return movement
+
+
+def _price_change_record(row: sqlite3.Row) -> PriceChangeRecord:
+    """Construye un cambio de precio desde una fila de `price_changes`."""
+    return PriceChangeRecord(
+        id=int(row["id"]),
+        product_id=int(row["product_id"]),
+        presentation_id=int(row["presentation_id"]),
+        previous_price=Decimal(str(row["previous_price"])),
+        new_price=Decimal(str(row["new_price"])),
+        occurred_at=from_utc_text(str(row["occurred_at"])),
+        event_type=str(row["event_type"]),
+    )
+
+
+class SqlitePriceHistoryRepository:
+    """
+    Repositorio del historial de precios sobre SQLite (RF-08, T030).
+
+    Registra cambios de precio y los consulta por presentación y por producto,
+    en orden cronológico. No expone ninguna operación para editar ni eliminar
+    un cambio registrado y no abre transacciones: se ejecuta dentro de la
+    transacción del servicio que registra el cambio (T031), que valida antes de
+    persistir que la presentación pertenezca al producto indicado.
+    """
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        """
+        Args:
+            connection: Conexión abierta con el esquema del inventario.
+        """
+        self._connection = connection
+
+    def add(
+        self,
+        *,
+        product_id: int,
+        presentation_id: int,
+        previous_price: Decimal,
+        new_price: Decimal,
+        occurred_at: datetime,
+    ) -> PriceChangeRecord:
+        """
+        Registra un cambio de precio y devuelve su versión persistida.
+
+        El tipo de evento lo fija el repositorio con
+        `PRICE_CHANGE_EVENT_TYPE`. Los precios se serializan con el texto
+        canónico de un `Decimal` exacto, sin pasar por `float`, y el instante
+        se almacena en UTC. La coherencia entre el producto y la presentación
+        la valida el servicio antes de persistir (T031): las claves foráneas
+        del esquema alcanzan a cada tabla por separado y no la garantizan.
+
+        Raises:
+            sqlite3.IntegrityError: Si el cambio incumple las restricciones del
+                esquema, por ejemplo un precio no positivo o malformado o una
+                referencia inexistente.
+            ValueError: Si el instante no incluye zona horaria.
+        """
+        cursor = self._connection.execute(
+            """
+            INSERT INTO price_changes (
+                product_id, presentation_id, previous_price, new_price,
+                occurred_at, event_type
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                product_id,
+                presentation_id,
+                _decimal_to_text(previous_price),
+                _decimal_to_text(new_price),
+                to_utc_text(occurred_at),
+                PRICE_CHANGE_EVENT_TYPE,
+            ),
+        )
+
+        return self._required(int(cursor.lastrowid))
+
+    def list_by_presentation(
+        self, presentation_id: int
+    ) -> list[PriceChangeRecord]:
+        """
+        Devuelve el historial de la presentación, en orden cronológico.
+
+        El orden es ascendente por `occurred_at` con desempate por `id`. Sin
+        cambios registrados devuelve una lista vacía.
+        """
+        rows = self._connection.execute(
+            f"SELECT {_PRICE_CHANGE_COLUMNS} FROM price_changes "
+            "WHERE presentation_id = ? ORDER BY occurred_at, id",
+            (presentation_id,),
+        ).fetchall()
+
+        return [_price_change_record(row) for row in rows]
+
+    def list_by_product(self, product_id: int) -> list[PriceChangeRecord]:
+        """
+        Devuelve el historial de las presentaciones del producto, en orden
+        cronológico.
+
+        El orden es ascendente por `occurred_at` con desempate por `id`. Sin
+        cambios registrados devuelve una lista vacía.
+        """
+        rows = self._connection.execute(
+            f"SELECT {_PRICE_CHANGE_COLUMNS} FROM price_changes "
+            "WHERE product_id = ? ORDER BY occurred_at, id",
+            (product_id,),
+        ).fetchall()
+
+        return [_price_change_record(row) for row in rows]
+
+    def _required(self, price_change_id: int) -> PriceChangeRecord:
+        """
+        Devuelve el cambio de precio indicado y exige que exista.
+
+        Raises:
+            RecordNotFoundError: Si el cambio de precio no existe.
+        """
+        row = self._connection.execute(
+            f"SELECT {_PRICE_CHANGE_COLUMNS} FROM price_changes WHERE id = ?",
+            (price_change_id,),
+        ).fetchone()
+        if row is None:
+            raise RecordNotFoundError(
+                f"No existe el cambio de precio con id {price_change_id}."
+            )
+
+        return _price_change_record(row)

@@ -1,4 +1,4 @@
-"""Conexión SQLite de la capa de infraestructura (T008, T011 y T016).
+"""Conexión SQLite de la capa de infraestructura (T008, T011, T016 y T023).
 
 Centraliza la apertura de conexiones para que la persistencia del proyecto use
 siempre la misma configuración: acceso a las columnas por nombre, claves
@@ -6,6 +6,13 @@ foráneas activadas y control explícito de las transacciones.
 
 En SQLite las claves foráneas se verifican solo si se activan en cada conexión;
 por eso este módulo ejecuta `PRAGMA foreign_keys = ON` al abrir la base.
+
+Las conexiones permiten su uso desde hilos distintos del que las creó
+(`check_same_thread = False`) para que las herramientas del `ToolNode` de
+LangGraph puedan consultar la misma conexión que abrió la interfaz. Permitir
+ese uso no aporta por sí solo seguridad concurrente: las lecturas y las
+escrituras siguen serializadas por SQLite y por el bloqueo de escritura de
+`BEGIN IMMEDIATE`, y el proyecto mantiene una conexión por sesión.
 
 El helper `transaction` ejecuta la escritura de un caso de uso dentro de una
 única transacción. Las conexiones se abren en modo autocommit
@@ -37,6 +44,7 @@ def connect(
     database: str | Path = IN_MEMORY_DATABASE,
     *,
     timeout: float = DEFAULT_BUSY_TIMEOUT_SECONDS,
+    check_same_thread: bool = False,
 ) -> sqlite3.Connection:
     """
     Abre una conexión SQLite configurada para la aplicación.
@@ -51,11 +59,22 @@ def connect(
     is locked», código `SQLITE_BUSY`). No hay reintentos automáticos ni modo
     WAL: agotado el tiempo, el error de SQLite se propaga tal cual.
 
+    `check_same_thread` se pasa tal cual a `sqlite3.connect`. Permitir el uso
+    de la conexión desde otros hilos habilita que las herramientas del
+    `ToolNode` de LangGraph —que se ejecutan en hilos de trabajo— consulten la
+    misma conexión que abrió la interfaz. Ese ajuste **no** aporta por sí solo
+    seguridad concurrente: las lecturas y las escrituras siguen serializadas
+    por SQLite y por el bloqueo de escritura de `BEGIN IMMEDIATE` (T016), y el
+    proyecto mantiene una conexión por sesión.
+
     Args:
         database: Ruta del archivo de base de datos o `:memory:` para una base
             en memoria (valor predeterminado).
         timeout: Tiempo máximo de espera ante un bloqueo, en segundos. El valor
             predeterminado es 5 segundos.
+        check_same_thread: Si la conexión puede usarse desde hilos distintos
+            del que la creó. El valor predeterminado es `False`, para que las
+            herramientas del `ToolNode` puedan consultarla.
 
     Returns:
         La conexión abierta, con acceso a las columnas por nombre y claves
@@ -69,6 +88,7 @@ def connect(
         str(database),
         isolation_level=None,
         timeout=timeout,
+        check_same_thread=check_same_thread,
     )
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")

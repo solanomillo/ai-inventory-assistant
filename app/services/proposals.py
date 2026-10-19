@@ -42,6 +42,7 @@ from app.schemas.proposals import (
     LooseEntryPayload,
     LooseExitPayload,
     PresentationRegistrationPayload,
+    PriceUpdatePayload,
     ProductRegistrationPayload,
     ProductUpdatePayload,
     Proposal,
@@ -271,6 +272,12 @@ class ProposalService:
                 movement_id=payload.movement_id,
                 quantity=payload.quantity,
                 reason=payload.reason,
+            )
+
+        if isinstance(payload, PriceUpdatePayload):
+            return self._presentations.change_sale_price(
+                payload.presentation_id,
+                payload.new_price,
             )
 
         raise ProposalError(
