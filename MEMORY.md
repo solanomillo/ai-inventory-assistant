@@ -5,8 +5,8 @@
 - Rama de trabajo: main.
 - Metodología: Spec-Driven Development (SDD).
 - Documentos aprobados: `docs/constitution.md`, `specs/001-inventory-core/spec.md`
-  (RF-01 a RF-07), `specs/001-inventory-core/plan.md` y `specs/001-inventory-core/tasks.md`
-  (T001 a T026).
+  (RF-01 a RF-09), `specs/001-inventory-core/plan.md` y `specs/001-inventory-core/tasks.md`
+  (T001 a T056; T038–T046 cerradas y aprobadas, T047–T056 pendientes).
 
 ## Implementación
 - T001 completada (commit `a20ca9c`): esqueleto del proyecto.
@@ -552,15 +552,36 @@
     de presentaciones, C8 tras filtro, deduplicación, `sqlite3.Error`); M8 `access violation` intermitente al
     importar protobuf de Streamlit, no reproducido. El alcance no está certificado por Git porque `app/ui/` y
     `tests/ui/` siguen sin rastrear.
-  - **Siguiente paso pendiente: T047** (Historial de precios en la interfaz), aún **sin** autorización de
-    implementación.
+  - A continuación se abordó **T047** (ver la viñeta siguiente).
+- **T047 (Historial de precios en la interfaz)** cerrada y aprobada (tras revisión independiente):
+  nueva vista `app/ui/sections/price_history.py`, de **solo presentación**, integrada en `main.py` con lecturas
+  perezosas. **D1:** producto obligatorio (centinela); sin selección no se consulta. **D2:** «Todas las
+  presentaciones» por defecto y filtro por presentación. **D3:** activos e inactivos, marcados. **D4:**
+  `event_type` crudo. **D5:** reutiliza `describe_price_change` de T045. **D6:** aviso C8 con el número real y
+  sin truncar. **D7:** `describe_price_history`/`_format_price` del asistente intactos. **D8:** `st.text`.
+  Usa `format_money`/`format_instant`, conserva el orden cronológico (C19), funciona sin modelo (C20) y
+  diferencia catálogo vacío, sin selección, producto/presentación sin cambios y error de lectura (C4/C21).
+  Sin escrituras, sin `st.session_state` y sin `.confirm(`. Archivos: `app/ui/sections/price_history.py`
+  (nuevo), `app/ui/main.py`, `tests/ui/test_main.py`.
+  - Pruebas **reportadas** por el implementer (pytest **ejecutado** en esa sesión; ni el reviewer ni el
+    coordinador ejecutaron pytest ni Git): **14 nuevas**; 135 en `tests/ui/test_main.py`, 161 en `tests/ui` y
+    1160 en la suite completa. **Revisión independiente: APROBADO** (sin bloqueantes ni importantes;
+    observaciones menores no bloqueantes, sin ciclo de corrección).
+  - **Deuda menor registrada (no implementada):** M1 concordancia del aviso C8 con `count == 1`; M2 selectores
+    por etiqueta; M3 acoplamiento vista→vista con `product_detail.py`; M4 `render_presentation_filter` dentro
+    del `try` de lectura; M5 duplicación menor de `_single_line`/`UNKNOWN_PRESENTATION_TEMPLATE`; M6 aserciones
+    parcialmente tautológicas; M7 la prueba de formato valida la salida, no las funciones; M8 solo se captura
+    `RecordNotFoundError`. El alcance no está certificado por Git porque `app/ui/` y `tests/ui/` siguen sin
+    rastrear.
+  - **Siguiente paso pendiente: T048** (Sección Asistente IA), aún **sin** autorización de implementación.
 
 ## Especificación vigente (resumen)
-- RF-01 a RF-08. Cantidades de inventario enteras (unidades discretas).
+- RF-01 a RF-09. Cantidades de inventario enteras (unidades discretas).
 - Presentaciones con factor de conversión y precio de venta independiente.
 - Stock descompuesto en unidades sueltas y presentaciones cerradas; total equivalente derivado.
 - Costo de ingreso opcional (Decimal), distinto del precio.
 - Apertura atómica e inmutable; trazabilidad FIFO de entradas cerradas (compensaciones).
+- RF-09: interfaz de gestión con navegación lateral, consultas sin modelo y operaciones por propuesta.
 
 ## Arquitectura aprobada (según plan.md)
 - Python; LangGraph (orquestación); LangChain (modelo y herramientas); DeepSeek (LLM);

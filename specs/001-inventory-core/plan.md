@@ -3,7 +3,7 @@
 ## Estado
 
 Aprobado. Ampliado con RF-08 (actualización del precio de venta e historial).
-RF-09 (interfaz de gestión del inventario) queda formalizada en este documento y **pendiente de aprobación explícita**: no modifica RF-01 a RF-08. Sus decisiones técnicas aprobadas se registran en «Decisiones resueltas (RF-09)».
+RF-09 (interfaz de gestión del inventario) está **aprobada** y formalizada en este documento: no modifica RF-01 a RF-08. Sus decisiones técnicas aprobadas se registran en «Decisiones resueltas (RF-09)».
 
 ## Objetivo técnico
 
@@ -238,7 +238,7 @@ Aprobadas por el usuario. Se documentan aquí para conservar la trazabilidad. **
 
 ## Decisiones resueltas (RF-09)
 
-Aprobadas por el usuario para la formalización de RF-09. Se identifican como **D-A** a **D-G** y la implementación corresponde a la **Fase 7** (T038–T056), que **no** está implementada.
+Aprobadas por el usuario para la formalización de RF-09. Se identifican como **D-A** a **D-G** y la implementación corresponde a la **Fase 7** (T038–T056), **en curso**: T038–T046 están cerradas y aprobadas y T047–T056 permanecen pendientes.
 
 - **D-A — Ubicación de la confirmación:** el único punto de confirmación permanece en `app/ui/main.py`; las secciones no confirman por su cuenta y la comprobación estructural sobre el texto fuente (una sola aparición de `.confirm(`) se conserva.
 - **D-B — Contenedor de sesión:** la composición de **lectura** sin LLM y los servicios compartidos se concentran en `app/ui/session.py`; **no** se amplía `Assistant` con responsabilidades no conversacionales.

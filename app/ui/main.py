@@ -47,10 +47,12 @@ perezosa, solo al mostrarse; «Productos» se renderiza desde
 `app/ui/sections/products.py` y también lee de forma perezosa, con búsqueda
 exacta y filtro de estado (T044); «Movimientos» se renderiza desde
 `app/ui/sections/movements.py` y consulta de forma perezosa el historial del
-producto elegido, con filtros de tipo y de período local (T046); y las
-secciones que la Fase 7 todavía no implementó muestran un aviso explícito de
-que están pendientes, sin leer ningún servicio, de modo que **no** presentan
-un dato ausente como un valor real (C4).
+producto elegido, con filtros de tipo y de período local (T046); «Historial de
+precios» se renderiza desde `app/ui/sections/price_history.py` y consulta de
+forma perezosa el historial del producto o de una presentación concreta
+(T047); y la sección que la Fase 7 todavía no implementó muestra un aviso
+explícito de que está pendiente, sin leer ningún servicio, de modo que **no**
+presenta un dato ausente como un valor real (C4).
 Sin modelo, la aplicación **no** se abstiene: la sección del asistente informa
 su indisponibilidad y el resto de las secciones sigue accesible.
 
@@ -81,8 +83,8 @@ el historial, las propuestas ni los resultados de confirmación.
 Lógica testeable: `build_session`, `build_assistant`, `answer`,
 `describe_proposal`, `describe_price_update`, `describe_price_history`,
 `describe_result`, `confirm_pending`, `pending_proposals`, `home_section`,
-`products_section`, `product_detail_section`, `movements_section` y
-`section_renderers` no dependen
+`products_section`, `product_detail_section`, `movements_section`,
+`price_history_section` y `section_renderers` no dependen
 del runtime de Streamlit, de modo que las pruebas puedan inyectar un modelo
 falso y una conexión en memoria, sin red y sin DeepSeek.
 """
@@ -130,6 +132,16 @@ from app.ui.sections.movements import (
     render_movements,
     render_movements_error,
     render_movements_header,
+)
+from app.ui.sections.price_history import (
+    render_empty_catalog as render_empty_price_history_catalog,
+    render_empty_presentation_history,
+    render_empty_product_history,
+    render_price_history as render_price_changes,
+    render_price_history_error,
+    render_price_history_header,
+    render_presentation_filter,
+    render_product_filter as render_price_history_product_filter,
 )
 from app.ui.sections.product_detail import (
     render_product_detail,
@@ -1044,6 +1056,76 @@ def movements_section(session: SessionResources) -> Callable[[], None]:
     return render
 
 
+def price_history_section(session: SessionResources) -> Callable[[], None]:
+    """
+    Construye el renderer de la sección «Historial de precios» (T047, C19).
+
+    Las lecturas son perezosas: al construir el renderer no se consulta nada.
+    Al mostrar la sección se lee el catálogo público y, si está vacío, solo se
+    informa el vacío sin controles. Con catálogo se dibuja el selector de
+    producto; sin un producto elegido no se consulta ningún historial (D1). Con
+    una selección se leen las presentaciones **una vez** y se ofrece el
+    selector que, por defecto, consulta todo el producto y, con una
+    presentación concreta, solo su historial (D2). Un registro inexistente se
+    muestra como error explícito y **nunca** como un historial vacío (C21). La
+    vista de `app.ui.sections.price_history` solo presenta los datos ya
+    consultados.
+
+    Args:
+        session: Contenedor de lectura de la sesión, con el servicio de
+            inventario y el del historial de precios.
+
+    Returns:
+        El renderer sin argumentos de la sección de historial de precios.
+    """
+
+    def render() -> None:
+        """Consulta y muestra el historial del producto elegido (T047)."""
+        inventory = session.inventory_service
+        products = inventory.list_products()
+        render_price_history_header()
+        if not products:
+            render_empty_price_history_catalog()
+            return
+
+        product_index = render_price_history_product_filter(products)
+        if product_index is None:
+            return
+
+        product = products[product_index]
+        try:
+            presentations = inventory.get_product_presentations(product.id)
+            presentation_index = render_presentation_filter(
+                presentations,
+                product_id=product.id,
+            )
+            history = session.price_history_service
+            if presentation_index is None:
+                price_changes = history.get_price_history_by_product(
+                    product.id
+                )
+            else:
+                price_changes = history.get_price_history_by_presentation(
+                    presentations[presentation_index].id
+                )
+        except RecordNotFoundError as error:
+            render_price_history_error(str(error))
+            return
+
+        if price_changes:
+            presentation_names = {
+                presentation.id: presentation.name
+                for presentation in presentations
+            }
+            render_price_changes(price_changes, presentation_names)
+        elif presentation_index is None:
+            render_empty_product_history()
+        else:
+            render_empty_presentation_history()
+
+    return render
+
+
 def _presentation_names(
     inventory: InventoryService,
     product_id: int,
@@ -1101,12 +1183,12 @@ def section_renderers(
     Registra el renderer de cada sección de la navegación lateral (T041, C1).
 
     El registro cubre exactamente `SECTION_LABELS` y solo se invoca el renderer
-    de la sección seleccionada. «Inicio», «Productos» y «Movimientos» reciben
-    la lectura de la sesión y consultan sus datos al renderizarse, no al
-    construir el registro (T043, T044, T046). Las secciones que la Fase 7
-    todavía no implementó muestran su aviso de pendiente y **no** leen ningún
-    servicio de la sesión, de modo que no presentan un dato ausente como un
-    valor real (C4).
+    de la sección seleccionada. «Inicio», «Productos», «Movimientos» e
+    «Historial de precios» reciben la lectura de la sesión y consultan sus
+    datos al renderizarse, no al construir el registro (T043, T044, T046,
+    T047). La sección que la Fase 7 todavía no implementó muestra su aviso de
+    pendiente y **no** lee ningún servicio de la sesión, de modo que no
+    presenta un dato ausente como un valor real (C4).
 
     Args:
         assistant: Recursos de la sesión, o `None` si el asistente no se
@@ -1126,7 +1208,7 @@ def section_renderers(
         "Operaciones": pending_section("Operaciones"),
         "Propuestas pendientes": proposal_section(assistant),
         "Movimientos": movements_section(session),
-        "Historial de precios": pending_section("Historial de precios"),
+        "Historial de precios": price_history_section(session),
         "Asistente": assistant_section(
             assistant, unavailable_reason=unavailable_reason
         ),

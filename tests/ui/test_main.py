@@ -104,6 +104,7 @@ from app.services.ports import (
     PRICE_CHANGE_EVENT_TYPE,
     MovementRecord,
     PresentationRecord,
+    PriceChangeRecord,
     ProductRecord,
     RecordNotFoundError,
 )
@@ -175,6 +176,18 @@ from app.ui.sections.product_detail import (
     movement_kind_label,
     product_option_label,
 )
+from app.ui.sections.price_history import (
+    ALL_PRESENTATIONS_LABEL,
+    EMPTY_CATALOG_MESSAGE as EMPTY_PRICE_HISTORY_CATALOG_MESSAGE,
+    EMPTY_PRESENTATION_HISTORY_MESSAGE,
+    EMPTY_PRODUCT_HISTORY_MESSAGE,
+    NO_SELECTION_MESSAGE as NO_PRICE_HISTORY_PRODUCT_MESSAGE,
+    PRESENTATION_FILTER_LABEL,
+    PRICE_HISTORY_ERROR_TEMPLATE,
+    PRICE_HISTORY_SECTION_HEADER,
+    PRICE_HISTORY_NOTICE_TEMPLATE as PRICE_HISTORY_SECTION_NOTICE_TEMPLATE,
+    PRODUCT_FILTER_LABEL as PRICE_HISTORY_PRODUCT_LABEL,
+)
 from app.ui.sections.movements import (
     ALL_KINDS_LABEL,
     EMPTY_CATALOG_MESSAGE as EMPTY_MOVEMENTS_CATALOG_MESSAGE,
@@ -242,6 +255,9 @@ PRODUCT_DETAIL_SECTION_PATH: Path = SECTIONS_PATH / "product_detail.py"
 MOVEMENTS_SECTION_PATH: Path = SECTIONS_PATH / "movements.py"
 """Módulo de la vista de la sección «Movimientos» (T046)."""
 
+PRICE_HISTORY_SECTION_PATH: Path = SECTIONS_PATH / "price_history.py"
+"""Módulo de la vista de la sección «Historial de precios» (T047)."""
+
 SECTION_LABELS_EXPECTED: tuple[str, ...] = (
     "Inicio",
     "Productos",
@@ -256,11 +272,8 @@ SECTION_LABELS_EXPECTED: tuple[str, ...] = (
 DEFAULT_SECTION_LABEL: str = "Asistente"
 """Sección que la interfaz muestra al abrirse, sin elegir otra (T041, C20)."""
 
-PENDING_SECTIONS: tuple[str, ...] = (
-    "Operaciones",
-    "Historial de precios",
-)
-"""Secciones de RF-09 todavía pendientes en la Fase 7 (T041, T043, T044)."""
+PENDING_SECTIONS: tuple[str, ...] = ("Operaciones",)
+"""Secciones de RF-09 todavía pendientes en la Fase 7 (T041, T047)."""
 
 FORBIDDEN_SECTION_IMPORTS: tuple[str, ...] = (
     "app.infrastructure",
@@ -2915,22 +2928,34 @@ class CountingDetailInventoryService:
 
 
 class CountingPriceHistoryService:
-    """Espía de la lectura del historial de precios por producto (T045)."""
+    """Espía de las lecturas del historial de precios (T045, T047)."""
 
     def __init__(self, service: PriceHistoryService) -> None:
         """Envuelve el servicio real, sin modificarlo."""
         self._service = service
         self.get_price_history_by_product_calls = 0
+        self.get_price_history_by_presentation_calls = 0
 
     def reset(self) -> None:
-        """Reinicia el contador de la lectura del historial."""
+        """Reinicia los contadores de las lecturas del historial."""
         self.get_price_history_by_product_calls = 0
+        self.get_price_history_by_presentation_calls = 0
 
     def get_price_history_by_product(self, product_id: int) -> Any:
         """Cuenta y delega la lectura del historial del producto."""
         self.get_price_history_by_product_calls += 1
 
         return self._service.get_price_history_by_product(product_id)
+
+    def get_price_history_by_presentation(
+        self, presentation_id: int
+    ) -> Any:
+        """Cuenta y delega la lectura del historial de la presentación."""
+        self.get_price_history_by_presentation_calls += 1
+
+        return self._service.get_price_history_by_presentation(
+            presentation_id
+        )
 
     def __getattr__(self, name: str) -> Any:
         """Delega cualquier otra lectura en el servicio real."""
@@ -5046,3 +5071,632 @@ def test_the_movements_view_only_presents_the_received_data() -> None:
         "get_llm",
         "build_workflow",
     }
+
+
+# --- Sección Historial de precios (T047, RF-09) ---
+
+
+class FailingPriceHistoryService:
+    """Servicio que simula un error al leer el historial de precios (T047)."""
+
+    def __init__(self, service: PriceHistoryService, error: Exception) -> None:
+        """Envuelve el servicio real y conserva el error a inducir."""
+        self._service = service
+        self._error = error
+
+    def get_price_history_by_product(self, product_id: int) -> Any:
+        """Induce el error de lectura del historial del producto."""
+        raise self._error
+
+    def get_price_history_by_presentation(
+        self, presentation_id: int
+    ) -> Any:
+        """Induce el error de lectura del historial de la presentación."""
+        raise self._error
+
+    def __getattr__(self, name: str) -> Any:
+        """Delega cualquier otra lectura en el servicio real."""
+        return getattr(self._service, name)
+
+
+class FixedPriceHistoryService:
+    """Servicio que devuelve cambios de precio con una presentación ajena."""
+
+    def __init__(
+        self,
+        service: PriceHistoryService,
+        changes: Sequence[PriceChangeRecord],
+    ) -> None:
+        """Envuelve el servicio real y conserva los cambios a devolver."""
+        self._service = service
+        self._changes = changes
+
+    def get_price_history_by_product(
+        self, product_id: int
+    ) -> list[PriceChangeRecord]:
+        """Devuelve los cambios fijados, sin consultar el historial real."""
+        return list(self._changes)
+
+    def get_price_history_by_presentation(
+        self, presentation_id: int
+    ) -> list[PriceChangeRecord]:
+        """Devuelve los cambios fijados, sin consultar el historial real."""
+        return list(self._changes)
+
+    def __getattr__(self, name: str) -> Any:
+        """Delega cualquier otra lectura en el servicio real."""
+        return getattr(self._service, name)
+
+
+def open_price_history_section(app: AppTest) -> None:
+    """Ejecuta la aplicación y abre la sección Historial de precios (T047)."""
+    app.run()
+    app.radio[0].set_value(PRICE_HISTORY_SECTION_HEADER).run()
+
+
+def price_history_selectbox(app: AppTest, label: str) -> Any:
+    """Devuelve el selector de Historial de precios con la etiqueta dada."""
+    return next(
+        selectbox
+        for selectbox in app.selectbox
+        if selectbox.label == label
+    )
+
+
+def choose_price_history_product(
+    app: AppTest,
+    product: ProductRecord,
+) -> None:
+    """Elige el producto indicado en el selector del historial (T047, D1)."""
+    price_history_selectbox(app, PRICE_HISTORY_PRODUCT_LABEL).set_value(
+        product_option_label(product)
+    ).run()
+
+
+def choose_price_history_presentation(
+    app: AppTest,
+    presentation_name: str,
+) -> None:
+    """Elige la presentación indicada en el selector del historial (D2)."""
+    price_history_selectbox(app, PRESENTATION_FILTER_LABEL).set_value(
+        presentation_name
+    ).run()
+
+
+def base_presentation(
+    presentations: SqlitePresentationRepository,
+    product_id: int,
+) -> PresentationRecord:
+    """Devuelve la presentación base del producto (factor 1)."""
+    return next(
+        presentation
+        for presentation in presentations.list_by_product(product_id)
+        if presentation.factor == 1
+    )
+
+
+def add_test_price_change(
+    connection: sqlite3.Connection,
+    product: ProductRecord,
+    presentation: PresentationRecord,
+    *,
+    previous_price: Decimal,
+    new_price: Decimal,
+    occurred_at: datetime,
+) -> PriceChangeRecord:
+    """Registra un cambio de precio real en la base de la prueba (T047)."""
+    return SqlitePriceHistoryRepository(connection).add(
+        product_id=product.id,
+        presentation_id=presentation.id,
+        previous_price=previous_price,
+        new_price=new_price,
+        occurred_at=occurred_at,
+    )
+
+
+def test_price_history_shows_names_prices_and_local_dates(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    presentations: SqlitePresentationRepository,
+    presentation_service: PresentationService,
+) -> None:
+    """
+    Verifica nombres, importes, fecha local y orden cronológico (T047, C19).
+
+    Se confirmaron dos cambios de precio por el servicio real, uno en cada
+    presentación. Con «Todas las presentaciones» se muestran ambos en el orden
+    del servicio, con dos decimales y la fecha local `-03:00`, sin ISO 8601 ni
+    UTC.
+    """
+    base = base_presentation(presentations, catalog.product.id)
+    presentation_service.change_sale_price(base.id, Decimal("110"))
+    presentation_service.change_sale_price(catalog.box.id, Decimal("660"))
+    app = app_for(make_assistant(connection))
+
+    open_price_history_section(app)
+    choose_price_history_product(app, catalog.product)
+
+    rendered = rendered_text(app)
+    infos = [info.value for info in app.info]
+    dates = [
+        line
+        for line in rendered.splitlines()
+        if line.startswith(f"{DATE_LABEL}: ")
+    ]
+
+    assert not app.exception
+    assert PRICE_HISTORY_SECTION_NOTICE_TEMPLATE.format(count=2) in infos
+    assert f"{PRESENTATION_LABEL}: botella" in rendered
+    assert f"{PRESENTATION_LABEL}: Caja x6" in rendered
+    assert f"{PRICE_PREVIOUS_LABEL}: 100.00" in rendered
+    assert f"{PRICE_NEW_LABEL}: 110.00" in rendered
+    assert f"{PRICE_PREVIOUS_LABEL}: 600.00" in rendered
+    assert f"{PRICE_NEW_LABEL}: 660.00" in rendered
+    assert f"{EVENT_LABEL}: {PRICE_CHANGE_EVENT_TYPE}" in rendered
+    assert len(dates) == 2
+    for line in dates:
+        assert re.fullmatch(
+            rf"{DATE_LABEL}: \d{{4}}-\d{{2}}-\d{{2}} "
+            r"\d{2}:\d{2}:\d{2} -03:00",
+            line,
+        )
+    assert not re.search(r"\d{4}-\d{2}-\d{2}T", rendered)
+    assert "+00:00" not in rendered
+    assert rendered.index(
+        f"{PRICE_NEW_LABEL}: 110.00"
+    ) < rendered.index(f"{PRICE_NEW_LABEL}: 660.00")
+
+
+def test_price_history_filters_by_presentation(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    presentations: SqlitePresentationRepository,
+    presentation_service: PresentationService,
+) -> None:
+    """
+    Verifica que una presentación concreta acota el historial (T047, D2).
+
+    Con «Caja x6» elegida solo se muestra el cambio de esa presentación y el
+    aviso C8 informa un único cambio.
+    """
+    base = base_presentation(presentations, catalog.product.id)
+    presentation_service.change_sale_price(base.id, Decimal("110"))
+    presentation_service.change_sale_price(catalog.box.id, Decimal("660"))
+    app = app_for(make_assistant(connection))
+
+    open_price_history_section(app)
+    choose_price_history_product(app, catalog.product)
+    assert price_history_selectbox(
+        app, PRESENTATION_FILTER_LABEL
+    ).value == ALL_PRESENTATIONS_LABEL
+
+    choose_price_history_presentation(app, catalog.box.name)
+
+    rendered = rendered_text(app)
+    infos = [info.value for info in app.info]
+
+    assert not app.exception
+    assert PRICE_HISTORY_SECTION_NOTICE_TEMPLATE.format(count=1) in infos
+    assert f"{PRESENTATION_LABEL}: Caja x6" in rendered
+    assert f"{PRICE_NEW_LABEL}: 660.00" in rendered
+    assert "110.00" not in rendered
+    assert "botella" not in rendered
+
+
+def test_price_history_falls_back_to_the_presentation_id(
+    connection: sqlite3.Connection,
+    product_service: ProductService,
+) -> None:
+    """
+    Verifica que una presentación no resuelta informa su id (T047).
+
+    El cambio referencia una presentación que no pertenece al producto: la
+    vista no inventa un nombre y usa la referencia explícita con el id.
+    """
+    product = zero_stock_product(
+        product_service,
+        sku="SKU-PRICE-FALLBACK",
+        name="Fallback de precios",
+    )
+    change = PriceChangeRecord(
+        id=1,
+        product_id=product.id,
+        presentation_id=9999,
+        previous_price=Decimal("10"),
+        new_price=Decimal("12"),
+        occurred_at=local_instant(2026, 3, 10, 12),
+        event_type=PRICE_CHANGE_EVENT_TYPE,
+    )
+    assistant = make_assistant(connection)
+    assistant.session.price_history_service = FixedPriceHistoryService(
+        assistant.session.price_history_service,
+        [change],
+    )
+    app = app_for(assistant)
+
+    open_price_history_section(app)
+    choose_price_history_product(app, product)
+
+    rendered = rendered_text(app)
+
+    assert not app.exception
+    assert f"{PRESENTATION_LABEL}: presentación #9999" in rendered
+    assert f"{PRICE_NEW_LABEL}: 12.00" in rendered
+
+
+def test_a_product_without_price_changes_informs_the_empty_state(
+    connection: sqlite3.Connection,
+    product_service: ProductService,
+) -> None:
+    """
+    Verifica el vacío explícito de un producto sin cambios (T047, C4).
+
+    No se muestran registros, no se inventa un cero y no aparece el aviso de
+    no paginación con un conteo falso.
+    """
+    product = zero_stock_product(
+        product_service,
+        sku="SKU-PRICE-EMPTY",
+        name="Sin cambios",
+    )
+    app = app_for(make_assistant(connection))
+
+    open_price_history_section(app)
+    choose_price_history_product(app, product)
+
+    infos = [info.value for info in app.info]
+
+    assert not app.exception
+    assert infos == [EMPTY_PRODUCT_HISTORY_MESSAGE]
+    assert PRICE_HISTORY_SECTION_NOTICE_TEMPLATE.format(count=0) not in infos
+    assert rendered_text(app) == ""
+
+
+def test_a_presentation_without_price_changes_has_its_own_empty_state(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    presentations: SqlitePresentationRepository,
+    presentation_service: PresentationService,
+) -> None:
+    """
+    Verifica el vacío propio de una presentación sin cambios (T047, D2, C4).
+
+    El producto tiene un cambio en su presentación base, pero «Caja x6» no
+    tiene ninguno: se informa el vacío de la presentación y no el del producto.
+    """
+    base = base_presentation(presentations, catalog.product.id)
+    presentation_service.change_sale_price(base.id, Decimal("110"))
+    app = app_for(make_assistant(connection))
+
+    open_price_history_section(app)
+    choose_price_history_product(app, catalog.product)
+    choose_price_history_presentation(app, catalog.box.name)
+
+    infos = [info.value for info in app.info]
+
+    assert not app.exception
+    assert EMPTY_PRESENTATION_HISTORY_MESSAGE in infos
+    assert EMPTY_PRODUCT_HISTORY_MESSAGE not in infos
+    assert PRICE_HISTORY_SECTION_NOTICE_TEMPLATE.format(count=0) not in infos
+    assert rendered_text(app) == ""
+
+
+def test_price_history_does_not_read_without_a_product(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica que sin producto no se consulta ningún historial (T047, D1).
+
+    El selector conserva la opción centinela, se informa el estado y no se
+    ejecuta ninguna lectura de presentaciones ni del historial de precios.
+    """
+    assistant, counting_inventory = counted_assistant(connection)
+    counting_history = CountingPriceHistoryService(
+        assistant.session.price_history_service
+    )
+    assistant.session.price_history_service = counting_history
+    app = app_for(assistant)
+
+    open_price_history_section(app)
+
+    assert not app.exception
+    assert price_history_selectbox(
+        app, PRICE_HISTORY_PRODUCT_LABEL
+    ).value == NO_SELECTION_LABEL
+    assert [info.value for info in app.info] == [
+        NO_PRICE_HISTORY_PRODUCT_MESSAGE
+    ]
+    assert [selectbox.label for selectbox in app.selectbox] == [
+        PRICE_HISTORY_PRODUCT_LABEL
+    ]
+    assert counting_inventory.get_product_presentations_calls == 0
+    assert counting_history.get_price_history_by_product_calls == 0
+    assert counting_history.get_price_history_by_presentation_calls == 0
+
+
+def test_an_empty_catalog_shows_no_price_history_controls(
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica el catálogo vacío sin controles ni lecturas (T047, C4).
+
+    Sin productos se muestra el encabezado y el vacío explícito, sin selectores
+    ni datos inventados.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_price_history_section(app)
+
+    assert not app.exception
+    assert [header.value for header in app.header] == [
+        PRICE_HISTORY_SECTION_HEADER
+    ]
+    assert [info.value for info in app.info] == [
+        EMPTY_PRICE_HISTORY_CATALOG_MESSAGE
+    ]
+    assert len(app.selectbox) == 0
+    assert rendered_text(app) == ""
+
+
+def test_an_inactive_product_is_queryable_in_price_history(
+    connection: sqlite3.Connection,
+    product_service: ProductService,
+    presentations: SqlitePresentationRepository,
+    presentation_service: PresentationService,
+    products: SqliteProductRepository,
+) -> None:
+    """
+    Verifica la consulta de un producto inactivo y su marca (T047, D3).
+
+    El producto inactivo sigue en el selector con la marca de inactivo y su
+    historial de precios es visible por lectura.
+    """
+    stored = zero_stock_product(
+        product_service,
+        sku="SKU-PRICE-OFF",
+        name="Inactivo con historial",
+    )
+    base = base_presentation(presentations, stored.id)
+    presentation_service.change_sale_price(base.id, Decimal("17"))
+    product_service.deactivate(stored.id)
+    inactive = products.get(stored.id)
+    label = product_option_label(inactive)
+    app = app_for(make_assistant(connection))
+
+    open_price_history_section(app)
+    choose_price_history_product(app, inactive)
+
+    rendered = rendered_text(app)
+
+    assert not app.exception
+    assert label == "SKU-PRICE-OFF — Inactivo con historial (inactivo)"
+    assert label in price_history_selectbox(
+        app, PRICE_HISTORY_PRODUCT_LABEL
+    ).options
+    assert f"{PRICE_NEW_LABEL}: 17.00" in rendered
+
+
+def test_price_history_reports_the_real_count_without_truncating(
+    connection: sqlite3.Connection,
+    product_service: ProductService,
+    presentations: SqlitePresentationRepository,
+) -> None:
+    """
+    Verifica el aviso C8 con N real y el último cambio visible (T047, D6).
+
+    Se registran doce cambios y se muestran los doce, con el aviso del número
+    real y sin truncar el último.
+    """
+    product = zero_stock_product(
+        product_service,
+        sku="SKU-PRICE-COUNT",
+        name="Conteo de precios",
+    )
+    base = base_presentation(presentations, product.id)
+    for index in range(1, 13):
+        add_test_price_change(
+            connection,
+            product,
+            base,
+            previous_price=Decimal(100 + index),
+            new_price=Decimal(101 + index),
+            occurred_at=local_instant(2026, 3, 10, 8, index),
+        )
+    app = app_for(make_assistant(connection))
+
+    open_price_history_section(app)
+    choose_price_history_product(app, product)
+
+    rendered = rendered_text(app)
+    infos = [info.value for info in app.info]
+
+    assert not app.exception
+    assert PRICE_HISTORY_SECTION_NOTICE_TEMPLATE.format(count=12) in infos
+    for index in range(1, 13):
+        assert f"{PRICE_NEW_LABEL}: {101 + index}.00" in rendered
+    assert rendered.count(f"{DATE_LABEL}:") == 12
+    assert rendered.index(
+        f"{PRICE_NEW_LABEL}: 102.00"
+    ) < rendered.index(f"{PRICE_NEW_LABEL}: 113.00")
+
+
+def test_a_price_history_read_error_is_not_an_empty_history(
+    connection: sqlite3.Connection,
+    product_service: ProductService,
+) -> None:
+    """
+    Verifica que un error de lectura se distingue del vacío (T047, C21).
+
+    `RecordNotFoundError` se informa con su motivo como error y no como un
+    producto o una presentación sin cambios.
+    """
+    product = zero_stock_product(
+        product_service,
+        sku="SKU-PRICE-ERROR",
+        name="Error de precios",
+    )
+    error = RecordNotFoundError("No existe el producto con id 999.")
+    assistant = make_assistant(connection)
+    assistant.session.price_history_service = FailingPriceHistoryService(
+        assistant.session.price_history_service,
+        error,
+    )
+    app = app_for(assistant)
+
+    open_price_history_section(app)
+    choose_price_history_product(app, product)
+
+    infos = [info.value for info in app.info]
+
+    assert not app.exception
+    assert [element.value for element in app.error] == [
+        PRICE_HISTORY_ERROR_TEMPLATE.format(reason=str(error))
+    ]
+    assert EMPTY_PRODUCT_HISTORY_MESSAGE not in infos
+    assert EMPTY_PRESENTATION_HISTORY_MESSAGE not in infos
+    assert PRICE_HISTORY_SECTION_NOTICE_TEMPLATE.format(count=0) not in infos
+
+
+def test_price_history_does_not_write(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    presentations: SqlitePresentationRepository,
+    presentation_service: PresentationService,
+) -> None:
+    """
+    Verifica que consultar y filtrar no modifica la base (T047).
+
+    La instantánea de las tablas y el contador de cambios de SQLite son
+    idénticos antes y después de abrir la sección, elegir el producto y cambiar
+    la presentación en ambos sentidos.
+    """
+    base = base_presentation(presentations, catalog.product.id)
+    presentation_service.change_sale_price(base.id, Decimal("110"))
+    app = app_for(make_assistant(connection))
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    open_price_history_section(app)
+    choose_price_history_product(app, catalog.product)
+    choose_price_history_presentation(app, catalog.box.name)
+    choose_price_history_presentation(app, ALL_PRESENTATIONS_LABEL)
+
+    assert not app.exception
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_price_history_works_without_the_model_with_real_data(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """
+    Verifica la sección sin modelo configurado y con datos reales (T047, C2).
+
+    La lectura de la sesión se compone con la base configurada y el historial
+    confirmado se muestra aunque el asistente no esté disponible.
+    """
+    database_path = configured_database_path(monkeypatch, tmp_path)
+    seed_connection = connect(database_path)
+    try:
+        create_schema(seed_connection)
+        seed_products = ProductService(
+            products=SqliteProductRepository(seed_connection),
+            presentations=SqlitePresentationRepository(seed_connection),
+            movements=SqliteMovementRepository(seed_connection),
+            transaction=partial(transaction, seed_connection),
+        )
+        stored = seed_products.register(
+            ProductRegistration(
+                sku="SKU-PRICE-NO-MODEL",
+                name="Sin modelo con precios",
+                base_unit="unidad",
+                base_sale_price=Decimal("10"),
+            )
+        )
+        seed_presentations = SqlitePresentationRepository(seed_connection)
+        base = seed_presentations.list_by_product(stored.id)[0]
+        PresentationService(
+            products=SqliteProductRepository(seed_connection),
+            presentations=seed_presentations,
+            movements=SqliteMovementRepository(seed_connection),
+            price_history=SqlitePriceHistoryRepository(seed_connection),
+            transaction=partial(transaction, seed_connection),
+        ).change_sale_price(base.id, Decimal("15"))
+    finally:
+        seed_connection.close()
+    monkeypatch.setattr(llm_module, "get_llm", failing_get_llm)
+    app = AppTest.from_file(str(APP_PATH), default_timeout=30)
+
+    app.run()
+
+    session = app.session_state.get(SESSION_KEY)
+
+    try:
+        assert not app.exception
+        assert len(app.error) == 1
+        assert MISSING_KEY_MESSAGE in app.error[0].value
+
+        open_price_history_section(app)
+        choose_price_history_product(app, stored)
+
+        rendered = rendered_text(app)
+
+        assert not app.exception
+        assert len(app.error) == 0
+        assert f"{PRICE_NEW_LABEL}: 15.00" in rendered
+        assert product_option_label(stored) in price_history_selectbox(
+            app, PRICE_HISTORY_PRODUCT_LABEL
+        ).options
+    finally:
+        if session is not None:
+            session.connection.close()
+
+
+def test_the_price_history_view_only_presents_the_received_data() -> None:
+    """
+    Verifica que el historial no consulta, no escribe ni confirma (T047).
+
+    La vista recibe los datos ya consultados desde `main.py`: no importa los
+    servicios, el dominio ni la persistencia, no llama a sus lecturas, no usa
+    `st.session_state` y no contiene el punto de confirmación.
+    """
+    source = PRICE_HISTORY_SECTION_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    assert PRICE_HISTORY_SECTION_PATH.exists()
+    assert "st.session_state" not in source
+    assert ".confirm(" not in source
+    for module in imported_modules(tree):
+        for prefix in FORBIDDEN_SECTION_IMPORTS:
+            assert not (
+                module == prefix or module.startswith(f"{prefix}.")
+            ), f"price_history.py importa {module}"
+    assert not called_names(tree) & {
+        "list_products",
+        "get_product_presentations",
+        "get_price_history_by_product",
+        "get_price_history_by_presentation",
+        "change_sale_price",
+        "build_session",
+        "open_connection",
+        "transaction",
+        "get_llm",
+        "build_workflow",
+    }
+
+
+def test_the_price_history_view_uses_the_shared_formatting() -> None:
+    """
+    Verifica que la vista delega el formato y no usa los helpers de main
+    (T047).
+
+    Los importes y las fechas se formatean con `describe_price_change` y
+    `app.ui.formatting`; la sección no usa `_format_price` ni `isoformat()`.
+    """
+    source = PRICE_HISTORY_SECTION_PATH.read_text(encoding="utf-8")
+
+    assert "describe_price_change" in source
+    assert "_format_price" not in source
+    assert "isoformat(" not in source

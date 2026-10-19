@@ -3,7 +3,7 @@
 ## Estado
 
 Aprobada. Ampliada con RF-08 (actualización del precio de venta e historial).
-RF-09 (interfaz de gestión del inventario) queda formalizada en este documento y **pendiente de aprobación explícita**: no modifica RF-01 a RF-08 ni las reglas de negocio transversales.
+RF-09 (interfaz de gestión del inventario) está **aprobada** y formalizada en este documento: no modifica RF-01 a RF-08 ni las reglas de negocio transversales.
 
 ## Propósito
 
