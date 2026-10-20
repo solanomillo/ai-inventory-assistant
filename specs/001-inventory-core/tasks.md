@@ -836,7 +836,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 - **Dependencias:** T039, T041.
 - **Pruebas:** pruebas de la interfaz con proveedor falso y sin modelo.
 - **Criterios de aceptación:**
-  - La conversación y la confirmación desde la interfaz conservan el comportamiento vigente (`app/ui/main.py:244`, `:422-463`, `:482-516`; `tests/ui/test_main.py`).
+  - La conversación y la confirmación desde la interfaz conservan el comportamiento vigente (`app/ui/sections/assistant.py`: `assistant_section`, `render_history`, `render_turn`, `handle_message` y `render_confirmation`; `app/ui/main.py`: `confirm_pending`, `describe_turn` y `_assistant_actions`; `tests/ui/test_main.py`).
   - Sin modelo, la sección informa su indisponibilidad y **no** impide las demás secciones (**C2**, **C20**).
   - El agente mantiene su superficie: **10** acciones de propuesta (`app/schemas/proposals.py:57-66`) y **18** herramientas sin confirmación (`tests/ai/test_proposal_tools.py:467`, `tests/ai/test_supervisor.py:499`, `tests/ai/test_inventory_agent.py:400-401`), sin ampliarla.
 - **RF:** RF-09.

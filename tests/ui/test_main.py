@@ -248,6 +248,9 @@ SECTIONS_PATH: Path = APP_PATH.parent / "sections"
 PROPOSALS_SECTION_PATH: Path = SECTIONS_PATH / "proposals.py"
 """Módulo de la vista de la sección «Propuestas pendientes» (T041)."""
 
+ASSISTANT_SECTION_PATH: Path = SECTIONS_PATH / "assistant.py"
+"""Módulo de la presentación interactiva de la sección «Asistente» (T048)."""
+
 HOME_SECTION_PATH: Path = SECTIONS_PATH / "home.py"
 """Módulo de la vista de la sección «Inicio» (T043)."""
 
@@ -1853,6 +1856,25 @@ def test_the_proposals_view_does_not_confirm_nor_touch_the_session() -> None:
     assert ".confirm(" not in source
     assert "proposal_service" not in source
     assert "st.session_state" not in source
+
+
+def test_the_assistant_view_only_presents_and_delegates_confirmation() -> None:
+    """
+    Verifica que la vista del asistente no confirma ni usa servicios
+    (T048).
+
+    La sección conserva el chat y el control, pero la confirmación se delega en
+    los callbacks de `main.py`: el módulo existe, no contiene el punto de
+    confirmación, no nombra el servicio de propuestas y no importa el punto de
+    entrada.
+    """
+    assert ASSISTANT_SECTION_PATH.is_file()
+    source = ASSISTANT_SECTION_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    assert ".confirm(" not in source
+    assert "proposal_service" not in source
+    assert "app.ui.main" not in imported_modules(tree)
 
 
 def test_the_app_keeps_a_single_entry_point_without_multipage(

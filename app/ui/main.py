@@ -40,7 +40,8 @@ Navegación lateral (T041, T043, RF-09): la aplicación es de **una sola
 página** —un único punto de entrada, sin el modo multipágina de Streamlit— y
 ofrece las siete secciones de RF-09 en el sidebar, con «Asistente» por defecto.
 Se renderiza **solo** la sección seleccionada: el asistente conserva la
-conversación y la confirmación vigentes; «Propuestas pendientes» se renderiza
+conversación y la confirmación vigentes y su presentación interactiva vive en
+`app/ui/sections/assistant.py` (T048); «Propuestas pendientes» se renderiza
 desde `app/ui/sections/proposals.py`, una vista que no confirma; «Inicio» se
 renderiza desde `app/ui/sections/home.py` y consulta sus datos de forma
 perezosa, solo al mostrarse; «Productos» se renderiza desde
@@ -82,7 +83,8 @@ el historial, las propuestas ni los resultados de confirmación.
 
 Lógica testeable: `build_session`, `build_assistant`, `answer`,
 `describe_proposal`, `describe_price_update`, `describe_price_history`,
-`describe_result`, `confirm_pending`, `pending_proposals`, `home_section`,
+`describe_result`, `describe_turn`, `confirm_pending`, `pending_proposals`,
+`home_section`,
 `products_section`, `product_detail_section`, `movements_section`,
 `price_history_section` y `section_renderers` no dependen
 del runtime de Streamlit, de modo que las pruebas puedan inyectar un modelo
@@ -121,6 +123,15 @@ from app.services.price_history import PriceHistoryService
 from app.services.proposals import ProposalService
 from app.tools.inventory_tools import create_inventory_tools
 from app.tools.proposal_tools import create_proposal_tools
+from app.ui.sections.assistant import (
+    CONFIRM_LABEL,
+    CONFIRMATION_ERROR_PREFIX,
+    NO_RESPONSE_MESSAGE,
+    PROCESSING_KEY,
+    AssistantActions,
+    TurnContent,
+    assistant_section,
+)
 from app.ui.sections.home import render_home
 from app.ui.sections.movements import (
     MovementQuery,
@@ -166,25 +177,11 @@ from app.ui.session import SESSION_KEY, SessionResources, build_session
 ASSISTANT_KEY: str = "inventory_assistant"
 # Clave de `st.session_state` donde vive el asistente de la sesión (D7).
 
-NO_RESPONSE_MESSAGE: str = (
-    "El asistente no devolvió una respuesta; inténtalo de nuevo."
-)
-# Aviso que se muestra cuando el asistente no produjo ninguna respuesta.
-
 PENDING_PROPOSAL_NOTE: str = (
     "La propuesta queda pendiente: no se ejecutó ninguna operación y la "
     "confirmación es tuya."
 )
 # Aviso de la propuesta pendiente: nada se ejecutó todavía (D5).
-
-PROCESSING_KEY: str = "confirmation_in_progress"
-# Bandera de la sesión que marca una confirmación en curso (T024).
-
-CONFIRM_LABEL: str = "Confirmar"
-# Etiqueta del control con el que el usuario confirma una propuesta (T024).
-
-CONFIRMATION_ERROR_PREFIX: str = "No se pudo confirmar la propuesta: "
-# Prefijo del aviso que se muestra cuando la confirmación se rechaza (T024).
 
 ALREADY_CONFIRMED_MESSAGE: str = (
     "La propuesta ya está confirmada: no se volvió a ejecutar ninguna "
@@ -222,11 +219,6 @@ SECTION_PENDING_MESSAGE: str = (
     "Sección pendiente de implementación: todavía no muestra datos."
 )
 # Aviso de las secciones que la Fase 7 todavía no implementó (T041, C4).
-
-NO_ASSISTANT_MESSAGE: str = (
-    "El asistente no está disponible en esta sesión."
-)
-# Motivo de reserva cuando el asistente no se compuso y falta su causa (T041).
 
 
 @dataclass(frozen=True)
@@ -541,124 +533,75 @@ def confirm_pending(assistant: Assistant, turn: Turn) -> str | None:
     return None
 
 
-def confirmation_key(index: int) -> str:
+def describe_turn(assistant: Assistant, turn: Turn) -> TurnContent:
     """
-    Devuelve la clave estable del control de confirmación de un turno (T024).
+    Resuelve el contenido que muestra un turno de la conversación (T024, T048).
 
-    La clave depende solo de la posición del turno en el historial, que no
-    cambia porque los turnos solo se agregan.
-
-    Args:
-        index: Posición del turno en el historial de la sesión.
-
-    Returns:
-        La clave del botón de confirmación dentro de `st.session_state`.
-    """
-    return f"confirm_proposal_{index}"
-
-
-def render_confirmation(assistant: Assistant, turn: Turn, *, key: str) -> None:
-    """
-    Muestra el control de confirmación de una propuesta pendiente (T024).
-
-    El control es un botón propio de la interfaz, fuera del chat: confirmar es
-    una acción explícita del usuario y no una decisión del LLM. Solo se ofrece
-    mientras la propuesta está pendiente, se deshabilita mientras hay una
-    confirmación en curso en la sesión y desaparece cuando la propuesta ya está
-    confirmada. Si el servicio rechaza la confirmación, se muestra el motivo y
-    el control sigue disponible.
-
-    Args:
-        assistant: Recursos de la sesión.
-        turn: Turno cuya propuesta se puede confirmar.
-        key: Clave estable del botón dentro de la sesión.
-    """
-    proposal = turn.state["pending_proposal"]
-    if proposal is None or proposal.status is not ProposalStatus.PENDING:
-        return
-
-    session = st.session_state
-    processing = bool(session.get(PROCESSING_KEY, False))
-    if not st.button(CONFIRM_LABEL, key=key, disabled=processing):
-        return
-
-    session[PROCESSING_KEY] = True
-    try:
-        error = confirm_pending(assistant, turn)
-    finally:
-        session[PROCESSING_KEY] = False
-
-    if error is None:
-        st.rerun()
-    else:
-        st.error(f"{CONFIRMATION_ERROR_PREFIX}{error}")
-
-
-def render_turn(assistant: Assistant, turn: Turn, *, key: str) -> None:
-    """
-    Muestra un turno de la conversación con su propuesta y su resultado (T024).
-
-    Un cambio de precio se muestra con la presentación afectada, su precio
-    vigente y el historial de precios de la presentación (T035), tanto mientras
-    la propuesta está pendiente como después de confirmarla: leer ese estado no
-    ejecuta la operación ni confirma nada de nuevo.
+    Reproduce el contenido vigente del turno: la respuesta del asistente —o su
+    aviso de reserva—, la propuesta pendiente con su detalle y el resultado
+    real de una confirmación. Un cambio de precio se muestra con la
+    presentación afectada, su precio vigente y el historial de precios de la
+    presentación (T035), tanto mientras la propuesta está pendiente como
+    después de confirmarla: leer ese estado no ejecuta la operación ni confirma
+    nada de nuevo. El control de confirmación se habilita solo mientras la
+    propuesta está pendiente.
 
     Args:
         assistant: Recursos de la sesión.
         turn: Turno con el mensaje del usuario y el estado real.
-        key: Clave estable del control de confirmación del turno.
+
+    Returns:
+        La respuesta, los detalles ya descritos y si corresponde ofrecer el
+        control de confirmación.
     """
-    with st.chat_message("user"):
-        st.markdown(turn.user_message)
-    with st.chat_message("assistant"):
-        st.markdown(turn.state["response"] or NO_RESPONSE_MESSAGE)
-        proposal = turn.state["pending_proposal"]
-        if proposal is not None and isinstance(
-            proposal.payload, PriceUpdatePayload
-        ):
-            st.markdown(describe_price_update(assistant, proposal))
-            st.markdown(
-                _describe_history_of(
-                    assistant, proposal.payload.presentation_id
-                )
+    details: list[str] = []
+    proposal = turn.state["pending_proposal"]
+    if proposal is not None and isinstance(
+        proposal.payload, PriceUpdatePayload
+    ):
+        details.append(describe_price_update(assistant, proposal))
+        details.append(
+            _describe_history_of(
+                assistant, proposal.payload.presentation_id
             )
-        elif (
+        )
+    elif proposal is not None and proposal.status is ProposalStatus.PENDING:
+        details.append(describe_proposal(proposal))
+    result = turn.state["execution_result"]
+    if result is not None:
+        details.append(describe_result(result))
+
+    return TurnContent(
+        response=turn.state["response"] or NO_RESPONSE_MESSAGE,
+        details=tuple(details),
+        can_confirm=(
             proposal is not None
             and proposal.status is ProposalStatus.PENDING
-        ):
-            st.markdown(describe_proposal(proposal))
-        result = turn.state["execution_result"]
-        if result is not None:
-            st.markdown(describe_result(result))
-        render_confirmation(assistant, turn, key=key)
+        ),
+    )
 
 
-def render_history(assistant: Assistant) -> None:
-    """Muestra los turnos anteriores de la conversación (T024)."""
-    for index, turn in enumerate(assistant.history):
-        render_turn(assistant, turn, key=confirmation_key(index))
-
-
-def handle_message(assistant: Assistant, user_message: str) -> Turn:
+def _assistant_actions(assistant: Assistant) -> AssistantActions:
     """
-    Responde el mensaje del usuario, lo registra y lo muestra (T024).
+    Compone los callbacks de la sección del asistente (T048).
+
+    Los callbacks delegan en la lógica de esta interfaz: `answer` responde con
+    el grafo, `confirm_turn` usa el único punto de confirmación
+    (`confirm_pending`) y `describe_turn` resuelve el contenido del turno. La
+    vista de la sección solo presenta y no accede a los servicios.
 
     Args:
         assistant: Recursos de la sesión.
-        user_message: Mensaje escrito por el usuario.
 
     Returns:
-        El turno respondido, ya agregado al historial de la sesión.
+        Los callbacks que la sección usa para responder, confirmar y describir
+        un turno.
     """
-    turn = answer(assistant, user_message)
-    assistant.history.append(turn)
-    render_turn(
-        assistant,
-        turn,
-        key=confirmation_key(len(assistant.history) - 1),
+    return AssistantActions(
+        answer=lambda user_message: answer(assistant, user_message),
+        confirm_turn=lambda turn: confirm_pending(assistant, turn),
+        describe_turn=lambda turn: describe_turn(assistant, turn),
     )
-
-    return turn
 
 
 def pending_proposals(assistant: Assistant | None) -> list[Proposal]:
@@ -707,44 +650,6 @@ def pending_section(section: str) -> Callable[[], None]:
         """Muestra el aviso de que la sección está pendiente (T041)."""
         st.header(section)
         st.info(f"«{section}»: {SECTION_PENDING_MESSAGE}")
-
-    return render
-
-
-def assistant_section(
-    assistant: Assistant | None,
-    *,
-    unavailable_reason: str | None = None,
-) -> Callable[[], None]:
-    """
-    Construye el renderer de la sección del asistente (T041, C20).
-
-    Conserva el flujo conversacional vigente —el historial, la entrada de chat
-    y el manejo del mensaje—, incluida la confirmación, que sigue siendo única
-    en `confirm_pending`. Cuando el asistente no está disponible porque el
-    modelo no está configurado, la sección muestra el motivo en lugar de la
-    conversación, sin impedir las demás secciones.
-
-    Args:
-        assistant: Recursos de la sesión, o `None` si el asistente no se
-            compuso.
-        unavailable_reason: Motivo por el que el asistente no está disponible,
-            o `None` si está disponible.
-
-    Returns:
-        El renderer sin argumentos de la sección del asistente.
-    """
-
-    def render() -> None:
-        """Muestra la conversación del asistente o su indisponibilidad."""
-        if assistant is None:
-            st.error(unavailable_reason or NO_ASSISTANT_MESSAGE)
-            return
-
-        render_history(assistant)
-        user_message = st.chat_input("Escribe tu consulta de inventario")
-        if user_message:
-            handle_message(assistant, user_message)
 
     return render
 
@@ -1210,7 +1115,11 @@ def section_renderers(
         "Movimientos": movements_section(session),
         "Historial de precios": price_history_section(session),
         "Asistente": assistant_section(
-            assistant, unavailable_reason=unavailable_reason
+            None if assistant is None else assistant.history,
+            actions=(
+                None if assistant is None else _assistant_actions(assistant)
+            ),
+            unavailable_reason=unavailable_reason,
         ),
     }
 
