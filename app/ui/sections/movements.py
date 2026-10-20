@@ -25,7 +25,9 @@ Límites de la vista:
   filtra (D3). No se ofrecen acciones de escritura ni compensaciones nuevas: un
   movimiento de compensación histórico se consulta como cualquier otro (D8).
 - Los resultados conservan el orden del servicio, sin reordenar ni deduplicar,
-  y se muestran completos: el aviso C8 informa el número real (D6).
+  y se muestran completos: el aviso C8 informa el número real (D6). La tabla
+  usa `st.dataframe` con las ocho columnas del movimiento y los controles y el
+  resultado se agrupan en contenedores con borde (T057).
 - Los estados son explícitos y diferenciados: catálogo vacío, sin selección,
   producto sin movimientos, filtros sin resultados, período inválido y error de
   lectura (C4, C21).
@@ -39,14 +41,15 @@ from datetime import date
 
 import streamlit as st
 
+from app.ui.formatting import single_line
 from app.ui.sections.product_detail import (
     MOVEMENT_KIND_LABELS,
     MOVEMENTS_NOTICE_TEMPLATE,
     NO_SELECTION_LABEL,
     MovementView,
     ProductView,
-    describe_movement,
     movement_kind_label,
+    movement_row,
     non_paginated_notice,
     product_option_label,
 )
@@ -190,28 +193,29 @@ def render_movement_controls(
         NO_SELECTION_LABEL,
         *(product_option_label(product) for product in products),
     ]
-    selected_product = st.selectbox(
-        PRODUCT_FILTER_LABEL,
-        product_options,
-        index=0,
-        key=PRODUCT_FILTER_KEY,
-    )
-    selected_kind = st.selectbox(
-        KIND_FILTER_LABEL,
-        KIND_FILTER_OPTIONS,
-        index=0,
-        key=KIND_FILTER_KEY,
-    )
-    start_value = st.date_input(
-        START_DATE_LABEL,
-        value=None,
-        key=START_DATE_KEY,
-    )
-    end_value = st.date_input(
-        END_DATE_LABEL,
-        value=None,
-        key=END_DATE_KEY,
-    )
+    with st.container(border=True):
+        selected_product = st.selectbox(
+            PRODUCT_FILTER_LABEL,
+            product_options,
+            index=0,
+            key=PRODUCT_FILTER_KEY,
+        )
+        selected_kind = st.selectbox(
+            KIND_FILTER_LABEL,
+            KIND_FILTER_OPTIONS,
+            index=0,
+            key=KIND_FILTER_KEY,
+        )
+        start_value = st.date_input(
+            START_DATE_LABEL,
+            value=None,
+            key=START_DATE_KEY,
+        )
+        end_value = st.date_input(
+            END_DATE_LABEL,
+            value=None,
+            key=END_DATE_KEY,
+        )
 
     product_index: int | None = None
     if selected_product != NO_SELECTION_LABEL:
@@ -251,33 +255,32 @@ def render_movements(
     """
     Muestra los movimientos en el orden del servicio, sin truncar (T046, D6).
 
-    Cada movimiento se describe con `describe_movement`, que aplica los
-    formatos locales de fecha, importes y cantidades y omite los campos
-    opcionales ausentes. El nombre de la presentación se resuelve con el mapa
-    ya consultado; si no se encuentra, se informa su identificador sin inventar
-    un nombre. El aviso C8 incluye el número real de movimientos.
+    La tabla usa `st.dataframe` con las columnas de tipo, cantidad, motivo,
+    fecha local, presentación, costo, precio aplicado y stock inicial. El
+    nombre de la presentación se resuelve con el mapa ya consultado; si no se
+    encuentra, se informa su identificador sin inventar un nombre. El aviso C8
+    incluye el número real de movimientos y el resultado se agrupa en un
+    contenedor con borde (T057).
 
     Args:
         movements: Movimientos devueltos por el servicio, en su orden.
         presentation_names: Nombres de las presentaciones indexados por su
             identificador.
     """
-    st.info(
-        non_paginated_notice(MOVEMENTS_NOTICE_TEMPLATE, len(movements))
-    )
-    for movement in movements:
-        presentation_name = presentation_names.get(
-            movement.presentation_id
+    with st.container(border=True):
+        st.info(
+            non_paginated_notice(MOVEMENTS_NOTICE_TEMPLATE, len(movements))
         )
-        if presentation_name is None:
-            presentation_name = UNKNOWN_PRESENTATION_TEMPLATE.format(
-                presentation_id=movement.presentation_id
-            )
-        st.text(
-            describe_movement(
-                movement,
-                _single_line(presentation_name),
-            )
+        st.dataframe(
+            [
+                movement_row(
+                    movement,
+                    _presentation_name(movement, presentation_names),
+                )
+                for movement in movements
+            ],
+            hide_index=True,
+            width="stretch",
         )
 
 
@@ -297,11 +300,25 @@ def _date_or_none(value: object) -> date | None:
     return value if isinstance(value, date) else None
 
 
-def _single_line(value: str) -> str:
+def _presentation_name(
+    movement: MovementView,
+    presentation_names: Mapping[int, str],
+) -> str:
     """
-    Normaliza los saltos de línea de un nombre solo para mostrarlo.
+    Resuelve el nombre de la presentación de un movimiento (T046).
 
-    El valor de negocio no se modifica: la unión se aplica a una copia usada
-    únicamente para dibujar la vista.
+    Args:
+        movement: Movimiento cuya presentación se muestra.
+        presentation_names: Nombres de las presentaciones del producto.
+
+    Returns:
+        El nombre de la presentación, o una referencia explícita con su
+        identificador si no pertenece al producto; nunca se inventa un nombre.
     """
-    return " ".join(value.splitlines())
+    presentation_name = presentation_names.get(movement.presentation_id)
+    if presentation_name is None:
+        return UNKNOWN_PRESENTATION_TEMPLATE.format(
+            presentation_id=movement.presentation_id
+        )
+
+    return single_line(presentation_name)

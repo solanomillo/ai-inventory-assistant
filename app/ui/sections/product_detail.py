@@ -19,7 +19,11 @@ Límites de la vista:
 - El stock cerrado de cada presentación se informa por separado; el total
   equivalente llega derivado por el servicio y no se recalcula.
 - Los campos opcionales de un movimiento —costo y precio aplicado— se muestran
-  solo cuando existen, y los contadores FIFO no forman parte de la vista.
+  como celdas vacías cuando faltan, y los contadores FIFO no forman parte de la
+  vista.
+- Las presentaciones, los movimientos y el historial se presentan en tablas
+  nativas (`st.dataframe`), y el estado del producto con un badge Markdown, sin
+  CSS personalizado (T057).
 - Los listados no se paginan: cada uno informa su número real de registros sin
   truncarlos (C8).
 - Un error de lectura se presenta como error explícito y nunca como un
@@ -35,7 +39,12 @@ from typing import Protocol
 
 import streamlit as st
 
-from app.ui.formatting import format_instant, format_money, format_quantity
+from app.ui.formatting import (
+    format_instant,
+    format_money,
+    format_quantity,
+    single_line,
+)
 from app.ui.sections.products import (
     ACTIVE_STATUS,
     BASE_UNIT_LABEL,
@@ -126,11 +135,17 @@ PRESENTATION_LABEL: str = "Presentación"
 FACTOR_LABEL: str = "Factor"
 # Etiqueta del factor de conversión de una presentación (T045, D3).
 
-BASE_PRESENTATION_LABEL: str = "Presentación base"
-# Etiqueta que identifica la presentación base de factor 1 (T045, D3).
+BASE_COLUMN_LABEL: str = "Base"
+# Columna que marca la presentación base en la tabla del detalle (T057).
 
-YES_TEXT: str = "sí"
-# Valor afirmativo de los indicadores de la vista (T045, D5).
+TABLE_YES_TEXT: str = "Sí"
+# Valor afirmativo de las columnas de las tablas del detalle (T057).
+
+ACTIVE_BADGE_TEMPLATE: str = ":green-badge[{status}]"
+# Badge Markdown de un producto activo, sin CSS (T057, D4).
+
+INACTIVE_BADGE_TEMPLATE: str = ":gray-badge[{status}]"
+# Badge Markdown de un producto inactivo, sin CSS (T057, D4).
 
 MOVEMENT_TYPE_LABEL: str = "Tipo"
 # Etiqueta del tipo traducido de un movimiento (T045, D5).
@@ -242,8 +257,8 @@ def product_option_label(product: ProductView) -> str:
         El texto de la opción, con la marca de inactivo cuando corresponde.
     """
     label = PRODUCT_OPTION_TEMPLATE.format(
-        sku=_single_line(product.sku),
-        name=_single_line(product.name),
+        sku=single_line(product.sku),
+        name=single_line(product.name),
     )
     if not product.active:
         return f"{label}{INACTIVE_OPTION_MARKER}"
@@ -297,20 +312,26 @@ def non_paginated_notice(template: str, count: int) -> str:
     return template.format(count=count)
 
 
-def _single_line(value: str) -> str:
-    """
-    Normaliza los saltos de línea de un valor solo para mostrarlo.
-
-    El valor de negocio no se modifica: el recorte y la unión se aplican a una
-    copia usada únicamente para dibujar la vista, de modo que un texto con
-    saltos no rompa la estructura de los campos etiquetados.
-    """
-    return " ".join(value.splitlines())
-
-
 def _status_text(active: bool) -> str:
     """Devuelve el texto de estado real de un producto (T045)."""
     return ACTIVE_STATUS if active else INACTIVE_STATUS
+
+
+def product_status_badge(active: bool) -> str:
+    """
+    Construye el badge Markdown del estado de un producto (T057, D4).
+
+    Args:
+        active: Estado real del producto.
+
+    Returns:
+        El badge Markdown con el texto de estado, sin CSS personalizado.
+    """
+    template = (
+        ACTIVE_BADGE_TEMPLATE if active else INACTIVE_BADGE_TEMPLATE
+    )
+
+    return template.format(status=_status_text(active))
 
 
 def _movement_kind_value(kind: object) -> str:
@@ -356,7 +377,7 @@ def _presentation_name(
     """
     for presentation in presentations:
         if presentation.id == presentation_id:
-            return _single_line(presentation.name)
+            return single_line(presentation.name)
 
     return UNKNOWN_PRESENTATION_TEMPLATE.format(
         presentation_id=presentation_id
@@ -378,9 +399,9 @@ def describe_product(stock: ProductStockView) -> str:
 
     return "\n".join(
         (
-            f"{SKU_LABEL}: {_single_line(product.sku)}",
-            f"{NAME_LABEL}: {_single_line(product.name)}",
-            f"{BASE_UNIT_LABEL}: {_single_line(product.base_unit)}",
+            f"{SKU_LABEL}: {single_line(product.sku)}",
+            f"{NAME_LABEL}: {single_line(product.name)}",
+            f"{BASE_UNIT_LABEL}: {single_line(product.base_unit)}",
             f"{MINIMUM_STOCK_LABEL}: "
             f"{format_quantity(product.minimum_stock)}",
             f"{STATUS_LABEL}: {_status_text(product.active)}",
@@ -391,111 +412,119 @@ def describe_product(stock: ProductStockView) -> str:
     )
 
 
-def describe_presentation(presentation: PresentationView) -> str:
+def presentation_row(presentation: PresentationView) -> dict[str, str]:
     """
-    Describe una presentación con su factor y su stock cerrado (T045, D3).
-
-    El precio vigente no forma parte del detalle; la presentación base se
-    indica cuando su factor es 1.
+    Compone la fila de una presentación para la tabla del detalle (T057).
 
     Args:
         presentation: Presentación ya consultada.
 
     Returns:
-        El texto etiquetado de la presentación.
+        El registro con presentación, factor, stock cerrado y marca de base.
     """
-    lines = [
-        f"{PRESENTATION_LABEL}: {_single_line(presentation.name)}",
-        f"{FACTOR_LABEL}: {format_quantity(presentation.factor)}",
-        f"{CLOSED_STOCK_LABEL}: "
-        f"{format_quantity(presentation.closed_stock)}",
-    ]
-    if presentation.factor == 1:
-        lines.append(f"{BASE_PRESENTATION_LABEL}: {YES_TEXT}")
-
-    return "\n".join(lines)
+    return {
+        PRESENTATION_LABEL: single_line(presentation.name),
+        FACTOR_LABEL: format_quantity(presentation.factor),
+        CLOSED_STOCK_LABEL: format_quantity(presentation.closed_stock),
+        BASE_COLUMN_LABEL: (
+            TABLE_YES_TEXT if presentation.factor == 1 else ""
+        ),
+    }
 
 
-def describe_movement(
+def movement_row(
     movement: MovementView,
     presentation_name: str,
-) -> str:
+) -> dict[str, str]:
     """
-    Describe un movimiento con sus datos reales (T045, D5).
+    Compone la fila de un movimiento para las tablas de las vistas (T057).
 
-    El costo y el precio aplicado se muestran solo cuando existen; un costo
-    cero es un valor real y se muestra como cero. Los contadores FIFO no
-    forman parte de la vista.
+    Es la única implementación del constructor de fila: la comparten el
+    detalle de producto, la sección Movimientos y cualquier otra vista que
+    presente un movimiento con las mismas columnas. Los campos opcionales
+    ausentes se dejan vacíos; un costo o un precio cero es un valor real y se
+    muestra formateado.
 
     Args:
         movement: Movimiento ya consultado.
         presentation_name: Nombre resuelto de la presentación afectada.
 
     Returns:
-        El texto etiquetado del movimiento.
+        El registro con las ocho columnas del detalle de movimientos.
     """
-    lines = [
-        f"{MOVEMENT_TYPE_LABEL}: {movement_kind_label(movement.kind)}",
-        f"{QUANTITY_LABEL}: {format_quantity(movement.quantity)}",
-        f"{REASON_LABEL}: {_single_line(movement.reason)}",
-        f"{DATE_LABEL}: {format_instant(movement.occurred_at)}",
-        f"{PRESENTATION_LABEL}: {presentation_name}",
-    ]
-    if movement.cost is not None:
-        lines.append(f"{COST_LABEL}: {format_money(movement.cost)}")
-    if movement.applied_price is not None:
-        lines.append(
-            f"{APPLIED_PRICE_LABEL}: "
-            f"{format_money(movement.applied_price)}"
-        )
-    if movement.is_initial_stock:
-        lines.append(f"{INITIAL_STOCK_LABEL}: {YES_TEXT}")
+    return {
+        MOVEMENT_TYPE_LABEL: movement_kind_label(movement.kind),
+        QUANTITY_LABEL: format_quantity(movement.quantity),
+        REASON_LABEL: single_line(movement.reason),
+        DATE_LABEL: format_instant(movement.occurred_at),
+        PRESENTATION_LABEL: presentation_name,
+        COST_LABEL: (
+            format_money(movement.cost)
+            if movement.cost is not None
+            else ""
+        ),
+        APPLIED_PRICE_LABEL: (
+            format_money(movement.applied_price)
+            if movement.applied_price is not None
+            else ""
+        ),
+        INITIAL_STOCK_LABEL: (
+            TABLE_YES_TEXT if movement.is_initial_stock else ""
+        ),
+    }
 
-    return "\n".join(lines)
 
-
-def describe_price_change(
+def price_change_row(
     change: PriceChangeView,
     presentation_name: str,
-) -> str:
+) -> dict[str, str]:
     """
-    Describe un cambio de precio del historial (T045, D6, C19).
+    Compone la fila de un cambio de precio para las tablas de las vistas
+    (T057).
+
+    Es la única implementación del constructor de fila: la comparten el
+    detalle de producto y la sección Historial de precios, de modo que ambas
+    presentan las mismas columnas y el mismo formato.
 
     Args:
         change: Cambio de precio ya consultado.
         presentation_name: Nombre resuelto de la presentación afectada.
 
     Returns:
-        El texto etiquetado con presentación, precios, fecha y evento.
+        El registro con presentación, precios, fecha y evento crudo.
     """
-    return "\n".join(
-        (
-            f"{PRESENTATION_LABEL}: {presentation_name}",
-            f"{PRICE_PREVIOUS_LABEL}: "
-            f"{format_money(change.previous_price)}",
-            f"{PRICE_NEW_LABEL}: {format_money(change.new_price)}",
-            f"{DATE_LABEL}: {format_instant(change.occurred_at)}",
-            f"{EVENT_LABEL}: {_single_line(change.event_type)}",
-        )
-    )
+    return {
+        PRESENTATION_LABEL: presentation_name,
+        PRICE_PREVIOUS_LABEL: format_money(change.previous_price),
+        PRICE_NEW_LABEL: format_money(change.new_price),
+        DATE_LABEL: format_instant(change.occurred_at),
+        EVENT_LABEL: single_line(change.event_type),
+    }
 
 
 def _render_presentations(
     presentations: Sequence[PresentationView],
 ) -> None:
     """Muestra las presentaciones o su estado vacío (T045, D3, C8)."""
-    st.subheader(PRESENTATIONS_HEADER)
-    if not presentations:
-        st.info(EMPTY_PRESENTATIONS_MESSAGE)
-        return
+    with st.container(border=True):
+        st.subheader(PRESENTATIONS_HEADER)
+        if not presentations:
+            st.info(EMPTY_PRESENTATIONS_MESSAGE)
+            return
 
-    st.info(
-        non_paginated_notice(
-            PRESENTATIONS_NOTICE_TEMPLATE, len(presentations)
+        st.info(
+            non_paginated_notice(
+                PRESENTATIONS_NOTICE_TEMPLATE, len(presentations)
+            )
         )
-    )
-    for presentation in presentations:
-        st.text(describe_presentation(presentation))
+        st.dataframe(
+            [
+                presentation_row(presentation)
+                for presentation in presentations
+            ],
+            hide_index=True,
+            width="stretch",
+        )
 
 
 def _render_movements(
@@ -503,20 +532,27 @@ def _render_movements(
     movements: Sequence[MovementView],
 ) -> None:
     """Muestra los movimientos o su estado vacío (T045, D5, C8)."""
-    st.subheader(MOVEMENTS_HEADER)
-    if not movements:
-        st.info(EMPTY_MOVEMENTS_MESSAGE)
-        return
+    with st.container(border=True):
+        st.subheader(MOVEMENTS_HEADER)
+        if not movements:
+            st.info(EMPTY_MOVEMENTS_MESSAGE)
+            return
 
-    st.info(non_paginated_notice(MOVEMENTS_NOTICE_TEMPLATE, len(movements)))
-    for movement in movements:
-        st.text(
-            describe_movement(
-                movement,
-                _presentation_name(
-                    presentations, movement.presentation_id
-                ),
-            )
+        st.info(
+            non_paginated_notice(MOVEMENTS_NOTICE_TEMPLATE, len(movements))
+        )
+        st.dataframe(
+            [
+                movement_row(
+                    movement,
+                    _presentation_name(
+                        presentations, movement.presentation_id
+                    ),
+                )
+                for movement in movements
+            ],
+            hide_index=True,
+            width="stretch",
         )
 
 
@@ -525,24 +561,29 @@ def _render_price_history(
     price_changes: Sequence[PriceChangeView],
 ) -> None:
     """Muestra el historial de precios o su estado vacío (T045, D6, C8)."""
-    st.subheader(PRICE_HISTORY_HEADER)
-    if not price_changes:
-        st.info(EMPTY_PRICE_HISTORY_MESSAGE)
-        return
+    with st.container(border=True):
+        st.subheader(PRICE_HISTORY_HEADER)
+        if not price_changes:
+            st.info(EMPTY_PRICE_HISTORY_MESSAGE)
+            return
 
-    st.info(
-        non_paginated_notice(
-            PRICE_HISTORY_NOTICE_TEMPLATE, len(price_changes)
-        )
-    )
-    for change in price_changes:
-        st.text(
-            describe_price_change(
-                change,
-                _presentation_name(
-                    presentations, change.presentation_id
-                ),
+        st.info(
+            non_paginated_notice(
+                PRICE_HISTORY_NOTICE_TEMPLATE, len(price_changes)
             )
+        )
+        st.dataframe(
+            [
+                price_change_row(
+                    change,
+                    _presentation_name(
+                        presentations, change.presentation_id
+                    ),
+                )
+                for change in price_changes
+            ],
+            hide_index=True,
+            width="stretch",
         )
 
 
@@ -561,8 +602,10 @@ def render_product_detail(
         price_changes: Historial de precios en el orden cronológico del
             servicio; la vista no lo reordena.
     """
-    st.subheader(PRODUCT_DETAIL_HEADER)
-    st.text(describe_product(stock))
+    with st.container(border=True):
+        st.subheader(PRODUCT_DETAIL_HEADER)
+        st.text(describe_product(stock))
+        st.markdown(product_status_badge(stock.product.active))
     _render_presentations(stock.presentations)
     _render_movements(stock.presentations, movements)
     _render_price_history(stock.presentations, price_changes)
@@ -576,5 +619,6 @@ def render_product_detail_error(message: str) -> None:
         message: Motivo devuelto por el servicio de lectura. Se presenta como
             error y no como un historial vacío.
     """
-    st.subheader(PRODUCT_DETAIL_HEADER)
-    st.error(PRODUCT_DETAIL_ERROR_TEMPLATE.format(reason=message))
+    with st.container(border=True):
+        st.subheader(PRODUCT_DETAIL_HEADER)
+        st.error(PRODUCT_DETAIL_ERROR_TEMPLATE.format(reason=message))

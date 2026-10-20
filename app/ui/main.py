@@ -1223,16 +1223,22 @@ def render_navigation() -> str:
     sidebar, sin el modo multipágina de Streamlit y con `app/ui/main.py` como
     único punto de entrada.
 
+    Bajo el control, el sidebar muestra una identidad discreta del proyecto
+    (T057). La etiqueta y las opciones del control no cambian.
+
     Returns:
         La etiqueta de la sección seleccionada, conservada en la sesión bajo
         `SECTION_KEY`.
     """
-    return st.sidebar.radio(
+    section = st.sidebar.radio(
         NAVIGATION_LABEL,
         SECTION_LABELS,
         index=SECTION_LABELS.index(DEFAULT_SECTION),
         key=SECTION_KEY,
     )
+    st.sidebar.caption(":material/inventory_2: Inventario · datos locales")
+
+    return section
 
 
 def main() -> None:
@@ -1248,6 +1254,12 @@ def main() -> None:
     **no** se abstiene: la lectura de la sesión queda compuesta y las demás
     secciones siguen accesibles.
     """
+    st.set_page_config(
+        page_title="AI Inventory Assistant",
+        page_icon=":material/inventory_2:",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
     st.title("AI Inventory Assistant")
     st.caption(
         "Consultas de inventario en lenguaje natural sobre datos reales."

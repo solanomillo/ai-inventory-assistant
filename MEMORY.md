@@ -6,7 +6,7 @@
 - Metodología: Spec-Driven Development (SDD).
 - Documentos aprobados: `docs/constitution.md`, `specs/001-inventory-core/spec.md`
   (RF-01 a RF-09), `specs/001-inventory-core/plan.md` y `specs/001-inventory-core/tasks.md`
-  (T001 a T056; T038–T046 cerradas y aprobadas, T047–T056 pendientes).
+  (T001 a T057; T038–T047 cerradas y aprobadas, T048–T057 pendientes).
 
 ## Implementación
 - T001 completada (commit `a20ca9c`): esqueleto del proyecto.
@@ -573,7 +573,12 @@
     parcialmente tautológicas; M7 la prueba de formato valida la salida, no las funciones; M8 solo se captura
     `RecordNotFoundError`. El alcance no está certificado por Git porque `app/ui/` y `tests/ui/` siguen sin
     rastrear.
-  - **Siguiente paso pendiente: T048** (Sección Asistente IA), aún **sin** autorización de implementación.
+  - **T057 (rediseño visual integral; transversal, antes de T048):** implementación presente en el árbol de
+    trabajo, **pendiente** de checklist visual y aprobación; **no cerrada**. Tema nativo, tablas, badges,
+    contenedores y `docs/ui-guidelines.md`; correcciones B1 e I1–I5 aplicadas y O7 aclarado en la guía.
+    Pruebas **reportadas** por el implementer: 137 en `tests/ui/test_main.py`, 163 en `tests/ui` y 1162 en la
+    suite completa. El checklist visual 1440/1024/768 sigue **pendiente** de navegador. T048–T056 permanecen
+    pendientes.
 
 ## Especificación vigente (resumen)
 - RF-01 a RF-09. Cantidades de inventario enteras (unidades discretas).

@@ -141,6 +141,23 @@ def format_instant(value: datetime | None) -> str:
     return f"{local.strftime(INSTANT_FORMAT)} {_offset_text(local)}"
 
 
+def single_line(value: str) -> str:
+    """
+    Normaliza los saltos de línea de un valor solo para mostrarlo.
+
+    El valor de negocio no se modifica: la unión se aplica a una copia usada
+    únicamente para dibujar la vista, de modo que un texto con saltos no rompa
+    la estructura de los campos etiquetados ni de las tablas.
+
+    Args:
+        value: Texto que se va a presentar.
+
+    Returns:
+        El texto con sus líneas unidas por un espacio simple.
+    """
+    return " ".join(value.splitlines())
+
+
 def _offset_text(local: datetime) -> str:
     """
     Devuelve el desplazamiento de un instante local como `±HH:MM`.

@@ -25,9 +25,10 @@ Límites de la vista:
   selector (D3).
 - El tipo de evento se muestra tal como está almacenado, sin traducciones
   inventadas (D4).
-- Cada cambio se describe con `describe_price_change`, reutilizado del detalle
-  de producto, y el nombre de la presentación se resuelve con el mapa ya
-  consultado (D5).
+- Cada cambio se muestra en una tabla nativa (`st.dataframe`) con la
+  presentación, los precios anterior y nuevo, la fecha local y el evento tal
+  como está almacenado; los controles y el resultado se agrupan en
+  contenedores con borde (T057).
 - El historial no se pagina: el aviso C8 informa el número real de cambios sin
   truncarlos (D6).
 - Los estados vacíos son explícitos y diferenciados: catálogo vacío, sin
@@ -40,13 +41,14 @@ from collections.abc import Mapping, Sequence
 
 import streamlit as st
 
+from app.ui.formatting import single_line
 from app.ui.sections.product_detail import (
     NO_SELECTION_LABEL,
     PriceChangeView,
     PresentationView,
     ProductView,
-    describe_price_change,
     non_paginated_notice,
+    price_change_row,
     product_option_label,
 )
 
@@ -136,15 +138,16 @@ def render_product_filter(products: Sequence[ProductView]) -> int | None:
         NO_SELECTION_LABEL,
         *(product_option_label(product) for product in products),
     ]
-    selected = st.selectbox(
-        PRODUCT_FILTER_LABEL,
-        options,
-        index=0,
-        key=PRODUCT_FILTER_KEY,
-    )
-    if selected == NO_SELECTION_LABEL:
-        st.info(NO_SELECTION_MESSAGE)
-        return None
+    with st.container(border=True):
+        selected = st.selectbox(
+            PRODUCT_FILTER_LABEL,
+            options,
+            index=0,
+            key=PRODUCT_FILTER_KEY,
+        )
+        if selected == NO_SELECTION_LABEL:
+            st.info(NO_SELECTION_MESSAGE)
+            return None
 
     return options.index(selected) - 1
 
@@ -173,14 +176,18 @@ def render_presentation_filter(
     """
     options = [
         ALL_PRESENTATIONS_LABEL,
-        *(_single_line(presentation.name) for presentation in presentations),
+        *(single_line(presentation.name) for presentation in presentations),
     ]
-    selected = st.selectbox(
-        PRESENTATION_FILTER_LABEL,
-        options,
-        index=0,
-        key=PRESENTATION_FILTER_KEY_TEMPLATE.format(product_id=product_id),
-    )
+    with st.container(border=True):
+        selected = st.selectbox(
+            PRESENTATION_FILTER_LABEL,
+            options,
+            index=0,
+            key=PRESENTATION_FILTER_KEY_TEMPLATE.format(
+                product_id=product_id
+            ),
+        )
+
     if selected == ALL_PRESENTATIONS_LABEL:
         return None
 
@@ -204,29 +211,31 @@ def render_price_history(
     """
     Muestra el historial en el orden del servicio, sin truncar (T047, C8).
 
-    Cada cambio se describe con `describe_price_change`, que aplica los
-    formatos locales de fecha e importes. El nombre de la presentación se
-    resuelve con el mapa ya consultado; si no se encuentra, se informa su
-    identificador sin inventar un nombre. El aviso C8 incluye el número real de
-    cambios.
+    La tabla usa `st.dataframe` con presentación, precio anterior, precio
+    nuevo, fecha local y evento crudo. El nombre de la presentación se resuelve
+    con el mapa ya consultado; si no se encuentra, se informa su identificador
+    sin inventar un nombre. El aviso C8 incluye el número real de cambios y el
+    resultado se agrupa en un contenedor con borde (T057).
 
     Args:
         changes: Cambios de precio devueltos por el servicio, en su orden.
         presentation_names: Nombres de las presentaciones indexados por su
             identificador.
     """
-    st.info(non_paginated_notice(PRICE_HISTORY_NOTICE_TEMPLATE, len(changes)))
-    for change in changes:
-        presentation_name = presentation_names.get(change.presentation_id)
-        if presentation_name is None:
-            presentation_name = UNKNOWN_PRESENTATION_TEMPLATE.format(
-                presentation_id=change.presentation_id
-            )
-        st.text(
-            describe_price_change(
-                change,
-                _single_line(presentation_name),
-            )
+    with st.container(border=True):
+        st.info(
+            non_paginated_notice(PRICE_HISTORY_NOTICE_TEMPLATE, len(changes))
+        )
+        st.dataframe(
+            [
+                price_change_row(
+                    change,
+                    _presentation_name(change, presentation_names),
+                )
+                for change in changes
+            ],
+            hide_index=True,
+            width="stretch",
         )
 
 
@@ -241,11 +250,25 @@ def render_price_history_error(message: str) -> None:
     st.error(PRICE_HISTORY_ERROR_TEMPLATE.format(reason=message))
 
 
-def _single_line(value: str) -> str:
+def _presentation_name(
+    change: PriceChangeView,
+    presentation_names: Mapping[int, str],
+) -> str:
     """
-    Normaliza los saltos de línea de un nombre solo para mostrarlo.
+    Resuelve el nombre de la presentación de un cambio de precio (T047).
 
-    El valor de negocio no se modifica: la unión se aplica a una copia usada
-    únicamente para dibujar la vista.
+    Args:
+        change: Cambio cuya presentación se muestra.
+        presentation_names: Nombres de las presentaciones del producto.
+
+    Returns:
+        El nombre de la presentación, o una referencia explícita con su
+        identificador si no pertenece al producto; nunca se inventa un nombre.
     """
-    return " ".join(value.splitlines())
+    presentation_name = presentation_names.get(change.presentation_id)
+    if presentation_name is None:
+        return UNKNOWN_PRESENTATION_TEMPLATE.format(
+            presentation_id=change.presentation_id
+        )
+
+    return single_line(presentation_name)

@@ -29,6 +29,11 @@ from app.schemas.proposals import Proposal
 PENDING_PROPOSALS_HEADER: str = "Propuestas pendientes"
 # Encabezado de la sección de propuestas pendientes (T041).
 
+PENDING_PROPOSALS_CAPTION: str = (
+    "Vista de solo lectura: la confirmación se realiza desde el asistente."
+)
+# Nota breve que aclara el alcance de la sección (T057).
+
 EMPTY_PROPOSALS_MESSAGE: str = (
     "No hay propuestas pendientes: todavía no se preparó ninguna operación."
 )
@@ -45,12 +50,14 @@ def render_pending_proposals(proposals: Sequence[Proposal]) -> None:
             escribe en el inventario.
     """
     st.header(PENDING_PROPOSALS_HEADER)
-    if not proposals:
-        st.info(EMPTY_PROPOSALS_MESSAGE)
-        return
+    with st.container(border=True):
+        st.caption(PENDING_PROPOSALS_CAPTION)
+        if not proposals:
+            st.info(EMPTY_PROPOSALS_MESSAGE)
+            return
 
-    for index, proposal in enumerate(proposals, start=1):
-        st.markdown(
-            f"{index}. acción `{proposal.action.value}`, estado "
-            f"`{proposal.status.value}`"
-        )
+        for index, proposal in enumerate(proposals, start=1):
+            st.markdown(
+                f"{index}. acción `{proposal.action.value}`, estado "
+                f"`{proposal.status.value}`"
+            )

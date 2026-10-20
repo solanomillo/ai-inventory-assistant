@@ -144,7 +144,7 @@ from app.ui.sections.home import (
 from app.ui.sections.proposals import EMPTY_PROPOSALS_MESSAGE
 from app.ui.sections.product_detail import (
     APPLIED_PRICE_LABEL,
-    BASE_PRESENTATION_LABEL,
+    BASE_COLUMN_LABEL,
     COST_LABEL,
     DATE_LABEL,
     EMPTY_MOVEMENTS_MESSAGE,
@@ -170,8 +170,8 @@ from app.ui.sections.product_detail import (
     PRODUCT_SELECTOR_LABEL,
     QUANTITY_LABEL,
     REASON_LABEL,
+    TABLE_YES_TEXT,
     TOTAL_EQUIVALENT_LABEL,
-    YES_TEXT,
     ProductView,
     movement_kind_label,
     product_option_label,
@@ -231,6 +231,11 @@ APP_PATH: Path = (
     Path(__file__).resolve().parents[2] / "app" / "ui" / "main.py"
 )
 """Ruta absoluta de la aplicación Streamlit que se ejecuta con `AppTest`."""
+
+THEME_CONFIG_PATH: Path = (
+    Path(__file__).resolve().parents[2] / ".streamlit" / "config.toml"
+)
+"""Ruta del tema nativo de Streamlit configurado para la aplicación (T057)."""
 
 SESSION_MODULE_PATH: Path = (
     Path(__file__).resolve().parents[2] / "app" / "ui" / "session.py"
@@ -523,6 +528,61 @@ def rendered_markdown(app: AppTest) -> str:
 def rendered_text(app: AppTest) -> str:
     """Devuelve el texto de todos los elementos de texto de la aplicación."""
     return "\n".join(element.value for element in app.text)
+
+
+def metric_values(app: AppTest) -> dict[str, str]:
+    """Devuelve el valor mostrado de cada métrica, por etiqueta (T057)."""
+    return {metric.label: metric.value for metric in app.metric}
+
+
+def product_records(app: AppTest) -> list[dict[str, Any]]:
+    """Devuelve las filas del listado de Productos como registros (T057)."""
+    assert len(app.dataframe) == 1
+
+    return app.dataframe[0].value.to_dict("records")
+
+
+DETAIL_PRESENTATION_COLUMNS: tuple[str, ...] = (
+    PRESENTATION_LABEL,
+    FACTOR_LABEL,
+    CLOSED_STOCK_LABEL,
+    BASE_COLUMN_LABEL,
+)
+"""Columnas de la tabla de presentaciones del detalle (T057)."""
+
+DETAIL_MOVEMENT_COLUMNS: tuple[str, ...] = (
+    MOVEMENT_TYPE_LABEL,
+    QUANTITY_LABEL,
+    REASON_LABEL,
+    DATE_LABEL,
+    PRESENTATION_LABEL,
+    COST_LABEL,
+    APPLIED_PRICE_LABEL,
+    INITIAL_STOCK_LABEL,
+)
+"""Columnas de la tabla de movimientos del detalle (T057)."""
+
+DETAIL_PRICE_HISTORY_COLUMNS: tuple[str, ...] = (
+    PRESENTATION_LABEL,
+    PRICE_PREVIOUS_LABEL,
+    PRICE_NEW_LABEL,
+    DATE_LABEL,
+    EVENT_LABEL,
+)
+"""Columnas de la tabla del historial de precios del detalle (T057)."""
+
+
+def detail_records(
+    app: AppTest,
+    columns: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """Devuelve la tabla del detalle que tiene exactamente esas columnas."""
+    for dataframe in app.dataframe:
+        records = dataframe.value.to_dict("records")
+        if records and tuple(records[0]) == columns:
+            return records
+
+    raise AssertionError(f"No se encontró la tabla con columnas {columns}.")
 
 
 def ui_sources() -> list[Path]:
@@ -1931,7 +1991,8 @@ def test_home_shows_both_alert_lists_with_their_values(
     Verifica las alertas de stock bajo y reposición con sus valores (C3).
 
     El catálogo tiene un producto activo con total equivalente 16, mínimo 20 y
-    faltante 4: aparece en ambas listas con nombre, SKU, total y faltante.
+    faltante 4: aparece en ambas listas con nombre, SKU, total y faltante, y
+    los conteos se muestran como métricas con los valores reales (T057).
     """
     app = app_for(make_assistant(connection))
 
@@ -1947,6 +2008,14 @@ def test_home_shows_both_alert_lists_with_their_values(
         LOW_STOCK_HEADER,
         REPLENISHMENT_HEADER,
     ]
+    assert [metric.label for metric in app.metric] == [
+        ACTIVE_PRODUCTS_LABEL,
+        INACTIVE_PRODUCTS_LABEL,
+    ]
+    assert metric_values(app) == {
+        ACTIVE_PRODUCTS_LABEL: "1",
+        INACTIVE_PRODUCTS_LABEL: "0",
+    }
     assert rendered.count(expected) == 2
     assert EMPTY_LOW_STOCK_MESSAGE not in [
         info.value for info in app.info
@@ -1980,11 +2049,13 @@ def test_home_reads_the_catalog_once_per_render(
 
     app.radio[0].set_value(HOME_HEADER).run()
 
-    rendered = rendered_markdown(app)
+    metrics = metric_values(app)
 
     assert counting.list_products_calls == 1
-    assert f"{ACTIVE_PRODUCTS_LABEL}: 1" in rendered
-    assert f"{INACTIVE_PRODUCTS_LABEL}: 0" in rendered
+    assert metrics == {
+        ACTIVE_PRODUCTS_LABEL: "1",
+        INACTIVE_PRODUCTS_LABEL: "0",
+    }
 
     app.radio[0].set_value(HOME_HEADER).run()
 
@@ -2019,8 +2090,10 @@ def test_home_excludes_inactive_products_from_alerts_but_counts_them(
 
     assert not app.exception
     assert "SKU-OFF" not in rendered
-    assert f"{ACTIVE_PRODUCTS_LABEL}: 0" in rendered
-    assert f"{INACTIVE_PRODUCTS_LABEL}: 1" in rendered
+    assert metric_values(app) == {
+        ACTIVE_PRODUCTS_LABEL: "0",
+        INACTIVE_PRODUCTS_LABEL: "1",
+    }
     assert EMPTY_LOW_STOCK_MESSAGE in messages
     assert EMPTY_REPLENISHMENT_MESSAGE in messages
 
@@ -2129,15 +2202,12 @@ def test_home_reports_an_empty_catalog_without_zero_counts(
     app.run()
     app.radio[0].set_value(HOME_HEADER).run()
 
-    rendered = rendered_markdown(app)
     messages = [info.value for info in app.info]
 
     assert not app.exception
     assert [header.value for header in app.header] == [HOME_HEADER]
+    assert len(app.metric) == 0
     assert EMPTY_CATALOG_MESSAGE in messages
-    assert f"{ACTIVE_PRODUCTS_LABEL}:" not in rendered
-    assert f"{INACTIVE_PRODUCTS_LABEL}:" not in rendered
-    assert "0/0" not in rendered
     assert EMPTY_LOW_STOCK_MESSAGE in messages
     assert EMPTY_REPLENISHMENT_MESSAGE in messages
 
@@ -2245,8 +2315,10 @@ def test_home_works_without_the_model_with_real_data(
             "- Producto (SKU SKU-1): total equivalente 4, faltante 16"
             in rendered
         )
-        assert f"{ACTIVE_PRODUCTS_LABEL}: 1" in rendered
-        assert f"{INACTIVE_PRODUCTS_LABEL}: 0" in rendered
+        assert metric_values(app) == {
+            ACTIVE_PRODUCTS_LABEL: "1",
+            INACTIVE_PRODUCTS_LABEL: "0",
+        }
 
         app.radio[0].set_value(DEFAULT_SECTION_LABEL).run()
 
@@ -2313,24 +2385,38 @@ def test_products_lists_the_seven_fields_of_c5(
     Verifica los siete campos etiquetados del listado (C5, T044).
 
     El catálogo real aporta SKU, nombre, unidad base, stock mínimo, unidades
-    sueltas, la suma de stock cerrado y el estado; el filtro «Todos» y el campo
-    «Nombre» son los valores por defecto (B1, C1).
+    sueltas, la suma de stock cerrado y el estado; el listado los muestra como
+    las siete columnas del dataframe, en ese orden (T057), y el filtro «Todos»
+    y el campo «Nombre» son los valores por defecto (B1, C1).
     """
     app = app_for(make_assistant(connection))
 
     open_products_section(app)
 
-    rendered = rendered_text(app)
+    records = product_records(app)
 
     assert not app.exception
     assert [header.value for header in app.header] == [PRODUCTS_HEADER]
-    assert f"{SKU_LABEL}: SKU-1" in rendered
-    assert f"{NAME_LABEL}: Producto" in rendered
-    assert f"{BASE_UNIT_LABEL}: botella" in rendered
-    assert f"{MINIMUM_STOCK_LABEL}: 20" in rendered
-    assert f"{LOOSE_UNITS_LABEL}: 4" in rendered
-    assert f"{CLOSED_STOCK_LABEL}: 2" in rendered
-    assert f"{STATUS_LABEL}: {ACTIVE_STATUS}" in rendered
+    assert list(records[0]) == [
+        SKU_LABEL,
+        NAME_LABEL,
+        BASE_UNIT_LABEL,
+        MINIMUM_STOCK_LABEL,
+        LOOSE_UNITS_LABEL,
+        CLOSED_STOCK_LABEL,
+        STATUS_LABEL,
+    ]
+    assert records == [
+        {
+            SKU_LABEL: "SKU-1",
+            NAME_LABEL: "Producto",
+            BASE_UNIT_LABEL: "botella",
+            MINIMUM_STOCK_LABEL: 20,
+            LOOSE_UNITS_LABEL: 4,
+            CLOSED_STOCK_LABEL: 2,
+            STATUS_LABEL: ACTIVE_STATUS,
+        }
+    ]
     assert app.selectbox[0].value == "Nombre"
     assert app.selectbox[1].value == ALL_STATUS_FILTER
     assert SEARCH_NOTICE in [caption.value for caption in app.caption]
@@ -2347,8 +2433,9 @@ def test_products_keeps_a_multiline_name_inside_its_field(
     """
     Verifica que un nombre con saltos no rompe la estructura (F1, T044).
 
-    La vista normaliza los saltos solo para mostrarlos y usa texto
-    preformateado que no interpreta Markdown; el nombre de negocio no cambia.
+    El dataframe muestra el nombre y la unidad base tal como se registraron,
+    dentro de sus propias celdas y sin interpretar Markdown; el dato de negocio
+    no cambia.
     """
     stored = product_service.register(
         ProductRegistration(
@@ -2362,11 +2449,11 @@ def test_products_keeps_a_multiline_name_inside_its_field(
 
     open_products_section(app)
 
-    rendered = rendered_text(app)
+    record = product_records(app)[0]
 
     assert not app.exception
-    assert f"{NAME_LABEL}: Producto con *#saltos*#" in rendered
-    assert f"{BASE_UNIT_LABEL}: unidad base" in rendered
+    assert record[NAME_LABEL] == "Producto\ncon *#saltos*#"
+    assert record[BASE_UNIT_LABEL] == "unidad\nbase"
     assert stored.name == "Producto\ncon *#saltos*#"
     assert stored.base_unit == "unidad\nbase"
 
@@ -2395,14 +2482,18 @@ def test_products_shows_active_and_inactive_products_by_default(
 
     open_products_section(app)
 
-    rendered = rendered_text(app)
+    records = product_records(app)
     messages = [info.value for info in app.info]
 
     assert not app.exception
-    assert "SKU: SKU-ON" in rendered
-    assert "SKU: SKU-OFF" in rendered
-    assert f"{STATUS_LABEL}: {ACTIVE_STATUS}" in rendered
-    assert f"{STATUS_LABEL}: {INACTIVE_STATUS}" in rendered
+    assert [record[SKU_LABEL] for record in records] == [
+        "SKU-ON",
+        "SKU-OFF",
+    ]
+    assert [record[STATUS_LABEL] for record in records] == [
+        ACTIVE_STATUS,
+        INACTIVE_STATUS,
+    ]
     assert NON_PAGINATED_NOTICE_TEMPLATE.format(count=2) in messages
 
 
@@ -2418,13 +2509,13 @@ def test_products_searches_by_name_with_the_service_method(
     counting.list_products_calls = 0
     app.text_input[0].set_value("Producto").run()
 
-    rendered = rendered_text(app)
+    records = product_records(app)
 
     assert not app.exception
     assert counting.find_products_by_name_calls == 1
     assert counting.find_product_by_sku_calls == 0
     assert counting.list_products_calls == 0
-    assert "SKU: SKU-1" in rendered
+    assert [record[SKU_LABEL] for record in records] == ["SKU-1"]
 
 
 def test_products_searches_by_sku_with_the_service_method(
@@ -2442,13 +2533,13 @@ def test_products_searches_by_sku_with_the_service_method(
     counting.list_products_calls = 0
     app.text_input[0].set_value("SKU-1").run()
 
-    rendered = rendered_text(app)
+    records = product_records(app)
 
     assert not app.exception
     assert counting.find_product_by_sku_calls == 1
     assert counting.find_products_by_name_calls == 0
     assert counting.list_products_calls == 0
-    assert "SKU: SKU-1" in rendered
+    assert [record[SKU_LABEL] for record in records] == ["SKU-1"]
 
 
 def test_products_search_is_exact_even_ignoring_case(
@@ -2488,12 +2579,13 @@ def test_products_search_is_exact_even_ignoring_case(
     open_products_section(app)
     app.text_input[0].set_value("PRODUCTO").run()
 
-    rendered = rendered_text(app)
+    records = product_records(app)
 
     assert not app.exception
-    assert "SKU: SKU-A" in rendered
-    assert "SKU: SKU-B" in rendered
-    assert "SKU: SKU-C" not in rendered
+    assert [record[SKU_LABEL] for record in records] == [
+        "SKU-A",
+        "SKU-B",
+    ]
     assert NON_PAGINATED_NOTICE_TEMPLATE.format(count=2) in [
         info.value for info in app.info
     ]
@@ -2501,10 +2593,9 @@ def test_products_search_is_exact_even_ignoring_case(
     app.selectbox[0].set_value(SKU_FIELD).run()
     app.text_input[0].set_value("sku-b").run()
 
-    rendered = rendered_text(app)
+    records = product_records(app)
 
-    assert "SKU: SKU-B" in rendered
-    assert "SKU: SKU-A" not in rendered
+    assert [record[SKU_LABEL] for record in records] == ["SKU-B"]
 
 
 def test_products_does_not_search_with_an_empty_or_blank_text(
@@ -2530,13 +2621,13 @@ def test_products_does_not_search_with_an_empty_or_blank_text(
     counting.list_products_calls = 0
     app.text_input[0].set_value("   ").run()
 
-    rendered = rendered_text(app)
+    records = product_records(app)
 
     assert not app.exception
     assert counting.find_products_by_name_calls == 0
     assert counting.find_product_by_sku_calls == 0
     assert counting.list_products_calls == 1
-    assert "SKU: SKU-1" in rendered
+    assert [record[SKU_LABEL] for record in records] == ["SKU-1"]
 
 
 def test_products_distinguishes_a_search_without_results(
@@ -2555,7 +2646,7 @@ def test_products_distinguishes_a_search_without_results(
     assert EMPTY_PRODUCTS_SEARCH_MESSAGE in messages
     assert EMPTY_PRODUCTS_FILTER_MESSAGE not in messages
     assert EMPTY_PRODUCTS_CATALOG_MESSAGE not in messages
-    assert rendered_text(app) == ""
+    assert len(app.dataframe) == 0
 
 
 def test_products_distinguishes_a_filter_without_results(
@@ -2574,7 +2665,7 @@ def test_products_distinguishes_a_filter_without_results(
     assert EMPTY_PRODUCTS_FILTER_MESSAGE in messages
     assert EMPTY_PRODUCTS_SEARCH_MESSAGE not in messages
     assert EMPTY_PRODUCTS_CATALOG_MESSAGE not in messages
-    assert rendered_text(app) == ""
+    assert len(app.dataframe) == 0
 
 
 def test_products_applies_the_filter_after_the_search(
@@ -2608,6 +2699,7 @@ def test_products_applies_the_filter_after_the_search(
     assert not app.exception
     assert counting.find_products_by_name_calls >= 1
     assert counting.get_product_presentations_calls == 0
+    assert len(app.dataframe) == 0
     assert EMPTY_PRODUCTS_FILTER_MESSAGE in messages
     assert EMPTY_PRODUCTS_SEARCH_MESSAGE not in messages
 
@@ -2648,11 +2740,11 @@ def test_products_sums_the_closed_stock_of_all_presentations(
 
     open_products_section(app)
 
-    rendered = rendered_text(app)
+    record = product_records(app)[0]
 
     assert not app.exception
-    assert f"{CLOSED_STOCK_LABEL}: 5" in rendered
-    assert f"{CLOSED_STOCK_LABEL}: 48" not in rendered
+    assert record[CLOSED_STOCK_LABEL] == 5
+    assert record[CLOSED_STOCK_LABEL] != 48
 
 
 def test_products_preserves_the_order_returned_by_the_service(
@@ -2672,16 +2764,19 @@ def test_products_preserves_the_order_returned_by_the_service(
 
     open_products_section(app)
 
-    rendered = rendered_text(app)
-    first = rendered.index("SKU: SKU-1")
-    second = rendered.index("SKU: SKU-2")
-    third = rendered.index("SKU: SKU-3")
+    records = product_records(app)
 
     assert not app.exception
-    assert first < second < third
-    assert rendered.index(f"{NAME_LABEL}: Zeta") < rendered.index(
-        f"{NAME_LABEL}: Alfa"
-    )
+    assert [record[SKU_LABEL] for record in records] == [
+        "SKU-1",
+        "SKU-2",
+        "SKU-3",
+    ]
+    assert [record[NAME_LABEL] for record in records] == [
+        "Zeta",
+        "Alfa",
+        "Beta",
+    ]
 
 
 def test_products_reports_the_real_count_without_truncating(
@@ -2707,14 +2802,14 @@ def test_products_reports_the_real_count_without_truncating(
 
     open_products_section(app)
 
-    rendered = rendered_text(app)
+    records = product_records(app)
     messages = [info.value for info in app.info]
 
     assert not app.exception
     assert NON_PAGINATED_NOTICE_TEMPLATE.format(count=total) in messages
-    assert len(app.text) == total
-    assert "SKU: SKU-1" in rendered
-    assert f"SKU: SKU-{total}" in rendered
+    assert len(records) == total
+    assert records[0][SKU_LABEL] == "SKU-1"
+    assert records[-1][SKU_LABEL] == f"SKU-{total}"
 
 
 def test_products_does_not_write(
@@ -2790,18 +2885,22 @@ def test_products_works_without_the_model_with_real_data(
 
         app.radio[0].set_value(PRODUCTS_HEADER).run()
 
-        rendered = rendered_text(app)
+        records = product_records(app)
 
         assert not app.exception
         assert len(app.error) == 0
         assert [header.value for header in app.header] == [PRODUCTS_HEADER]
-        assert f"{SKU_LABEL}: SKU-1" in rendered
-        assert f"{NAME_LABEL}: Producto" in rendered
-        assert f"{BASE_UNIT_LABEL}: botella" in rendered
-        assert f"{MINIMUM_STOCK_LABEL}: 20" in rendered
-        assert f"{LOOSE_UNITS_LABEL}: 4" in rendered
-        assert f"{CLOSED_STOCK_LABEL}: 2" in rendered
-        assert f"{STATUS_LABEL}: {ACTIVE_STATUS}" in rendered
+        assert records == [
+            {
+                SKU_LABEL: "SKU-1",
+                NAME_LABEL: "Producto",
+                BASE_UNIT_LABEL: "botella",
+                MINIMUM_STOCK_LABEL: 20,
+                LOOSE_UNITS_LABEL: 4,
+                CLOSED_STOCK_LABEL: 2,
+                STATUS_LABEL: ACTIVE_STATUS,
+            }
+        ]
     finally:
         if session is not None:
             session.connection.close()
@@ -3022,6 +3121,10 @@ def test_product_detail_shows_presentations_and_the_derived_total(
     open_product_detail(app, catalog.product)
 
     rendered = rendered_text(app)
+    presentations = detail_records(app, DETAIL_PRESENTATION_COLUMNS)
+    by_name = {
+        row[PRESENTATION_LABEL]: row for row in presentations
+    }
 
     assert not app.exception
     assert [subheader.value for subheader in app.subheader] == [
@@ -3033,13 +3136,16 @@ def test_product_detail_shows_presentations_and_the_derived_total(
     assert PRODUCT_SELECTOR_LABEL in [
         selectbox.label for selectbox in app.selectbox
     ]
-    assert f"{PRESENTATION_LABEL}: Caja x6" in rendered
-    assert f"{FACTOR_LABEL}: 6" in rendered
-    assert f"{CLOSED_STOCK_LABEL}: 2" in rendered
+    assert tuple(by_name) == ("botella", "Caja x6")
+    assert by_name["Caja x6"][FACTOR_LABEL] == "6"
+    assert by_name["Caja x6"][CLOSED_STOCK_LABEL] == "2"
+    assert by_name["Caja x6"][BASE_COLUMN_LABEL] == ""
+    assert by_name["botella"][FACTOR_LABEL] == "1"
+    assert by_name["botella"][BASE_COLUMN_LABEL] == TABLE_YES_TEXT
     assert f"{LOOSE_UNITS_LABEL}: 4" in rendered
     assert f"{TOTAL_EQUIVALENT_LABEL}: 16" in rendered
     assert f"{TOTAL_EQUIVALENT_LABEL}: 6" not in rendered
-    assert f"{BASE_PRESENTATION_LABEL}: {YES_TEXT}" in rendered
+    assert ":green-badge[Activo]" in rendered_markdown(app)
     assert "600.00" not in rendered
     assert "100.00" not in rendered
 
@@ -3070,7 +3176,7 @@ def test_product_detail_does_not_read_without_a_selection(
         info.value for info in app.info
     ]
     assert [subheader.value for subheader in app.subheader] == []
-    assert len(app.text) == 1
+    assert len(app.text) == 0
     assert counting_inventory.get_product_stock_calls == 0
     assert counting_inventory.get_movement_history_calls == 0
     assert counting_history.get_price_history_by_product_calls == 0
@@ -3086,9 +3192,20 @@ def test_product_detail_shows_a_real_zero_instead_of_the_absent_marker(
     open_product_detail(app, catalog.product)
 
     rendered = rendered_text(app)
+    presentations = detail_records(app, DETAIL_PRESENTATION_COLUMNS)
+    base_row = next(
+        row
+        for row in presentations
+        if row[PRESENTATION_LABEL] == "botella"
+    )
 
     assert not app.exception
-    assert f"{CLOSED_STOCK_LABEL}: 0" in rendered
+    assert base_row[CLOSED_STOCK_LABEL] == "0"
+    assert all(
+        ABSENT_MARKER not in str(value)
+        for row in presentations
+        for value in row.values()
+    )
     assert ABSENT_MARKER not in rendered
 
 
@@ -3118,18 +3235,28 @@ def test_product_detail_shows_the_movement_data_with_cost_and_price(
 
     open_product_detail(app, catalog.product)
 
-    rendered = rendered_text(app)
+    movements = detail_records(app, DETAIL_MOVEMENT_COLUMNS)
+    by_reason = {row[REASON_LABEL]: row for row in movements}
 
     assert not app.exception
-    assert f"{MOVEMENT_TYPE_LABEL}: Entrada suelta" in rendered
-    assert f"{MOVEMENT_TYPE_LABEL}: Salida suelta" in rendered
-    assert f"{QUANTITY_LABEL}: 2" in rendered
-    assert f"{REASON_LABEL}: Compra" in rendered
-    assert f"{COST_LABEL}: 15.50" in rendered
-    assert f"{APPLIED_PRICE_LABEL}: 100.00" in rendered
-    assert f"{PRESENTATION_LABEL}: botella" in rendered
-    assert DETAIL_INSTANT_PATTERN.search(rendered)
-    assert f"{INITIAL_STOCK_LABEL}: {YES_TEXT}" in rendered
+    assert by_reason["Compra"][MOVEMENT_TYPE_LABEL] == "Entrada suelta"
+    assert by_reason["Venta"][MOVEMENT_TYPE_LABEL] == "Salida suelta"
+    assert by_reason["Compra"][QUANTITY_LABEL] == "2"
+    assert by_reason["Compra"][COST_LABEL] == "15.50"
+    assert by_reason["Compra"][APPLIED_PRICE_LABEL] == ""
+    assert by_reason["Venta"][COST_LABEL] == ""
+    assert by_reason["Venta"][APPLIED_PRICE_LABEL] == "100.00"
+    assert by_reason["Compra"][PRESENTATION_LABEL] == "botella"
+    assert by_reason["Venta"][PRESENTATION_LABEL] == "botella"
+    assert any(
+        row[INITIAL_STOCK_LABEL] == TABLE_YES_TEXT for row in movements
+    )
+    assert all(
+        DETAIL_INSTANT_PATTERN.search(
+            f"{DATE_LABEL}: {row[DATE_LABEL]}"
+        )
+        for row in movements
+    )
 
 
 def test_product_detail_shows_the_price_history_with_two_decimals(
@@ -3153,17 +3280,27 @@ def test_product_detail_shows_the_price_history_with_two_decimals(
 
     open_product_detail(app, catalog.product)
 
-    rendered = rendered_text(app)
+    changes = detail_records(app, DETAIL_PRICE_HISTORY_COLUMNS)
     messages = [info.value for info in app.info]
 
     assert not app.exception
-    assert f"{PRICE_PREVIOUS_LABEL}: 600.00" in rendered
-    assert f"{PRICE_NEW_LABEL}: 650.00" in rendered
-    assert f"{PRICE_PREVIOUS_LABEL}: 650.00" in rendered
-    assert f"{PRICE_NEW_LABEL}: 700.50" in rendered
-    assert f"{PRESENTATION_LABEL}: Caja x6" in rendered
-    assert f"{EVENT_LABEL}: {PRICE_CHANGE_EVENT_TYPE}" in rendered
-    assert DETAIL_INSTANT_PATTERN.search(rendered)
+    assert len(changes) == 2
+    assert changes[0][PRESENTATION_LABEL] == "Caja x6"
+    assert changes[0][PRICE_PREVIOUS_LABEL] == "600.00"
+    assert changes[0][PRICE_NEW_LABEL] == "650.00"
+    assert changes[1][PRESENTATION_LABEL] == "Caja x6"
+    assert changes[1][PRICE_PREVIOUS_LABEL] == "650.00"
+    assert changes[1][PRICE_NEW_LABEL] == "700.50"
+    assert all(
+        change[EVENT_LABEL] == PRICE_CHANGE_EVENT_TYPE
+        for change in changes
+    )
+    assert all(
+        DETAIL_INSTANT_PATTERN.search(
+            f"{DATE_LABEL}: {change[DATE_LABEL]}"
+        )
+        for change in changes
+    )
     assert (
         PRICE_HISTORY_NOTICE_TEMPLATE.format(count=2) in messages
     )
@@ -3185,12 +3322,11 @@ def test_product_detail_keeps_the_chronological_order_of_the_history(
 
     open_product_detail(app, catalog.product)
 
-    rendered = rendered_text(app)
-    first = rendered.index(f"{PRICE_NEW_LABEL}: 650.00")
-    second = rendered.index(f"{PRICE_NEW_LABEL}: 700.50")
+    changes = detail_records(app, DETAIL_PRICE_HISTORY_COLUMNS)
+    new_prices = [change[PRICE_NEW_LABEL] for change in changes]
 
     assert not app.exception
-    assert first < second
+    assert new_prices == ["650.00", "700.50"]
 
 
 def test_an_inactive_product_keeps_its_detail_available(
@@ -3248,13 +3384,24 @@ def test_an_inactive_product_keeps_its_detail_available(
     app.selectbox[2].set_value(label).run()
 
     rendered = rendered_text(app)
+    presentation_names = [
+        row[PRESENTATION_LABEL]
+        for row in detail_records(app, DETAIL_PRESENTATION_COLUMNS)
+    ]
+    movement_reasons = [
+        row[REASON_LABEL]
+        for row in detail_records(app, DETAIL_MOVEMENT_COLUMNS)
+    ]
+    price_changes = detail_records(app, DETAIL_PRICE_HISTORY_COLUMNS)
 
     assert not app.exception
     assert f"{STATUS_LABEL}: {INACTIVE_STATUS}" in rendered
-    assert f"{PRESENTATION_LABEL}: Caja x6" in rendered
-    assert f"{REASON_LABEL}: Compra histórica" in rendered
-    assert f"{EVENT_LABEL}: {PRICE_CHANGE_EVENT_TYPE}" in rendered
-    assert f"{PRICE_NEW_LABEL}: 65.00" in rendered
+    assert f"{NAME_LABEL}: Producto inactivo" in rendered
+    assert ":gray-badge[Inactivo]" in rendered_markdown(app)
+    assert "Caja x6" in presentation_names
+    assert "Compra histórica" in movement_reasons
+    assert price_changes[0][EVENT_LABEL] == PRICE_CHANGE_EVENT_TYPE
+    assert price_changes[0][PRICE_NEW_LABEL] == "65.00"
 
 
 def test_product_detail_distinguishes_the_three_empty_states() -> None:
@@ -3282,6 +3429,7 @@ def test_product_detail_distinguishes_the_three_empty_states() -> None:
     ]
     assert len(set(messages)) == 3
     assert len(app.error) == 0
+    assert len(app.dataframe) == 0
 
 
 def test_product_detail_reports_the_real_counts_without_truncating(
@@ -3318,7 +3466,14 @@ def test_product_detail_reports_the_real_counts_without_truncating(
 
     open_product_detail(app, catalog.product)
 
-    rendered = rendered_text(app)
+    presentation_names = [
+        row[PRESENTATION_LABEL]
+        for row in detail_records(app, DETAIL_PRESENTATION_COLUMNS)
+    ]
+    movement_reasons = [
+        row[REASON_LABEL]
+        for row in detail_records(app, DETAIL_MOVEMENT_COLUMNS)
+    ]
     messages = [info.value for info in app.info]
 
     assert not app.exception
@@ -3329,8 +3484,8 @@ def test_product_detail_reports_the_real_counts_without_truncating(
     assert (
         PRICE_HISTORY_NOTICE_TEMPLATE.format(count=2) in messages
     )
-    assert f"{PRESENTATION_LABEL}: Fardo x12" in rendered
-    assert f"{REASON_LABEL}: Movimiento 10" in rendered
+    assert "Fardo x12" in presentation_names
+    assert "Movimiento 10" in movement_reasons
 
 
 def test_product_detail_omits_absent_optional_fields_but_keeps_zero(
@@ -3354,13 +3509,22 @@ def test_product_detail_omits_absent_optional_fields_but_keeps_zero(
 
     open_product_detail(app, catalog.product)
 
-    rendered = rendered_text(app)
+    movements = detail_records(app, DETAIL_MOVEMENT_COLUMNS)
+    costs = [row[COST_LABEL] for row in movements if row[COST_LABEL]]
+    applied_prices = [
+        row[APPLIED_PRICE_LABEL]
+        for row in movements
+        if row[APPLIED_PRICE_LABEL]
+    ]
 
     assert not app.exception
-    assert rendered.count(f"{COST_LABEL}:") == 1
-    assert f"{COST_LABEL}: 0.00" in rendered
-    assert APPLIED_PRICE_LABEL not in rendered
-    assert "None" not in rendered
+    assert costs == ["0.00"]
+    assert applied_prices == []
+    assert all(
+        "None" not in str(value)
+        for row in movements
+        for value in row.values()
+    )
 
 
 def test_product_detail_reads_each_service_once_and_does_not_write(
@@ -3593,7 +3757,7 @@ def test_the_detail_selection_is_discarded_after_an_empty_list(
 
     app.text_input[0].set_value("Beta").run()
 
-    rendered = rendered_text(app)
+    records = product_records(app)
     selector = next(
         selectbox
         for selectbox in app.selectbox
@@ -3602,8 +3766,7 @@ def test_the_detail_selection_is_discarded_after_an_empty_list(
 
     assert not app.exception
     assert selector.value == NO_SELECTION_LABEL
-    assert f"{SKU_LABEL}: SKU-B" in rendered
-    assert f"{SKU_LABEL}: SKU-1" not in rendered
+    assert [row[SKU_LABEL] for row in records] == ["SKU-B"]
     assert PRODUCT_DETAIL_HEADER not in [
         subheader.value for subheader in app.subheader
     ]
@@ -3694,12 +3857,19 @@ def test_product_detail_works_without_the_model_with_real_data(
         ).run()
 
         rendered = rendered_text(app)
+        presentation_names = [
+            row[PRESENTATION_LABEL]
+            for row in detail_records(app, DETAIL_PRESENTATION_COLUMNS)
+        ]
+        price_changes = detail_records(
+            app, DETAIL_PRICE_HISTORY_COLUMNS
+        )
 
         assert not app.exception
         assert len(app.error) == 0
         assert f"{TOTAL_EQUIVALENT_LABEL}: 16" in rendered
-        assert f"{PRESENTATION_LABEL}: Caja x6" in rendered
-        assert f"{PRICE_NEW_LABEL}: 650.00" in rendered
+        assert "Caja x6" in presentation_names
+        assert price_changes[0][PRICE_NEW_LABEL] == "650.00"
     finally:
         if session is not None:
             session.connection.close()
@@ -4183,14 +4353,11 @@ def test_movements_shows_only_the_chosen_product_in_service_order(
     open_movements_section(app)
     choose_movement_product(app, alpha)
 
-    rendered = rendered_text(app)
+    records = detail_records(app, DETAIL_MOVEMENT_COLUMNS)
+    movement_reasons = [row[REASON_LABEL] for row in records]
 
     assert not app.exception
-    assert f"{REASON_LABEL}: Alfa primero" in rendered
-    assert f"{REASON_LABEL}: Alfa último" in rendered
-    assert "Beta intercalado" not in rendered
-    assert rendered.index("Alfa primero") < rendered.index("Alfa último")
-    assert rendered.count(f"{REASON_LABEL}:") == 2
+    assert movement_reasons == ["Alfa primero", "Alfa último"]
 
 
 @pytest.mark.parametrize(
@@ -4251,16 +4418,16 @@ def test_movements_filters_by_each_current_kind(
     counting_inventory.reset()
     movement_selectbox(app, KIND_FILTER_LABEL).set_value(label).run()
 
-    rendered = rendered_text(app)
+    records = detail_records(app, DETAIL_MOVEMENT_COLUMNS)
+    movement_reasons = [row[REASON_LABEL] for row in records]
 
     assert not app.exception
-    assert f"{REASON_LABEL}: {reason}" in rendered
-    assert rendered.count(f"{REASON_LABEL}:") == 1
+    assert movement_reasons == [reason]
     assert counting_inventory.get_movement_history_calls == 1
     assert counting_inventory.history_calls[0][1] == kind.value
     for other_kind, other_reason in reasons.items():
         if other_kind is not kind:
-            assert other_reason not in rendered
+            assert other_reason not in movement_reasons
 
 
 def test_movements_period_is_local_and_excludes_the_next_midnight(
@@ -4320,13 +4487,14 @@ def test_movements_period_is_local_and_excludes_the_next_midnight(
         app, date(2026, 3, 10), date(2026, 3, 10)
     )
 
-    rendered = rendered_text(app)
+    records = detail_records(app, DETAIL_MOVEMENT_COLUMNS)
+    movement_reasons = [row[REASON_LABEL] for row in records]
 
     assert not app.exception
-    assert f"{REASON_LABEL}: {included[0]}" in rendered
-    assert f"{REASON_LABEL}: {included[1]}" in rendered
-    assert excluded[0] not in rendered
-    assert excluded[1] not in rendered
+    assert included[0] in movement_reasons
+    assert included[1] in movement_reasons
+    assert excluded[0] not in movement_reasons
+    assert excluded[1] not in movement_reasons
     assert counting_inventory.get_movement_history_calls == 1
     product_id, kind, period_start, period_end = (
         counting_inventory.history_calls[0]
@@ -4405,13 +4573,14 @@ def test_movements_combines_product_kind_and_period_with_and(
         app, date(2026, 3, 10), date(2026, 3, 10)
     )
 
-    rendered = rendered_text(app)
+    records = detail_records(app, DETAIL_MOVEMENT_COLUMNS)
+    movement_reasons = [row[REASON_LABEL] for row in records]
 
     assert not app.exception
-    assert "Alfa entrada del día" in rendered
-    assert "Alfa salida del día" not in rendered
-    assert "Alfa entrada de otro día" not in rendered
-    assert "Beta entrada del día" not in rendered
+    assert movement_reasons == ["Alfa entrada del día"]
+    assert "Alfa salida del día" not in movement_reasons
+    assert "Alfa entrada de otro día" not in movement_reasons
+    assert "Beta entrada del día" not in movement_reasons
     assert counting_inventory.get_movement_history_calls == 1
     product_id, kind, period_start, period_end = (
         counting_inventory.history_calls[0]
@@ -4458,23 +4627,25 @@ def test_movements_without_a_period_and_with_a_same_day_period(
     open_movements_section(app)
     choose_movement_product(app, product)
 
-    without_period = rendered_text(app)
+    without_period = [
+        row[REASON_LABEL]
+        for row in detail_records(app, DETAIL_MOVEMENT_COLUMNS)
+    ]
 
     assert not app.exception
-    assert "Día anterior" in without_period
-    assert "Día elegido" in without_period
-    assert "Día siguiente" in without_period
+    assert without_period == ["Día anterior", "Día elegido", "Día siguiente"]
 
     set_movement_period(
         app, date(2026, 3, 10), date(2026, 3, 10)
     )
 
-    same_day = rendered_text(app)
+    same_day = [
+        row[REASON_LABEL]
+        for row in detail_records(app, DETAIL_MOVEMENT_COLUMNS)
+    ]
 
     assert not app.exception
-    assert "Día anterior" not in same_day
-    assert "Día elegido" in same_day
-    assert "Día siguiente" not in same_day
+    assert same_day == ["Día elegido"]
 
 
 def test_movements_accepts_a_single_period_bound(
@@ -4516,23 +4687,25 @@ def test_movements_accepts_a_single_period_bound(
     )
     app.run()
 
-    from_only = rendered_text(app)
+    from_only = [
+        row[REASON_LABEL]
+        for row in detail_records(app, DETAIL_MOVEMENT_COLUMNS)
+    ]
 
     assert not app.exception
-    assert "Límite anterior" not in from_only
-    assert "Límite elegido" in from_only
-    assert "Límite posterior" in from_only
+    assert from_only == ["Límite elegido", "Límite posterior"]
 
     movement_date_input(app, START_DATE_LABEL).set_value(None)
     movement_date_input(app, END_DATE_LABEL).set_value(date(2026, 3, 10))
     app.run()
 
-    until_only = rendered_text(app)
+    until_only = [
+        row[REASON_LABEL]
+        for row in detail_records(app, DETAIL_MOVEMENT_COLUMNS)
+    ]
 
     assert not app.exception
-    assert "Límite anterior" in until_only
-    assert "Límite elegido" in until_only
-    assert "Límite posterior" not in until_only
+    assert until_only == ["Límite anterior", "Límite elegido"]
 
 
 def test_an_inverted_period_shows_a_validation_without_reading(
@@ -4629,7 +4802,7 @@ def test_an_empty_catalog_shows_no_movement_controls(
     ]
     assert len(app.selectbox) == 0
     assert len(app.date_input) == 0
-    assert rendered_text(app) == ""
+    assert len(app.dataframe) == 0
     assert counting_inventory.get_movement_history_calls == 0
     assert counting_inventory.get_product_presentations_calls == 0
 
@@ -4730,15 +4903,16 @@ def test_movements_reports_the_real_count_without_truncating(
     open_movements_section(app)
     choose_movement_product(app, product)
 
-    rendered = rendered_text(app)
+    movement_reasons = [
+        row[REASON_LABEL]
+        for row in detail_records(app, DETAIL_MOVEMENT_COLUMNS)
+    ]
 
     assert not app.exception
     assert MOVEMENTS_NOTICE_TEMPLATE.format(count=12) in [
         info.value for info in app.info
     ]
-    for reason in reasons:
-        assert f"{REASON_LABEL}: {reason}" in rendered
-    assert rendered.index("Movimiento 01") < rendered.index("Movimiento 12")
+    assert movement_reasons == reasons
 
 
 def test_an_inactive_product_is_queryable_and_marked(
@@ -4774,14 +4948,17 @@ def test_an_inactive_product_is_queryable_and_marked(
     open_movements_section(app)
     choose_movement_product(app, inactive)
 
-    rendered = rendered_text(app)
+    movement_reasons = [
+        row[REASON_LABEL]
+        for row in detail_records(app, DETAIL_MOVEMENT_COLUMNS)
+    ]
 
     assert not app.exception
     assert label == "SKU-OFF-MOV — Inactivo (inactivo)"
     assert label in movement_selectbox(
         app, PRODUCT_FILTER_LABEL
     ).options
-    assert "Movimiento histórico inactivo" in rendered
+    assert "Movimiento histórico inactivo" in movement_reasons
 
 
 def test_movements_shows_a_historical_compensation_without_actions(
@@ -4823,12 +5000,14 @@ def test_movements_shows_a_historical_compensation_without_actions(
     open_movements_section(app)
     choose_movement_product(app, product)
 
-    rendered = rendered_text(app)
+    records = detail_records(app, DETAIL_MOVEMENT_COLUMNS)
+    movement_reasons = [row[REASON_LABEL] for row in records]
+    movement_types = [row[MOVEMENT_TYPE_LABEL] for row in records]
 
     assert not app.exception
-    assert "Entrada original" in rendered
-    assert "Compensación histórica" in rendered
-    assert "Compensación" in rendered
+    assert "Entrada original" in movement_reasons
+    assert "Compensación histórica" in movement_reasons
+    assert "Compensación" in movement_types
     assert len(app.button) == 0
 
 
@@ -4917,11 +5096,14 @@ def test_movements_works_without_the_model_with_real_data(
         open_movements_section(app)
         choose_movement_product(app, stored)
 
-        rendered = rendered_text(app)
+        movement_reasons = [
+            row[REASON_LABEL]
+            for row in detail_records(app, DETAIL_MOVEMENT_COLUMNS)
+        ]
 
         assert not app.exception
         assert len(app.error) == 0
-        assert "Movimiento real sin modelo" in rendered
+        assert "Movimiento real sin modelo" in movement_reasons
         assert product_option_label(stored) in movement_selectbox(
             app, PRODUCT_FILTER_LABEL
         ).options
@@ -4987,17 +5169,27 @@ def test_movements_formats_local_dates_and_omits_absent_optional_fields(
     open_movements_section(app)
     choose_movement_product(app, product)
 
-    rendered = rendered_text(app)
+    records = detail_records(app, DETAIL_MOVEMENT_COLUMNS)
+    by_reason = {row[REASON_LABEL]: row for row in records}
 
     assert not app.exception
-    assert f"{DATE_LABEL}: 2026-03-10 10:15:00 -03:00" in rendered
-    assert f"{COST_LABEL}: 12.50" in rendered
-    assert f"{APPLIED_PRICE_LABEL}: 99.90" in rendered
-    assert f"{COST_LABEL}: 0.00" in rendered
-    assert rendered.count(f"{COST_LABEL}:") == 2
-    assert rendered.count(f"{APPLIED_PRICE_LABEL}:") == 1
-    assert "None" not in rendered
-    assert ABSENT_MARKER not in rendered
+    assert (
+        by_reason["Con costo"][DATE_LABEL]
+        == "2026-03-10 10:15:00 -03:00"
+    )
+    assert by_reason["Con costo"][COST_LABEL] == "12.50"
+    assert by_reason["Con costo"][APPLIED_PRICE_LABEL] == ""
+    assert by_reason["Con precio aplicado"][COST_LABEL] == ""
+    assert by_reason["Con precio aplicado"][APPLIED_PRICE_LABEL] == "99.90"
+    assert by_reason["Con costo cero"][COST_LABEL] == "0.00"
+    assert by_reason["Sin opcionales"][COST_LABEL] == ""
+    assert by_reason["Sin opcionales"][APPLIED_PRICE_LABEL] == ""
+    assert all(row[INITIAL_STOCK_LABEL] == "" for row in records)
+    assert all(
+        "None" not in str(value) and ABSENT_MARKER not in str(value)
+        for row in records
+        for value in row.values()
+    )
 
 
 def test_movements_falls_back_to_the_presentation_id(
@@ -5031,11 +5223,11 @@ def test_movements_falls_back_to_the_presentation_id(
     open_movements_section(app)
     choose_movement_product(app, product)
 
-    rendered = rendered_text(app)
+    records = detail_records(app, DETAIL_MOVEMENT_COLUMNS)
 
     assert not app.exception
-    assert f"{PRESENTATION_LABEL}: presentación #9999" in rendered
-    assert "Presentación ajena" in rendered
+    assert records[0][PRESENTATION_LABEL] == "presentación #9999"
+    assert records[0][REASON_LABEL] == "Presentación ajena"
 
 
 def test_the_movements_view_only_presents_the_received_data() -> None:
@@ -5216,35 +5408,31 @@ def test_price_history_shows_names_prices_and_local_dates(
     open_price_history_section(app)
     choose_price_history_product(app, catalog.product)
 
-    rendered = rendered_text(app)
+    records = detail_records(app, DETAIL_PRICE_HISTORY_COLUMNS)
     infos = [info.value for info in app.info]
-    dates = [
-        line
-        for line in rendered.splitlines()
-        if line.startswith(f"{DATE_LABEL}: ")
-    ]
+    by_presentation = {
+        row[PRESENTATION_LABEL]: row for row in records
+    }
 
     assert not app.exception
     assert PRICE_HISTORY_SECTION_NOTICE_TEMPLATE.format(count=2) in infos
-    assert f"{PRESENTATION_LABEL}: botella" in rendered
-    assert f"{PRESENTATION_LABEL}: Caja x6" in rendered
-    assert f"{PRICE_PREVIOUS_LABEL}: 100.00" in rendered
-    assert f"{PRICE_NEW_LABEL}: 110.00" in rendered
-    assert f"{PRICE_PREVIOUS_LABEL}: 600.00" in rendered
-    assert f"{PRICE_NEW_LABEL}: 660.00" in rendered
-    assert f"{EVENT_LABEL}: {PRICE_CHANGE_EVENT_TYPE}" in rendered
-    assert len(dates) == 2
-    for line in dates:
-        assert re.fullmatch(
-            rf"{DATE_LABEL}: \d{{4}}-\d{{2}}-\d{{2}} "
-            r"\d{2}:\d{2}:\d{2} -03:00",
-            line,
+    assert by_presentation["botella"][PRICE_PREVIOUS_LABEL] == "100.00"
+    assert by_presentation["botella"][PRICE_NEW_LABEL] == "110.00"
+    assert by_presentation["Caja x6"][PRICE_PREVIOUS_LABEL] == "600.00"
+    assert by_presentation["Caja x6"][PRICE_NEW_LABEL] == "660.00"
+    assert all(
+        row[EVENT_LABEL] == PRICE_CHANGE_EVENT_TYPE for row in records
+    )
+    assert [row[PRICE_NEW_LABEL] for row in records] == [
+        "110.00",
+        "660.00",
+    ]
+    for row in records:
+        assert DETAIL_INSTANT_PATTERN.search(
+            f"{DATE_LABEL}: {row[DATE_LABEL]}"
         )
-    assert not re.search(r"\d{4}-\d{2}-\d{2}T", rendered)
-    assert "+00:00" not in rendered
-    assert rendered.index(
-        f"{PRICE_NEW_LABEL}: 110.00"
-    ) < rendered.index(f"{PRICE_NEW_LABEL}: 660.00")
+        assert "T" not in row[DATE_LABEL]
+        assert "+00:00" not in row[DATE_LABEL]
 
 
 def test_price_history_filters_by_presentation(
@@ -5272,15 +5460,20 @@ def test_price_history_filters_by_presentation(
 
     choose_price_history_presentation(app, catalog.box.name)
 
-    rendered = rendered_text(app)
+    records = detail_records(app, DETAIL_PRICE_HISTORY_COLUMNS)
     infos = [info.value for info in app.info]
 
     assert not app.exception
     assert PRICE_HISTORY_SECTION_NOTICE_TEMPLATE.format(count=1) in infos
-    assert f"{PRESENTATION_LABEL}: Caja x6" in rendered
-    assert f"{PRICE_NEW_LABEL}: 660.00" in rendered
-    assert "110.00" not in rendered
-    assert "botella" not in rendered
+    assert len(records) == 1
+    assert records[0][PRESENTATION_LABEL] == "Caja x6"
+    assert records[0][PRICE_NEW_LABEL] == "660.00"
+    assert "110.00" not in [
+        value for row in records for value in row.values()
+    ]
+    assert "botella" not in [
+        row[PRESENTATION_LABEL] for row in records
+    ]
 
 
 def test_price_history_falls_back_to_the_presentation_id(
@@ -5317,11 +5510,11 @@ def test_price_history_falls_back_to_the_presentation_id(
     open_price_history_section(app)
     choose_price_history_product(app, product)
 
-    rendered = rendered_text(app)
+    records = detail_records(app, DETAIL_PRICE_HISTORY_COLUMNS)
 
     assert not app.exception
-    assert f"{PRESENTATION_LABEL}: presentación #9999" in rendered
-    assert f"{PRICE_NEW_LABEL}: 12.00" in rendered
+    assert records[0][PRESENTATION_LABEL] == "presentación #9999"
+    assert records[0][PRICE_NEW_LABEL] == "12.00"
 
 
 def test_a_product_without_price_changes_informs_the_empty_state(
@@ -5349,7 +5542,7 @@ def test_a_product_without_price_changes_informs_the_empty_state(
     assert not app.exception
     assert infos == [EMPTY_PRODUCT_HISTORY_MESSAGE]
     assert PRICE_HISTORY_SECTION_NOTICE_TEMPLATE.format(count=0) not in infos
-    assert rendered_text(app) == ""
+    assert len(app.dataframe) == 0
 
 
 def test_a_presentation_without_price_changes_has_its_own_empty_state(
@@ -5378,7 +5571,7 @@ def test_a_presentation_without_price_changes_has_its_own_empty_state(
     assert EMPTY_PRESENTATION_HISTORY_MESSAGE in infos
     assert EMPTY_PRODUCT_HISTORY_MESSAGE not in infos
     assert PRICE_HISTORY_SECTION_NOTICE_TEMPLATE.format(count=0) not in infos
-    assert rendered_text(app) == ""
+    assert len(app.dataframe) == 0
 
 
 def test_price_history_does_not_read_without_a_product(
@@ -5436,7 +5629,7 @@ def test_an_empty_catalog_shows_no_price_history_controls(
         EMPTY_PRICE_HISTORY_CATALOG_MESSAGE
     ]
     assert len(app.selectbox) == 0
-    assert rendered_text(app) == ""
+    assert len(app.dataframe) == 0
 
 
 def test_an_inactive_product_is_queryable_in_price_history(
@@ -5467,14 +5660,14 @@ def test_an_inactive_product_is_queryable_in_price_history(
     open_price_history_section(app)
     choose_price_history_product(app, inactive)
 
-    rendered = rendered_text(app)
+    records = detail_records(app, DETAIL_PRICE_HISTORY_COLUMNS)
 
     assert not app.exception
     assert label == "SKU-PRICE-OFF — Inactivo con historial (inactivo)"
     assert label in price_history_selectbox(
         app, PRICE_HISTORY_PRODUCT_LABEL
     ).options
-    assert f"{PRICE_NEW_LABEL}: 17.00" in rendered
+    assert records[0][PRICE_NEW_LABEL] == "17.00"
 
 
 def test_price_history_reports_the_real_count_without_truncating(
@@ -5508,17 +5701,20 @@ def test_price_history_reports_the_real_count_without_truncating(
     open_price_history_section(app)
     choose_price_history_product(app, product)
 
-    rendered = rendered_text(app)
+    records = detail_records(app, DETAIL_PRICE_HISTORY_COLUMNS)
     infos = [info.value for info in app.info]
 
     assert not app.exception
     assert PRICE_HISTORY_SECTION_NOTICE_TEMPLATE.format(count=12) in infos
-    for index in range(1, 13):
-        assert f"{PRICE_NEW_LABEL}: {101 + index}.00" in rendered
-    assert rendered.count(f"{DATE_LABEL}:") == 12
-    assert rendered.index(
-        f"{PRICE_NEW_LABEL}: 102.00"
-    ) < rendered.index(f"{PRICE_NEW_LABEL}: 113.00")
+    assert [row[PRICE_NEW_LABEL] for row in records] == [
+        f"{101 + index}.00" for index in range(1, 13)
+    ]
+    assert all(
+        DETAIL_INSTANT_PATTERN.search(
+            f"{DATE_LABEL}: {row[DATE_LABEL]}"
+        )
+        for row in records
+    )
 
 
 def test_a_price_history_read_error_is_not_an_empty_history(
@@ -5556,6 +5752,7 @@ def test_a_price_history_read_error_is_not_an_empty_history(
     assert EMPTY_PRODUCT_HISTORY_MESSAGE not in infos
     assert EMPTY_PRESENTATION_HISTORY_MESSAGE not in infos
     assert PRICE_HISTORY_SECTION_NOTICE_TEMPLATE.format(count=0) not in infos
+    assert len(app.dataframe) == 0
 
 
 def test_price_history_does_not_write(
@@ -5641,11 +5838,11 @@ def test_price_history_works_without_the_model_with_real_data(
         open_price_history_section(app)
         choose_price_history_product(app, stored)
 
-        rendered = rendered_text(app)
+        records = detail_records(app, DETAIL_PRICE_HISTORY_COLUMNS)
 
         assert not app.exception
         assert len(app.error) == 0
-        assert f"{PRICE_NEW_LABEL}: 15.00" in rendered
+        assert records[0][PRICE_NEW_LABEL] == "15.00"
         assert product_option_label(stored) in price_history_selectbox(
             app, PRICE_HISTORY_PRODUCT_LABEL
         ).options
@@ -5689,14 +5886,42 @@ def test_the_price_history_view_only_presents_the_received_data() -> None:
 
 def test_the_price_history_view_uses_the_shared_formatting() -> None:
     """
-    Verifica que la vista delega el formato y no usa los helpers de main
-    (T047).
+    Verifica que la vista usa el formateo compartido y no helpers propios
+    (T047, T057).
 
-    Los importes y las fechas se formatean con `describe_price_change` y
-    `app.ui.formatting`; la sección no usa `_format_price` ni `isoformat()`.
+    Las filas se componen con `price_change_row`, compartido con el detalle de
+    producto, que aplica `format_money` y `format_instant` de
+    `app.ui.formatting`; la sección no usa `describe_price_change`,
+    `_format_price` ni `isoformat()`.
     """
     source = PRICE_HISTORY_SECTION_PATH.read_text(encoding="utf-8")
 
-    assert "describe_price_change" in source
+    assert "price_change_row" in source
+    assert "describe_price_change" not in source
     assert "_format_price" not in source
     assert "isoformat(" not in source
+
+
+# --- Rediseño visual (T057) ---
+
+
+def test_theme_config_uses_the_approved_palette() -> None:
+    """Verifica el tema claro y el color primario aprobados (T057, D6)."""
+    source = THEME_CONFIG_PATH.read_text(encoding="utf-8")
+
+    assert "[theme]" in source
+    assert 'base = "light"' in source
+    assert 'primaryColor = "#2563EB"' in source
+
+
+def test_the_ui_does_not_use_custom_css() -> None:
+    """Verifica que la interfaz usa solo componentes nativos (T057, D1)."""
+    sources = ui_sources()
+
+    assert sources
+
+    for path in sources:
+        source = path.read_text(encoding="utf-8")
+        assert "<style" not in source, path.name
+        assert "unsafe_allow_html" not in source, path.name
+        assert "st.html" not in source, path.name

@@ -19,10 +19,12 @@ espacios no invoca los métodos de búsqueda (B1). El filtro de estado es de
 presentación y se aplica después de la búsqueda (C1). El stock cerrado llega ya
 sumado por `main.py` como la suma de `closed_stock` de las presentaciones del
 producto (A1); la vista no lo recalcula. El listado no se pagina: se muestra el
-número real de productos presentados (D1), y cada fila se dibuja con texto
-preformateado que no interpreta Markdown y normaliza los saltos de línea solo
-para mostrarlos (F1), sin alterar los datos de negocio. La vinculación de C22
-con sus pruebas se completa en la trazabilidad de la Fase 7.
+número real de productos presentados (D1), y cada fila se muestra en una tabla
+nativa (`st.dataframe`) con las siete columnas de C5, que no interpreta
+Markdown y conserva los valores de negocio tal como llegan (F1, T057). Los
+controles y el listado se agrupan en contenedores con borde, y el aviso de no
+paginación se conserva. La vinculación de C22 con sus pruebas se completa en la
+trazabilidad de la Fase 7.
 """
 
 from __future__ import annotations
@@ -200,62 +202,54 @@ def render_product_controls() -> ProductQuery:
 
     El campo de búsqueda es texto libre con «Nombre» por defecto y el filtro de
     estado es «Todos» por defecto. Los widgets tienen claves estables y no
-    escriben en el estado de la sesión directamente (E1, G1).
+    escriben en el estado de la sesión directamente (E1, G1), y se agrupan en
+    un contenedor con borde (T057).
 
     Returns:
         Los valores elegidos por el usuario, sin recortar el texto.
     """
-    st.caption(SEARCH_NOTICE)
-    text = st.text_input(SEARCH_LABEL, key=SEARCH_TEXT_KEY)
-    field = st.selectbox(
-        SEARCH_FIELD_LABEL,
-        SEARCH_FIELDS,
-        index=SEARCH_FIELDS.index(NAME_FIELD),
-        key=SEARCH_FIELD_KEY,
-    )
-    status = st.selectbox(
-        STATUS_FILTER_LABEL,
-        STATUS_FILTERS,
-        index=STATUS_FILTERS.index(ALL_STATUS_FILTER),
-        key=STATUS_FILTER_KEY,
-    )
+    with st.container(border=True):
+        st.caption(SEARCH_NOTICE)
+        text = st.text_input(SEARCH_LABEL, key=SEARCH_TEXT_KEY)
+        field = st.selectbox(
+            SEARCH_FIELD_LABEL,
+            SEARCH_FIELDS,
+            index=SEARCH_FIELDS.index(NAME_FIELD),
+            key=SEARCH_FIELD_KEY,
+        )
+        status = st.selectbox(
+            STATUS_FILTER_LABEL,
+            STATUS_FILTERS,
+            index=STATUS_FILTERS.index(ALL_STATUS_FILTER),
+            key=STATUS_FILTER_KEY,
+        )
 
     return ProductQuery(text=text, field=field, status=status)
 
 
-def _single_line(value: str) -> str:
+def product_record(row: ProductRow) -> dict[str, str | int]:
     """
-    Normaliza los saltos de línea de un valor solo para mostrarlo (F1).
+    Compone el registro de una fila con los siete campos de C5 (T044, T057).
 
-    El valor de negocio no se modifica: el recorte y la unión se aplican a una
-    copia usada únicamente para dibujar la fila, de modo que un nombre con
-    saltos no rompa la estructura de los campos etiquetados.
-    """
-    return " ".join(value.splitlines())
-
-
-def describe_product_row(row: ProductRow) -> str:
-    """
-    Describe una fila con los siete campos etiquetados de C5 (T044).
+    El registro conserva los valores tal como llegan —sin normalizar los saltos
+    de línea ni interpretar Markdown— y usa las etiquetas de C5 como nombres de
+    columna del listado.
 
     Args:
         row: Producto ya consultado y con su stock cerrado sumado.
 
     Returns:
-        El texto de la fila, una línea por campo, seguro para mostrarse como
-        texto preformateado sin interpretar Markdown (F1).
+        El registro de la fila, con las siete columnas en el orden de C5.
     """
-    return "\n".join(
-        (
-            f"{SKU_LABEL}: {_single_line(row.sku)}",
-            f"{NAME_LABEL}: {_single_line(row.name)}",
-            f"{BASE_UNIT_LABEL}: {_single_line(row.base_unit)}",
-            f"{MINIMUM_STOCK_LABEL}: {row.minimum_stock}",
-            f"{LOOSE_UNITS_LABEL}: {row.loose_units}",
-            f"{CLOSED_STOCK_LABEL}: {row.closed_stock}",
-            f"{STATUS_LABEL}: {row.status}",
-        )
-    )
+    return {
+        SKU_LABEL: row.sku,
+        NAME_LABEL: row.name,
+        BASE_UNIT_LABEL: row.base_unit,
+        MINIMUM_STOCK_LABEL: row.minimum_stock,
+        LOOSE_UNITS_LABEL: row.loose_units,
+        CLOSED_STOCK_LABEL: row.closed_stock,
+        STATUS_LABEL: row.status,
+    }
 
 
 def render_products(
@@ -268,9 +262,10 @@ def render_products(
 
     El listado conserva el orden recibido de `main.py` —que a su vez preserva
     el orden del servicio (D1)— y no se pagina ni se trunca: el aviso informa
-    el número real de productos presentados (C8). Cada fila se dibuja con
-    `st.text`, que no interpreta Markdown, para que los caracteres especiales y
-    los saltos de línea no alteren la estructura (F1).
+    el número real de productos presentados (C8). El listado se muestra en un
+    `st.dataframe` con las siete columnas de C5, que no interpreta Markdown y
+    conserva los valores reales de cada fila (F1, T057). El aviso y el listado
+    se agrupan en un contenedor con borde.
 
     Args:
         rows: Productos ya filtrados y con sus siete campos consultados, en el
@@ -279,11 +274,15 @@ def render_products(
             corresponde mostrarlo.
     """
     st.header(PRODUCTS_HEADER)
-    if not rows:
-        if empty_message is not None:
-            st.info(empty_message)
-        return
+    with st.container(border=True):
+        if not rows:
+            if empty_message is not None:
+                st.info(empty_message)
+            return
 
-    st.info(non_paginated_notice(len(rows)))
-    for row in rows:
-        st.text(describe_product_row(row))
+        st.info(non_paginated_notice(len(rows)))
+        st.dataframe(
+            [product_record(row) for row in rows],
+            hide_index=True,
+            width="stretch",
+        )

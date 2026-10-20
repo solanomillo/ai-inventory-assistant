@@ -238,7 +238,7 @@ Aprobadas por el usuario. Se documentan aquí para conservar la trazabilidad. **
 
 ## Decisiones resueltas (RF-09)
 
-Aprobadas por el usuario para la formalización de RF-09. Se identifican como **D-A** a **D-G** y la implementación corresponde a la **Fase 7** (T038–T056), **en curso**: T038–T046 están cerradas y aprobadas y T047–T056 permanecen pendientes.
+Aprobadas por el usuario para la formalización de RF-09. Se identifican como **D-A** a **D-G** y la implementación corresponde a la **Fase 7** (T038–T057), **en curso**: T038–T047 están cerradas y aprobadas y T048–T057 permanecen pendientes; **T057** se ejecuta antes de **T048**.
 
 - **D-A — Ubicación de la confirmación:** el único punto de confirmación permanece en `app/ui/main.py`; las secciones no confirman por su cuenta y la comprobación estructural sobre el texto fuente (una sola aparición de `.confirm(`) se conserva.
 - **D-B — Contenedor de sesión:** la composición de **lectura** sin LLM y los servicios compartidos se concentran en `app/ui/session.py`; **no** se amplía `Assistant` con responsabilidades no conversacionales.

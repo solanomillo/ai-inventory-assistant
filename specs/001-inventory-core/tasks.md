@@ -4,12 +4,12 @@
 
 Este documento descompone el plan técnico aprobado (`plan.md`) en tareas pequeñas, ordenadas por dependencias y verificables, para el MVP de inventario definido por `spec.md`.
 
-- Los identificadores (`T001`–`T056`) son únicos y estables.
+- Los identificadores (`T001`–`T057`) son únicos y estables.
 - Cada tarea pertenece a una fase, declara dependencias, archivos previstos, pruebas y criterios de aceptación verificables.
 - Se priorizan las reglas deterministas del dominio y la persistencia antes de integrar el LLM.
 - Las decisiones pendientes que bloquean una tarea se indican explícitamente y no se resuelven aquí.
 - **Ampliación RF-08 (T027–T037):** la actualización del precio de venta y su historial, incorporada a `spec.md` como RF-08 (criterios C1–C13) y reflejada en `plan.md`, se descompone en la **Fase 6**. **T028–T037 están cerradas y aprobadas** (T037 con revisión independiente APROBADO; la verificación de `pytest` sigue siendo reportada, no independiente). RF-08 **no** se declara terminado sin demostrar **persistencia tras reiniciar** la aplicación y **atomicidad** entre la actualización del precio y el registro del historial.
-- **Ampliación RF-09 (T038–T056):** la interfaz de gestión del inventario (navegación lateral, consultas **sin** modelo, formularios de propuestas, revisión/edición/descarte y estados de interfaz), incorporada a `spec.md` como **RF-09** (criterios C1–C22) y reflejada en `plan.md` (composición dual y Fase 7), se descompone en la **Fase 7**. La **formalización documental (T038)** está **cerrada y aprobada** (tras revisión independiente) y **no** implica implementación; **T039 está cerrada y aprobada** (tras **segunda revisión independiente**), **T040 está cerrada y aprobada** (tras revisión independiente), **T041 está cerrada y aprobada** (tras revisión independiente), **T042 está cerrada y aprobada** (tras revisión independiente), **T043 está cerrada y aprobada** (tras revisión independiente), **T044 está cerrada y aprobada** (tras revisión independiente), **T045 está cerrada y aprobada** (tras revisión independiente), **T046 está cerrada y aprobada** (tras revisión independiente) y **T047 está cerrada y aprobada** (tras revisión independiente): **T048–T056 permanecen pendientes** y la Fase 7 continúa en **T048**. RF-09 **no** modifica RF-01–RF-08; la desactivación de productos y el cambio de factor de presentación quedan **fuera**.
+- **Ampliación RF-09 (T038–T057):** la interfaz de gestión del inventario (navegación lateral, consultas **sin** modelo, formularios de propuestas, revisión/edición/descarte y estados de interfaz), incorporada a `spec.md` como **RF-09** (criterios C1–C22) y reflejada en `plan.md` (composición dual y Fase 7), se descompone en la **Fase 7**. La **formalización documental (T038)** está **cerrada y aprobada** (tras revisión independiente) y **no** implica implementación; **T039 está cerrada y aprobada** (tras **segunda revisión independiente**), **T040 está cerrada y aprobada** (tras revisión independiente), **T041 está cerrada y aprobada** (tras revisión independiente), **T042 está cerrada y aprobada** (tras revisión independiente), **T043 está cerrada y aprobada** (tras revisión independiente), **T044 está cerrada y aprobada** (tras revisión independiente), **T045 está cerrada y aprobada** (tras revisión independiente), **T046 está cerrada y aprobada** (tras revisión independiente) y **T047 está cerrada y aprobada** (tras revisión independiente): **T048–T057 permanecen pendientes**; la Fase 7 continúa en **T057** (rediseño visual transversal) y después en **T048**. RF-09 **no** modifica RF-01–RF-08; la desactivación de productos y el cambio de factor de presentación quedan **fuera**.
 - **Entorno local:** el usuario crea y activa `.venv`, crea el archivo local `.env` e instala las dependencias manualmente. El agente no debe crear ni modificar el entorno virtual, crear `.env` ni ejecutar instalaciones de paquetes. El archivo `.env.example` sí forma parte del repositorio y debe contener solo nombres de variables y valores de ejemplo no sensibles.
 
 ## Fase 0 — Esqueleto, configuración y scaffolding del proveedor
@@ -654,12 +654,12 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 
 ## Fase 7 — Interfaz de gestión del inventario (RF-09)
 
-**Estado de la fase: en curso.** Contiene las tareas **T038** (**cerrada y aprobada** tras revisión independiente), **T039** (**cerrada y aprobada** tras **segunda revisión independiente**), **T040** (**cerrada y aprobada** tras revisión independiente), **T041** (**cerrada y aprobada** tras revisión independiente), **T042** (**cerrada y aprobada** tras revisión independiente), **T043** (**cerrada y aprobada** tras revisión independiente), **T044** (**cerrada y aprobada** tras revisión independiente), **T045** (**cerrada y aprobada** tras revisión independiente), **T046** (**cerrada y aprobada** tras revisión independiente) y **T047** (**cerrada y aprobada** tras revisión independiente); las tareas **T048–T056** permanecen **Pendientes** y la Fase 7 continúa en **T048**. Las decisiones técnicas de RF-09 están aprobadas (ver `plan.md` «Decisiones resueltas (RF-09)»). La Fase 7 **no** modifica RF-01–RF-08 y **no** reabre T001–T037. La verificación es **reportada** mientras no exista ejecución independiente de `pytest` (ninguna sesión la ha realizado en este proyecto).
+**Estado de la fase: en curso.** Contiene las tareas **T038** (**cerrada y aprobada** tras revisión independiente), **T039** (**cerrada y aprobada** tras **segunda revisión independiente**), **T040** (**cerrada y aprobada** tras revisión independiente), **T041** (**cerrada y aprobada** tras revisión independiente), **T042** (**cerrada y aprobada** tras revisión independiente), **T043** (**cerrada y aprobada** tras revisión independiente), **T044** (**cerrada y aprobada** tras revisión independiente), **T045** (**cerrada y aprobada** tras revisión independiente), **T046** (**cerrada y aprobada** tras revisión independiente) y **T047** (**cerrada y aprobada** tras revisión independiente); las tareas **T048–T057** permanecen **Pendientes**; la Fase 7 continúa en **T057** (rediseño visual transversal) y después en **T048**. Las decisiones técnicas de RF-09 están aprobadas (ver `plan.md` «Decisiones resueltas (RF-09)»). La Fase 7 **no** modifica RF-01–RF-08 y **no** reabre T001–T037. La verificación es **reportada** mientras no exista ejecución independiente de `pytest` (ninguna sesión la ha realizado en este proyecto).
 
 ### T038 — Formalización documental de RF-09
 
 - **Fase:** 7.
-- **Estado:** **Cerrada y aprobada** (por el usuario; tras revisión independiente). Alcance: **formalización documental de RF-09** en `spec.md` (RF-09, requisitos y criterios C1–C22), `plan.md` (navegación lateral, composición dual, Fase 7 y «Decisiones resueltas (RF-09)» **D-A**…**D-G**) y `tasks.md` (Fase 7, T038–T056). **Segunda revisión independiente: APROBADO** (sin bloqueantes ni hallazgos importantes; **I1 resuelto** en el ciclo único de corrección). **No** implica ninguna implementación: **T048–T056 permanecen pendientes** y la Fase 7 continúa en **T048**.
+- **Estado:** **Cerrada y aprobada** (por el usuario; tras revisión independiente). Alcance: **formalización documental de RF-09** en `spec.md` (RF-09, requisitos y criterios C1–C22), `plan.md` (navegación lateral, composición dual, Fase 7 y «Decisiones resueltas (RF-09)» **D-A**…**D-G**) y `tasks.md` (Fase 7, T038–T057). **Segunda revisión independiente: APROBADO** (sin bloqueantes ni hallazgos importantes; **I1 resuelto** en el ciclo único de corrección). **No** implica ninguna implementación: **T048–T057 permanecen pendientes**; la Fase 7 continúa en **T057** (rediseño visual transversal) y después en **T048**.
 - **Objetivo:** dejar especificación, plan y tareas coherentes con la interfaz de gestión (RF-09) antes de escribir código.
 - **Archivos previstos:** `specs/001-inventory-core/spec.md`, `specs/001-inventory-core/plan.md`, `specs/001-inventory-core/tasks.md`.
 - **Dependencias:** Ninguna (continúa la numeración de T037; no la reabre).
@@ -668,7 +668,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - `spec.md` contiene RF-09 con objetivo, requisitos y criterios C1–C22, **después** de RF-08 y **antes** de las reglas de negocio transversales, sin alterar RF-01–RF-08 ni las reglas transversales.
   - RF-09 declara explícitamente que **no** modifica RF-01–RF-08 y que la desactivación de productos y el cambio de factor de presentación quedan **fuera**.
   - `plan.md` declara la navegación lateral, la composición dual (lectura sin LLM y asistente por separado) y la estructura `ui/ main.py session.py formatting.py sections/`.
-  - `tasks.md` contiene T038–T056 con fase, estado, objetivo, archivos previstos, dependencias, pruebas y criterios verificables, todos con `RF: RF-09`.
+  - `tasks.md` contiene T038–T057 con fase, estado, objetivo, archivos previstos, dependencias, pruebas y criterios verificables, todos con `RF: RF-09`. **Nota:** T057 se añadió después del cierre de T038; el criterio se actualiza para reflejar el documento vigente y no reabre T038.
   - **Ninguna** tarea de T001–T037 se modifica ni se renumera.
 - **RF:** RF-09.
 
@@ -790,7 +790,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - Se muestran las presentaciones con factor y stock cerrado, las unidades sueltas y el total equivalente (**C9**).
   - Se muestran los movimientos del producto y su historial de precios, por servicio de lectura (**C9**).
   - Un producto **desactivado** admite consulta de su detalle y de su historial, coherente con RF-08.
-- **Evidencia de implementación (segunda revisión independiente):** `app/ui/sections/product_detail.py` — selector `:254-283`, `describe_product` `:366-391`, `describe_presentation` `:394-416`, `describe_movement` `:419-454`, `describe_price_change` `:457-480`, render de listas `:483-546`; composición en `app/ui/main.py` — `products_section` `:839-890` (detalle solo con lista visible `:889-890`), `product_detail_section` `:895-943`; lecturas `app/services/inventory.py:228-258`, `:325-368` y `app/services/price_history.py:74-92`. Pruebas en `tests/ui/test_main.py:2964-3579`; corrección I1/I2 en `:3354-3579`; guard estructural `:3486-3518`.
+- **Evidencia de implementación (segunda revisión independiente):** `app/ui/sections/product_detail.py` — selector `:254-283`, `describe_product` `:366-391`, `describe_presentation` `:394-416`, `describe_movement` `:419-454`, `describe_price_change` `:457-480`, render de listas `:483-546`; composición en `app/ui/main.py` — `products_section` `:839-890` (detalle solo con lista visible `:889-890`), `product_detail_section` `:895-943`; lecturas `app/services/inventory.py:228-258`, `:325-368` y `app/services/price_history.py:74-92`. Pruebas en `tests/ui/test_main.py:2964-3579`; corrección I1/I2 en `:3354-3579`; guard estructural `:3486-3518`. **T057:** retiró describe_presentation, describe_movement y describe_price_change al sustituir las listas por tablas; las anclas son históricas y no se reconstruyen.
 - **RF:** RF-09.
 
 ### T046 — Sección Movimientos: filtros y período local
@@ -824,7 +824,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - El historial se consulta por presentación y por producto, en orden cronológico (**C19**), reutilizando la consulta de RF-08 (T034), **sin** herramienta nueva del agente.
   - La sección funciona sin modelo configurado (**C20**).
   - Un producto sin cambios informa el vacío explícitamente (**C4**).
-- **Evidencia de implementación (revisión independiente):** `app/ui/sections/price_history.py` — `render_product_filter` `:119-149`, `render_presentation_filter` `:152-187`, `render_price_history` `:200-230`, error `:233-241`; composición en `app/ui/main.py` — `price_history_section` `:1059-1126`, registro `:1211`; lecturas `app/services/price_history.py:54-92`. Pruebas en `tests/ui/test_main.py:5197-5701` (14 casos) y guards `:5657-5701`.
+- **Evidencia de implementación (revisión independiente):** `app/ui/sections/price_history.py` — `render_product_filter` `:119-149`, `render_presentation_filter` `:152-187`, `render_price_history` `:200-230`, error `:233-241`; composición en `app/ui/main.py` — `price_history_section` `:1059-1126`, registro `:1211`; lecturas `app/services/price_history.py:54-92`. Pruebas en `tests/ui/test_main.py:5197-5701` (14 casos) y guards `:5657-5701`. **T057:** sustituyó la presentación de texto por una tabla y ya no reutiliza describe_price_change; la referencia D5 es histórica.
 - **RF:** RF-09.
 
 ### T048 — Sección Asistente IA
@@ -946,13 +946,38 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 - **Estado:** Pendiente.
 - **Objetivo:** vincular cada criterio de RF-09 con evidencia identificable y registrar el estado de la fase en `MEMORY.md`.
 - **Archivos previstos:** `specs/001-inventory-core/tasks.md` (matriz de trazabilidad), `MEMORY.md`.
-- **Dependencias:** todas las anteriores (T039–T055).
+- **Dependencias:** todas las anteriores (T039–T055 y T057).
 - **Pruebas:** ejecución de la suite (`pytest`) y actualización de la matriz de trazabilidad, con separación entre lo **reportado** y lo verificado de forma independiente.
 - **Criterios de aceptación:**
   - La matriz incorpora los criterios de RF-09 (C1–C22) con evidencia `archivo:caso` o, cuando corresponda, `sin evidencia conductual (ausencia estructural)` (**C22**).
   - Cada sección declara la fuente de sus datos (**C22**).
   - `MEMORY.md` se actualiza al cierre de la fase con el estado, las decisiones de la Fase 7 y los próximos pasos, **sin** secretos ni credenciales y manteniendo su extensión objetivo.
   - La verificación por ejecución se distingue de la reportada; **no** se declara probado lo no ejecutado.
+- **RF:** RF-09.
+
+### T057 — Rediseño visual integral de la interfaz
+
+- **Fase:** 7.
+- **Estado:** Pendiente.
+- **Tipo:** transversal; se ejecuta **antes de T048** y no implementa funcionalidad de T048–T056.
+- **Objetivo:** mejorar de forma integral y coherente la presentación visual de las secciones ya implementadas de la interfaz Streamlit, con componentes nativos y un tema claro y neutro, y dejar convenciones reutilizables para las secciones futuras.
+- **Archivos previstos:** `.streamlit/config.toml` (nuevo), `app/ui/formatting.py`, `app/ui/main.py`, `app/ui/sections/home.py`, `app/ui/sections/products.py`, `app/ui/sections/product_detail.py`, `app/ui/sections/movements.py`, `app/ui/sections/price_history.py`, `app/ui/sections/proposals.py`, `tests/ui/test_main.py`, `docs/ui-guidelines.md` (nuevo). El alcance final se verificará durante la implementación. **No** se modifican `app/ui/sections/assistant.py`, `operations.py`, servicios, dominio, infraestructura ni `app/tools/**`.
+- **Dependencias:** T041, T042, T043, T044, T045, T046, T047.
+- **Decisiones aprobadas:** **D1** rediseñar las secciones existentes y fijar convenciones reutilizables; **D2** `st.dataframe` en Productos, Movimientos e Historial de precios cuando mejore la lectura, y texto para alertas y estados vacíos; **D3** helpers compartidos solo si eliminan duplicación real; **D4** badges Markdown testeables; **D5** conservar exactamente las siete etiquetas y el comportamiento actual; **D6** incluir `.streamlit/config.toml`; **D7** crear `docs/ui-guidelines.md` breve.
+- **Pruebas:** pruebas de interfaz actualizadas y nuevas, regresiones funcionales y checklist visual manual en 1440, 1024 y 768 píxeles.
+- **Criterios de aceptación:**
+  - El tema nativo claro/neutro se aplica desde `.streamlit/config.toml`, sin CSS personalizado.
+  - `st.set_page_config()` se conserva correctamente (título, icono Material, layout ancho y sidebar) como primera llamada `st.*`.
+  - La navegación conserva exactamente las siete etiquetas, la sección activa y «Asistente» como sección predeterminada.
+  - Inicio muestra métricas con datos reales (activos e inactivos) y las alertas, sin valores inventados.
+  - La jerarquía, el espaciado y la agrupación son coherentes en todas las secciones existentes.
+  - Tablas y listados son consistentes (Productos, Detalle, Movimientos e Historial) con `st.dataframe` donde corresponda. Los badges Markdown de estado se usan en contextos que los renderizan (como la cabecera del detalle); en las celdas de `st.dataframe` el estado va como texto plano.
+  - Se preservan formatos locales, filtros, orden del servicio, avisos C8, estados vacío/error/advertencia y reglas funcionales.
+  - No hay escrituras ni cambios de comportamiento; `.confirm(` sigue en 1; no se añaden herramientas ni dependencias.
+  - Las pruebas automatizadas y las regresiones quedan en verde; el checklist visual manual y su estado quedan documentados.
+  - La interfaz es adaptable a 1440, 1024 y 768 píxeles sin desbordes horizontales.
+  - T048–T056 permanecen pendientes y sin implementar.
+- **Nota de implementación y trazabilidad (T057):** la implementación está presente en el árbol de trabajo, **sin cerrar**; las correcciones B1 e I1–I5 están aplicadas. El checklist y su estado se documentan en `docs/ui-guidelines.md`; la verificación visual real a 1440, 1024 y 768 px queda pendiente por falta de navegador. T057 modificó `tests/ui/test_main.py`: las anclas de T044–T047 y la matriz C22 son históricas y deberán regenerarse en T056; no se reconstruyen aquí. T057 retiró los helpers citados (`describe_presentation`, `describe_movement`, `describe_price_change`, `BASE_PRESENTATION_LABEL` y `YES_TEXT`); las referencias de T045/T047 se conservan como históricas.
 - **RF:** RF-09.
 
 ## Matriz de trazabilidad

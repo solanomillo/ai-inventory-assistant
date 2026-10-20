@@ -14,8 +14,10 @@ vista no las recalcula ni reordena las listas, y conserva el orden en que las
 devuelve el servicio (D-3). Cada lista vacía informa su propio estado, con
 independencia de la otra (D-2, C4), y un catálogo vacío se informa de forma
 explícita sin presentar conteos cero (D-5). El formateo unificado de T042 queda
-fuera de esta vista (D-6): los enteros se muestran tal cual. La vinculación de
-C22 con sus pruebas se completa en la trazabilidad de la Fase 7.
+fuera de esta vista (D-6): los enteros se muestran tal cual. La presentación
+usa solo componentes nativos —métricas en dos columnas y un contenedor con
+borde por lista— sin CSS ni HTML (T057). La vinculación de C22 con sus pruebas
+se completa en la trazabilidad de la Fase 7.
 """
 
 from __future__ import annotations
@@ -102,20 +104,22 @@ def _render_alert_list(
 
     El orden de las alertas es el que devolvió el servicio: la vista no las
     reordena (D-3). Una lista vacía muestra su propio mensaje, sin depender de
-    que la otra lista tenga datos (D-2).
+    que la otra lista tenga datos (D-2). La lista se agrupa en un contenedor
+    con borde (T057), sin alterar su contenido.
 
     Args:
         header: Encabezado de la lista.
         empty_message: Mensaje explícito para la lista vacía.
         alerts: Alertas ya consultadas, en el orden del servicio.
     """
-    st.subheader(header)
-    if not alerts:
-        st.info(empty_message)
-        return
+    with st.container(border=True):
+        st.subheader(header)
+        if not alerts:
+            st.info(empty_message)
+            return
 
-    for alert in alerts:
-        st.markdown(f"- {describe_stock_alert(alert)}")
+        for alert in alerts:
+            st.markdown(f"- {describe_stock_alert(alert)}")
 
 
 def render_home(
@@ -130,9 +134,10 @@ def render_home(
     Los productos llegan de una única lectura pública del servicio de
     inventario y los conteos se derivan de esa misma lectura (D-4). Cuando el
     catálogo está vacío se informa explícitamente y no se muestran conteos cero
-    (D-5). Las alertas se presentan con nombre, SKU, total equivalente y
-    faltante (D-7), sin deduplicar los productos que aparecen en ambas listas y
-    sin recalcular sus valores.
+    (D-5). Los conteos se presentan como métricas nativas en dos columnas, con
+    los valores enteros reales (T057). Las alertas se presentan con nombre,
+    SKU, total equivalente y faltante (D-7), sin deduplicar los productos que
+    aparecen en ambas listas y sin recalcular sus valores.
 
     Args:
         products: Productos del catálogo, activos e inactivos, en el orden del
@@ -146,8 +151,11 @@ def render_home(
     else:
         active = sum(1 for product in products if product.active)
         inactive = len(products) - active
-        st.markdown(f"{ACTIVE_PRODUCTS_LABEL}: {active}")
-        st.markdown(f"{INACTIVE_PRODUCTS_LABEL}: {inactive}")
+        active_column, inactive_column = st.columns(2)
+        with active_column:
+            st.metric(ACTIVE_PRODUCTS_LABEL, active)
+        with inactive_column:
+            st.metric(INACTIVE_PRODUCTS_LABEL, inactive)
 
     _render_alert_list(
         LOW_STOCK_HEADER,
