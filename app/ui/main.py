@@ -7,8 +7,14 @@ si corresponde, prepara una propuesta pendiente.
 
 Alcance de T024: revisar y confirmar propuestas. La propuesta pendiente se
 muestra en la conversación y el usuario la confirma con un botón propio de la
-interfaz, fuera del chat: la confirmación no pasa por el LLM. La edición de
-propuestas queda fuera de este alcance.
+interfaz, fuera del chat: la confirmación no pasa por el LLM.
+
+Alcance de T051 (RF-09): una propuesta pendiente se puede editar antes de
+confirmarla, desde su propio formulario en «Propuestas pendientes». La edición
+se aplica con `ProposalService.edit` —que exige el estado pendiente y conserva
+la acción— y reemplaza solo la referencia de la propuesta en su origen de
+sesión: la lista manual o el turno del asistente. Editar no escribe el
+inventario; una propuesta confirmada no se edita.
 
 Alcance de T035 (RF-08): el cambio de precio se muestra con la presentación
 afectada, su precio vigente y el precio nuevo, junto con el historial de
@@ -42,7 +48,9 @@ ofrece las siete secciones de RF-09 en el sidebar, con «Asistente» por defecto
 Se renderiza **solo** la sección seleccionada: el asistente conserva la
 conversación y la confirmación vigentes y su presentación interactiva vive en
 `app/ui/sections/assistant.py` (T048); «Propuestas pendientes» se renderiza
-desde `app/ui/sections/proposals.py`, una vista que no confirma; «Inicio» se
+desde `app/ui/sections/proposals.py`, una vista que no confirma y que presenta
+la revisión legible de cada propuesta pendiente y su formulario de edición
+(T050, T051); «Inicio» se
 renderiza desde `app/ui/sections/home.py` y consulta sus datos de forma
 perezosa, solo al mostrarse; «Productos» se renderiza desde
 `app/ui/sections/products.py` y también lee de forma perezosa, con búsqueda
@@ -51,11 +59,34 @@ exacta y filtro de estado (T044); «Movimientos» se renderiza desde
 producto elegido, con filtros de tipo y de período local (T046); «Historial de
 precios» se renderiza desde `app/ui/sections/price_history.py` y consulta de
 forma perezosa el historial del producto o de una presentación concreta
-(T047); y la sección que la Fase 7 todavía no implementó muestra un aviso
-explícito de que está pendiente, sin leer ningún servicio, de modo que **no**
-presenta un dato ausente como un valor real (C4).
+(T047); y «Operaciones» se renderiza desde `app/ui/sections/operations.py`, con
+un formulario por cada acción admitida (T049). Ninguna sección queda pendiente:
+todas presentan sus datos o un estado explícito y **no** presentan un dato
+ausente como un valor real (C4).
 Sin modelo, la aplicación **no** se abstiene: la sección del asistente informa
 su indisponibilidad y el resto de las secciones sigue accesible.
+
+Formularios de propuestas (T049, C10–C12): «Operaciones» ofrece un formulario
+por cada acción admitida —incluido el alta de una presentación nueva con su
+factor— y **ninguno** para desactivar productos ni para cambiar el factor de
+una presentación existente. Enviar un formulario válido crea una propuesta
+pendiente con `ProposalService.create`, que no escribe, y la guarda en
+`st.session_state` bajo `MANUAL_PROPOSALS_KEY`, en el orden en que se creó. La
+vista de `app/ui/sections/operations.py` no consulta servicios, no confirma, no
+usa `st.session_state` y no escribe: las propuestas manuales se concatenan con
+las del asistente en «Propuestas pendientes», sin fusionarlas ni
+deduplicarlas.
+
+Revisión legible de propuestas (T050, C13): «Propuestas pendientes» muestra
+solo las propuestas pendientes —las del asistente y las manuales, concatenadas—
+con la acción en lenguaje legible y sus campos. El cambio de precio incluye la
+presentación afectada con su id y su factor, el precio vigente y el precio
+nuevo; si la presentación ya no existe se informa el motivo y no se inventa un
+precio vigente. Los precios se resuelven con el servicio de presentaciones de
+la sesión, como máximo una consulta por presentación en cada render, de modo
+que la sección funciona también con propuestas manuales y sin modelo. La
+revisión solo presenta: la confirmación sigue en su único punto, en
+`confirm_pending`.
 
 Configuración y ejecución (desde la raíz del repositorio, con el entorno
 virtual instalado y las variables `DEEPSEEK_API_KEY` y `DEEPSEEK_MODEL`
@@ -84,9 +115,10 @@ el historial, las propuestas ni los resultados de confirmación.
 Lógica testeable: `build_session`, `build_assistant`, `answer`,
 `describe_proposal`, `describe_price_update`, `describe_price_history`,
 `describe_result`, `describe_turn`, `confirm_pending`, `pending_proposals`,
+`manual_proposals`, `locate_proposal`, `edit_proposal`,
 `home_section`,
 `products_section`, `product_detail_section`, `movements_section`,
-`price_history_section` y `section_renderers` no dependen
+`price_history_section`, `operations_section` y `section_renderers` no dependen
 del runtime de Streamlit, de modo que las pruebas puedan inyectar un modelo
 falso y una conexión en memoria, sin red y sin DeepSeek.
 """
@@ -109,6 +141,8 @@ from app.schemas.proposals import (
     ConfirmationResult,
     PriceUpdatePayload,
     Proposal,
+    ProposalAction,
+    ProposalPayload,
     ProposalStatus,
 )
 from app.services.inventory import InventoryService
@@ -120,7 +154,7 @@ from app.services.ports import (
 )
 from app.services.presentations import PresentationService
 from app.services.price_history import PriceHistoryService
-from app.services.proposals import ProposalService
+from app.services.proposals import ProposalError, ProposalService
 from app.tools.inventory_tools import create_inventory_tools
 from app.tools.proposal_tools import create_proposal_tools
 from app.ui.sections.assistant import (
@@ -143,6 +177,24 @@ from app.ui.sections.movements import (
     render_movements,
     render_movements_error,
     render_movements_header,
+)
+from app.ui.sections.operations import (
+    render_action_selector,
+    render_aperture_form,
+    render_closed_entry_form,
+    render_closed_exit_form,
+    render_compensation_form,
+    render_created_proposal,
+    render_empty_catalog as render_empty_operations_catalog,
+    render_empty_presentations as render_empty_operations_presentations,
+    render_loose_entry_form,
+    render_loose_exit_form,
+    render_operations_header,
+    render_presentation_registration_form,
+    render_price_update_form,
+    render_product_registration_form,
+    render_product_selector as render_operations_product_selector,
+    render_product_update_form,
 )
 from app.ui.sections.price_history import (
     render_empty_catalog as render_empty_price_history_catalog,
@@ -171,17 +223,25 @@ from app.ui.sections.products import (
     render_product_controls,
     render_products,
 )
-from app.ui.sections.proposals import render_pending_proposals
+from app.ui.sections.proposals import (
+    PENDING_PROPOSAL_NOTE,
+    PresentationPriceView,
+    ProposalReview,
+    describe_price_update_fields,
+    render_pending_proposals,
+)
 from app.ui.session import SESSION_KEY, SessionResources, build_session
 
 ASSISTANT_KEY: str = "inventory_assistant"
 # Clave de `st.session_state` donde vive el asistente de la sesión (D7).
 
-PENDING_PROPOSAL_NOTE: str = (
-    "La propuesta queda pendiente: no se ejecutó ninguna operación y la "
-    "confirmación es tuya."
-)
-# Aviso de la propuesta pendiente: nada se ejecutó todavía (D5).
+MANUAL_PROPOSALS_KEY: str = "manual_proposals"
+# Clave de `st.session_state` de las propuestas preparadas con los formularios
+# de «Operaciones», en el orden en que se crearon (T049). No se persisten.
+
+# `PENDING_PROPOSAL_NOTE` se reexporta desde `app.ui.sections.proposals` (T050):
+# la conversación y la sección de propuestas comparten un único aviso de que
+# nada se ejecutó todavía (D5).
 
 ALREADY_CONFIRMED_MESSAGE: str = (
     "La propuesta ya está confirmada: no se volvió a ejecutar ninguna "
@@ -193,6 +253,11 @@ NO_PENDING_PROPOSAL_MESSAGE: str = (
     "El turno no tiene una propuesta pendiente que confirmar."
 )
 # Motivo devuelto cuando el turno no tiene propuesta pendiente (T024).
+
+PROPOSAL_NOT_AVAILABLE_MESSAGE: str = (
+    "La propuesta ya no está disponible en la sesión: no se editó nada."
+)
+# Motivo devuelto al editar una propuesta que ya no se puede localizar (T051).
 
 SECTION_KEY: str = "inventory_section"
 # Clave de `st.session_state` de la sección elegida en la navegación (T041).
@@ -227,6 +292,24 @@ class Turn:
 
     user_message: str
     state: GraphState
+
+
+@dataclass(frozen=True)
+class ProposalSlot:
+    """
+    Ubicación de una propuesta dentro de la sesión, por identidad (T051).
+
+    Conserva la propuesta encontrada y la operación que reemplaza solo esa
+    referencia: la entrada de la lista manual o el `pending_proposal` de un
+    turno del asistente. No usa la igualdad de Pydantic ni un índice combinado,
+    de modo que dos propuestas idénticas se distinguen por objeto.
+    """
+
+    proposal: Proposal
+    """Propuesta encontrada en la sesión."""
+
+    replace: Callable[[Proposal], None]
+    """Reemplaza solo la referencia encontrada por la propuesta editada."""
 
 
 @dataclass
@@ -362,6 +445,43 @@ def _format_price(value: Decimal) -> str:
     return f"{value:.2f}"
 
 
+def _presentation_price_view(
+    service: PresentationService,
+    presentation_id: int,
+    cache: dict[int, PresentationPriceView | None],
+) -> PresentationPriceView | None:
+    """
+    Resuelve el precio vigente de una presentación para revisarla (T050).
+
+    Convierte el registro real en el valor de presentación de la vista y
+    captura `RecordNotFoundError`: la ausencia se informa en la revisión como un
+    motivo explícito y nunca como un precio inventado. El caché es local al
+    render y evita consultar dos veces la misma presentación.
+
+    Args:
+        service: Servicio de lectura de presentaciones de la sesión.
+        presentation_id: Presentación cuyo precio vigente se va a mostrar.
+        cache: Resultados ya resueltos en este render, por identificador.
+
+    Returns:
+        La presentación con su precio vigente, o `None` si no existe.
+    """
+    if presentation_id not in cache:
+        try:
+            record = service.get_presentation(presentation_id)
+        except RecordNotFoundError:
+            cache[presentation_id] = None
+        else:
+            cache[presentation_id] = PresentationPriceView(
+                id=record.id,
+                name=record.name,
+                factor=record.factor,
+                sale_price=record.sale_price,
+            )
+
+    return cache[presentation_id]
+
+
 def describe_price_update(assistant: Assistant, proposal: Proposal) -> str:
     """
     Describe el cambio de precio propuesto con sus precios reales (T035).
@@ -370,7 +490,9 @@ def describe_price_update(assistant: Assistant, proposal: Proposal) -> str:
     mostrar la propuesta —sin ejecutar nada— y agrega el precio nuevo tal como
     quedó declarado, formateado con dos decimales. Si la presentación ya no
     existe, se muestra un motivo explícito en lugar de un dato ausente; una
-    propuesta de otra acción se describe con `describe_proposal`.
+    propuesta de otra acción se describe con `describe_proposal`. El detalle de
+    los campos se delega en `describe_price_update_fields` para que la
+    conversación y la sección de propuestas (T050) muestren lo mismo.
 
     Args:
         assistant: Recursos de la sesión.
@@ -389,24 +511,15 @@ def describe_price_update(assistant: Assistant, proposal: Proposal) -> str:
         f"Propuesta de cambio de precio: `{proposal.action.value}` "
         f"({proposal.status.value})"
     ]
-    try:
-        presentation = assistant.presentation_service.get_presentation(
-            payload.presentation_id
-        )
-    except RecordNotFoundError:
-        lines.append(
-            "- presentación: no existe la presentación con id "
-            f"{payload.presentation_id}"
-        )
-    else:
-        lines.append(
-            f"- presentación: {presentation.name} "
-            f"(id {presentation.id}, factor {presentation.factor})"
-        )
-        lines.append(
-            f"- precio vigente: {_format_price(presentation.sale_price)}"
-        )
-    lines.append(f"- precio nuevo: {_format_price(payload.new_price)}")
+    presentation = _presentation_price_view(
+        assistant.presentation_service,
+        payload.presentation_id,
+        {},
+    )
+    lines.extend(
+        f"- {line}"
+        for line in describe_price_update_fields(proposal, presentation)
+    )
     if proposal.status is ProposalStatus.PENDING:
         lines.append(PENDING_PROPOSAL_NOTE)
 
@@ -606,29 +719,163 @@ def _assistant_actions(assistant: Assistant) -> AssistantActions:
 
 def pending_proposals(assistant: Assistant | None) -> list[Proposal]:
     """
-    Reúne las propuestas que la conversación tiene en su estado (T041).
+    Reúne las propuestas pendientes de la conversación (T041, T050).
 
     Es una lectura pura del historial: no confirma, no edita, no descarta y no
     escribe. Cada turno conserva la propuesta que el asistente preparó en
-    `pending_proposal` —pendiente o ya confirmada, con el estado real— y este
-    helper no la transforma.
+    `pending_proposal`, pendiente o ya confirmada, con el estado real; solo se
+    reúnen las que siguen pendientes y el historial no se modifica.
 
     Args:
         assistant: Recursos de la sesión, o `None` si el asistente no se
             compuso porque el modelo no está configurado.
 
     Returns:
-        Las propuestas de los turnos, en el orden en que se prepararon, o una
-        lista vacía cuando no hay asistente.
+        Las propuestas pendientes de los turnos, en el orden en que se
+        prepararon, o una lista vacía cuando no hay asistente.
     """
     if assistant is None:
         return []
 
-    return [
-        turn.state["pending_proposal"]
-        for turn in assistant.history
-        if turn.state["pending_proposal"] is not None
-    ]
+    pending: list[Proposal] = []
+    for turn in assistant.history:
+        proposal = turn.state["pending_proposal"]
+        if proposal is not None and proposal.status is ProposalStatus.PENDING:
+            pending.append(proposal)
+
+    return pending
+
+
+def manual_proposals() -> list[Proposal]:
+    """
+    Reúne las propuestas creadas con los formularios de «Operaciones» (T049).
+
+    Es una colección ordenada propia de la sesión: conserva cada propuesta en
+    el orden en que se creó, sin persistirla y sin deduplicarla por igualdad
+    con otras propuestas. No confirma, no edita, no descarta y no escribe.
+
+    Returns:
+        La lista de las propuestas manuales de la sesión, que se crea vacía la
+        primera vez y se conserva entre ejecuciones de la interfaz.
+    """
+    stored = st.session_state.get(MANUAL_PROPOSALS_KEY)
+    if stored is None:
+        stored = []
+        st.session_state[MANUAL_PROPOSALS_KEY] = stored
+
+    return stored
+
+
+def locate_proposal(
+    assistant: Assistant | None,
+    key: int,
+) -> ProposalSlot | None:
+    """
+    Localiza una propuesta de la sesión por identidad de objeto (T051).
+
+    Busca primero en la colección manual —la que crean los formularios de
+    «Operaciones»— y, si no está, en el historial del asistente, en el
+    `pending_proposal` de cada turno. La comparación usa `id(proposal)`: no
+    recurre a la igualdad de Pydantic ni al índice de una lista combinada, de
+    modo que dos propuestas idénticas se distingan.
+
+    Args:
+        assistant: Recursos de la sesión, o `None` si el asistente no se
+            compuso porque el modelo no está configurado.
+        key: Identidad de la propuesta, tal como la asignó `proposal_section`.
+
+    Returns:
+        La propuesta encontrada junto con la operación que reemplaza solo su
+        referencia, o `None` si ya no está en la sesión.
+    """
+    manual = manual_proposals()
+    for index, proposal in enumerate(manual):
+        if id(proposal) == key:
+            return ProposalSlot(
+                proposal=proposal,
+                replace=_manual_proposal_replacer(manual, index),
+            )
+
+    if assistant is None:
+        return None
+
+    for turn in assistant.history:
+        proposal = turn.state["pending_proposal"]
+        if proposal is not None and id(proposal) == key:
+            return ProposalSlot(
+                proposal=proposal,
+                replace=_turn_proposal_replacer(turn),
+            )
+
+    return None
+
+
+def edit_proposal(
+    assistant: Assistant | None,
+    session: SessionResources,
+    key: int,
+    payload: ProposalPayload,
+) -> str | None:
+    """
+    Edita una propuesta pendiente y reemplaza solo su referencia (T051, C14).
+
+    La edición la valida y la construye `ProposalService.edit`: exige que la
+    propuesta siga pendiente y rechaza un payload de otra acción. El servicio
+    no escribe el inventario y devuelve una propuesta nueva; esta interfaz
+    reemplaza únicamente la referencia localizada, sin tocar las demás
+    propuestas de la sesión. Si la propuesta ya no está —por ejemplo, porque
+    se confirmó o se retiró entre el render y el envío—, se devuelve un motivo
+    explícito sin modificar nada.
+
+    Args:
+        assistant: Recursos de la sesión, o `None` si no hay asistente.
+        session: Contenedor de lectura de la sesión, con el servicio de
+            propuestas.
+        key: Identidad de la propuesta que se edita.
+        payload: Payload editado y validado, con la misma acción.
+
+    Returns:
+        `None` si la referencia se reemplazó, o el motivo por el que no se
+        editó: la propuesta ya no está disponible, dejó de estar pendiente o el
+        payload cambió su acción.
+    """
+    slot = locate_proposal(assistant, key)
+    if slot is None:
+        return PROPOSAL_NOT_AVAILABLE_MESSAGE
+
+    try:
+        edited = session.proposal_service.edit(slot.proposal, payload)
+    except ProposalError as error:
+        return str(error)
+
+    slot.replace(edited)
+
+    return None
+
+
+def _manual_proposal_replacer(
+    manual: list[Proposal],
+    index: int,
+) -> Callable[[Proposal], None]:
+    """Devuelve la operación que reemplaza una propuesta manual (T051)."""
+
+    def replace(edited: Proposal) -> None:
+        """Reemplaza solo la entrada localizada de la lista manual."""
+        manual[index] = edited
+
+    return replace
+
+
+def _turn_proposal_replacer(
+    turn: Turn,
+) -> Callable[[Proposal], None]:
+    """Devuelve la operación que reemplaza la propuesta de un turno (T051)."""
+
+    def replace(edited: Proposal) -> None:
+        """Reemplaza solo la propuesta pendiente del turno localizado."""
+        turn.state["pending_proposal"] = edited
+
+    return replace
 
 
 def pending_section(section: str) -> Callable[[], None]:
@@ -1055,27 +1302,196 @@ def _presentation_names(
     }
 
 
-def proposal_section(assistant: Assistant | None) -> Callable[[], None]:
+def operations_section(session: SessionResources) -> Callable[[], None]:
     """
-    Construye el renderer de la sección «Propuestas pendientes» (T041, C13).
+    Construye el renderer de la sección «Operaciones» (T049, C10–C12).
+
+    La sección ofrece un formulario por acción admitida. Las lecturas son
+    perezosas: al construir el renderer no se consulta nada y, al mostrar el
+    formulario, esta interfaz —y no la vista— lee los productos, las
+    presentaciones o los movimientos que el formulario necesita. Solo cuando un
+    formulario devuelve un payload validado se crea la propuesta pendiente con
+    `ProposalService.create`, que no escribe, y se conserva en la colección
+    manual de la sesión. La vista de `app.ui.sections.operations` no consulta
+    servicios, no confirma y no escribe.
+
+    Args:
+        session: Contenedor de lectura de la sesión, con el servicio de
+            inventario y el servicio de propuestas.
+
+    Returns:
+        El renderer sin argumentos de la sección de operaciones.
+    """
+
+    def render() -> None:
+        """Muestra los formularios y crea la propuesta enviada (T049)."""
+        render_operations_header()
+        action = render_action_selector()
+        payload = _operation_payload(session.inventory_service, action)
+        if payload is None:
+            return
+
+        proposal = session.proposal_service.create(payload)
+        manual_proposals().append(proposal)
+        render_created_proposal(action)
+
+    return render
+
+
+def _operation_payload(
+    inventory: InventoryService,
+    action: ProposalAction,
+) -> ProposalPayload | None:
+    """
+    Consulta los datos del formulario elegido y devuelve su payload (T049).
+
+    El alta de producto no requiere catálogo. Las demás acciones exigen un
+    producto elegido y, cuando el formulario lo necesita, esta interfaz lee sus
+    presentaciones o su historial de movimientos. La lectura del historial de
+    la compensación no evalúa la cantidad compensable ni la disponibilidad: esa
+    revalidación queda para la confirmación.
+
+    Args:
+        inventory: Servicio de consultas de la sesión.
+        action: Acción cuyo formulario se muestra.
+
+    Returns:
+        El payload validado del formulario enviado, o `None` mientras no se
+        envíe ninguno válido.
+    """
+    if action is ProposalAction.PRODUCT_REGISTRATION:
+        return render_product_registration_form()
+
+    products = inventory.list_products()
+    if not products:
+        render_empty_operations_catalog(action)
+        return None
+
+    product = render_operations_product_selector(products)
+    if product is None:
+        return None
+
+    if action is ProposalAction.PRODUCT_UPDATE:
+        return render_product_update_form(product)
+    if action is ProposalAction.PRESENTATION_REGISTRATION:
+        return render_presentation_registration_form(product)
+    if action is ProposalAction.LOOSE_ENTRY:
+        return render_loose_entry_form(product)
+    if action is ProposalAction.LOOSE_EXIT:
+        return render_loose_exit_form(product)
+    if action is ProposalAction.COMPENSATION:
+        return render_compensation_form(
+            product,
+            inventory.get_movement_history(product.id),
+        )
+
+    presentations = inventory.get_product_presentations(product.id)
+    if not presentations:
+        render_empty_operations_presentations()
+        return None
+
+    if action is ProposalAction.CLOSED_ENTRY:
+        return render_closed_entry_form(product, presentations)
+    if action is ProposalAction.CLOSED_EXIT:
+        return render_closed_exit_form(product, presentations)
+    if action is ProposalAction.APERTURE:
+        return render_aperture_form(product, presentations)
+    if action is ProposalAction.PRICE_UPDATE:
+        return render_price_update_form(product, presentations)
+
+    return None
+
+
+def proposal_section(
+    assistant: Assistant | None,
+    session: SessionResources,
+) -> Callable[[], None]:
+    """
+    Construye el renderer de la sección «Propuestas pendientes» (T041, T050,
+    T051).
 
     La vista vive en `app.ui.sections.proposals` y solo recibe las propuestas
-    de la sesión: esta interfaz no confirma aquí y conserva su único punto de
-    confirmación en `confirm_pending` (D-A).
+    pendientes de la sesión: las manuales de «Operaciones» —concatenadas con
+    las del asistente, sin fusionarlas ni deduplicarlas (T049)— filtradas por
+    estado pendiente. Esta interfaz resuelve, con el servicio de presentaciones
+    de la sesión, el precio vigente que necesita la revisión de un cambio de precio,
+    de modo que la sección funciona también con propuestas manuales y sin
+    asistente. El precio de cada presentación se consulta como máximo una vez
+    por render. Cada propuesta se identifica por objeto (`key=id(proposal)`) y
+    la edición se delega en `edit_proposal`, que reemplaza solo su referencia y
+    conserva el único punto de confirmación en `confirm_pending` (D-A).
 
     Args:
         assistant: Recursos de la sesión, o `None` si el asistente no se
             compuso porque el modelo no está configurado.
+        session: Contenedor de lectura de la sesión, con el servicio de
+            presentaciones y el de propuestas.
 
     Returns:
         El renderer sin argumentos de la sección de propuestas pendientes.
     """
 
     def render() -> None:
-        """Muestra las propuestas de la conversación (T041)."""
-        render_pending_proposals(pending_proposals(assistant))
+        """Muestra las propuestas pendientes y permite editarlas (T051)."""
+        proposals = [
+            *pending_proposals(assistant),
+            *(
+                proposal
+                for proposal in manual_proposals()
+                if proposal.status is ProposalStatus.PENDING
+            ),
+        ]
+        cache: dict[int, PresentationPriceView | None] = {}
+        reviews = [
+            ProposalReview(
+                proposal=proposal,
+                key=id(proposal),
+                presentation=_review_presentation(
+                    session.presentation_service,
+                    proposal,
+                    cache,
+                ),
+            )
+            for proposal in proposals
+        ]
+        render_pending_proposals(
+            reviews,
+            on_edit=lambda key, payload: edit_proposal(
+                assistant,
+                session,
+                key,
+                payload,
+            ),
+        )
 
     return render
+
+
+def _review_presentation(
+    service: PresentationService,
+    proposal: Proposal,
+    cache: dict[int, PresentationPriceView | None],
+) -> PresentationPriceView | None:
+    """
+    Resuelve la presentación que necesita la revisión de una propuesta (T050).
+
+    Solo el cambio de precio requiere un precio vigente; las demás acciones se
+    revisan con los campos de su payload y no consultan el inventario.
+
+    Args:
+        service: Servicio de lectura de presentaciones de la sesión.
+        proposal: Propuesta pendiente que se va a revisar.
+        cache: Resultados ya resueltos en este render, por identificador.
+
+    Returns:
+        La presentación afectada, o `None` si la propuesta no es un cambio de
+        precio o si la presentación ya no existe.
+    """
+    payload = proposal.payload
+    if not isinstance(payload, PriceUpdatePayload):
+        return None
+
+    return _presentation_price_view(service, payload.presentation_id, cache)
 
 
 def section_renderers(
@@ -1088,12 +1504,12 @@ def section_renderers(
     Registra el renderer de cada sección de la navegación lateral (T041, C1).
 
     El registro cubre exactamente `SECTION_LABELS` y solo se invoca el renderer
-    de la sección seleccionada. «Inicio», «Productos», «Movimientos» e
-    «Historial de precios» reciben la lectura de la sesión y consultan sus
-    datos al renderizarse, no al construir el registro (T043, T044, T046,
-    T047). La sección que la Fase 7 todavía no implementó muestra su aviso de
-    pendiente y **no** lee ningún servicio de la sesión, de modo que no
-    presenta un dato ausente como un valor real (C4).
+    de la sección seleccionada. «Inicio», «Productos», «Movimientos»,
+    «Historial de precios» y «Operaciones» reciben la lectura de la sesión y
+    consultan sus datos al renderizarse, no al construir el registro (T043,
+    T044, T046, T047, T049). Una sección sin implementación mostraría su aviso
+    de pendiente y **no** leería ningún servicio (C4); las siete secciones de
+    RF-09 están implementadas.
 
     Args:
         assistant: Recursos de la sesión, o `None` si el asistente no se
@@ -1110,8 +1526,8 @@ def section_renderers(
     return {
         "Inicio": home_section(session),
         "Productos": products_section(session),
-        "Operaciones": pending_section("Operaciones"),
-        "Propuestas pendientes": proposal_section(assistant),
+        "Operaciones": operations_section(session),
+        "Propuestas pendientes": proposal_section(assistant, session),
         "Movimientos": movements_section(session),
         "Historial de precios": price_history_section(session),
         "Asistente": assistant_section(

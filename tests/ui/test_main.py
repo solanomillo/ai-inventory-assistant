@@ -50,6 +50,13 @@ diferenciados, los avisos C8 sin truncamiento, una lectura de cada servicio sin
 escrituras, el funcionamiento sin modelo y el error de lectura que no se
 presenta como historial vacío.
 
+Cubren la sección de operaciones de T049 sobre RF-09: los formularios de las
+diez acciones admitidas —sin desactivación de productos ni cambio de factor de
+una presentación existente—, la creación de propuestas pendientes sin escribir,
+la colección ordenada de la sesión sin deduplicar, la validación explícita y la
+precisión monetaria con `Decimal`, el funcionamiento sin modelo y los límites
+arquitectónicos de la vista.
+
 Queda fuera de este alcance y corresponde a T025: la validación end-to-end de
 RF-01 a RF-07.
 """
@@ -88,7 +95,22 @@ from app.infrastructure.sqlite.repositories import (
     SqliteProductRepository,
 )
 from app.infrastructure.sqlite.schema import create_schema
-from app.schemas.proposals import Proposal, ProposalStatus
+from app.schemas.proposals import (
+    AperturePayload,
+    ClosedEntryPayload,
+    ClosedExitPayload,
+    CompensationPayload,
+    InitialPresentationPayload,
+    LooseEntryPayload,
+    LooseExitPayload,
+    PresentationRegistrationPayload,
+    PriceUpdatePayload,
+    ProductRegistrationPayload,
+    ProductUpdatePayload,
+    Proposal,
+    ProposalAction,
+    ProposalStatus,
+)
 from app.services import llm as llm_module
 from app.services.inventory import InventoryService
 from app.services.llm import LLMConfigurationError
@@ -117,10 +139,12 @@ from app.ui.main import (
     ASSISTANT_KEY,
     CONFIRMATION_ERROR_PREFIX,
     CONFIRM_LABEL,
+    MANUAL_PROPOSALS_KEY,
     NO_PENDING_PROPOSAL_MESSAGE,
     NO_RESPONSE_MESSAGE,
     PENDING_PROPOSAL_NOTE,
     PROCESSING_KEY,
+    PROPOSAL_NOT_AVAILABLE_MESSAGE,
     SECTION_LABELS,
     SECTION_PENDING_MESSAGE,
     Assistant,
@@ -129,6 +153,8 @@ from app.ui.main import (
     confirm_pending,
     describe_price_update,
     describe_proposal,
+    edit_proposal,
+    locate_proposal,
     section_renderers,
 )
 from app.ui.sections.home import (
@@ -141,7 +167,15 @@ from app.ui.sections.home import (
     LOW_STOCK_HEADER,
     REPLENISHMENT_HEADER,
 )
-from app.ui.sections.proposals import EMPTY_PROPOSALS_MESSAGE
+from app.ui.sections.proposals import (
+    EDIT_SUBMIT_LABEL,
+    EMPTY_PROPOSALS_MESSAGE,
+    NO_INITIAL_PRESENTATIONS_MESSAGE,
+    PresentationPriceView,
+    ProposalReview,
+    describe_price_update_fields,
+    describe_proposal_review,
+)
 from app.ui.sections.product_detail import (
     APPLIED_PRICE_LABEL,
     BASE_COLUMN_LABEL,
@@ -203,6 +237,35 @@ from app.ui.sections.movements import (
     NO_SELECTION_MESSAGE as NO_MOVEMENT_SELECTED_MESSAGE,
     PRODUCT_FILTER_LABEL,
     START_DATE_LABEL,
+)
+from app.ui.sections.operations import (
+    ACTION_SELECTOR_KEY,
+    BASE_PRICE_FIELD_LABEL,
+    BASE_UNIT_FIELD_LABEL,
+    COMPENSATION_NOTE,
+    COST_FIELD_LABEL,
+    EMPTY_CATALOG_TEMPLATE as EMPTY_OPERATIONS_CATALOG_TEMPLATE,
+    EMPTY_MOVEMENTS_MESSAGE as EMPTY_OPERATIONS_MOVEMENTS_MESSAGE,
+    FACTOR_FIELD_LABEL,
+    INITIAL_CLOSED_STOCK_LABEL,
+    INITIAL_PRESENTATION_NAME_LABEL,
+    MOVEMENT_SELECTOR_KEY_TEMPLATE,
+    MOVEMENT_SELECTOR_LABEL,
+    NAME_FIELD_LABEL,
+    NEW_MINIMUM_STOCK_LABEL,
+    NEW_NAME_LABEL,
+    NEW_PRICE_LABEL,
+    PRESENTATION_PRICE_LABEL,
+    PRESENTATION_SELECTOR_KEY_TEMPLATE,
+    PRODUCT_SELECTOR_KEY,
+    QUANTITY_FIELD_LABEL,
+    REASON_FIELD_LABEL,
+    SKU_FIELD_LABEL,
+    SUBMIT_LABEL,
+    UPDATE_WITHOUT_CHANGE_MESSAGE,
+    OperationValidationError,
+    parse_money,
+    parse_optional_money,
 )
 from app.ui.sections.products import (
     ACTIVE_STATUS,
@@ -266,6 +329,9 @@ MOVEMENTS_SECTION_PATH: Path = SECTIONS_PATH / "movements.py"
 PRICE_HISTORY_SECTION_PATH: Path = SECTIONS_PATH / "price_history.py"
 """Módulo de la vista de la sección «Historial de precios» (T047)."""
 
+OPERATIONS_SECTION_PATH: Path = SECTIONS_PATH / "operations.py"
+"""Módulo de la vista de la sección «Operaciones» (T049)."""
+
 SECTION_LABELS_EXPECTED: tuple[str, ...] = (
     "Inicio",
     "Productos",
@@ -280,8 +346,31 @@ SECTION_LABELS_EXPECTED: tuple[str, ...] = (
 DEFAULT_SECTION_LABEL: str = "Asistente"
 """Sección que la interfaz muestra al abrirse, sin elegir otra (T041, C20)."""
 
-PENDING_SECTIONS: tuple[str, ...] = ("Operaciones",)
-"""Secciones de RF-09 todavía pendientes en la Fase 7 (T041, T047)."""
+PENDING_SECTIONS: tuple[str, ...] = ()
+"""Secciones de RF-09 todavía pendientes en la Fase 7 (T041, T049).
+
+«Operaciones» dejó de estar pendiente al implementarse T049: las siete
+secciones de la navegación presentan sus datos o su estado explícito.
+"""
+
+OPERATION_ACTION_LABELS: tuple[tuple[str, str], ...] = (
+    ("alta_producto", "Alta de producto"),
+    ("modificacion_producto", "Modificación de producto"),
+    ("alta_presentacion", "Alta de presentación"),
+    ("entrada_suelta", "Entrada de unidades sueltas"),
+    ("entrada_cerrada", "Entrada de presentaciones cerradas"),
+    ("salida_suelta", "Salida de unidades sueltas"),
+    ("salida_cerrada", "Salida de presentaciones cerradas"),
+    ("apertura", "Apertura de presentaciones"),
+    ("compensacion", "Compensación de un movimiento"),
+    ("cambio_precio", "Cambio de precio"),
+)
+"""Las diez acciones admitidas por las propuestas, con su nombre en la vista.
+
+Se declaran como tupla literal —no desde las constantes de la aplicación— para
+que la prueba verifique el alcance de RF-09 y no una comprobación tautológica
+(C10, T049).
+"""
 
 FORBIDDEN_SECTION_IMPORTS: tuple[str, ...] = (
     "app.infrastructure",
@@ -1804,11 +1893,12 @@ def test_the_pending_proposals_section_shows_the_action_and_the_status(
     catalog: Catalog,
 ) -> None:
     """
-    Verifica la vista mínima de las propuestas sin confirmar (C13, T041).
+    Verifica la vista de las propuestas sin confirmar (C13, T041, T050).
 
-    La sección muestra la acción y el estado reales de la propuesta preparada
-    por el asistente, sin ofrecer la confirmación —que sigue siendo exclusiva
-    del único punto de `main.py` (D-A)— y sin volcar el payload (D-C).
+    La sección muestra la acción en lenguaje legible, su estado real y los
+    campos de la propuesta —en lugar del volcado genérico del payload—, sin
+    ofrecer la confirmación —que sigue siendo exclusiva del único punto de
+    `main.py` (D-A)—.
     """
     assistant = make_assistant(
         connection,
@@ -1838,24 +1928,42 @@ def test_the_pending_proposals_section_shows_the_action_and_the_status(
     ]
     assert f"`{proposal.action.value}`" in rendered
     assert f"`{proposal.status.value}`" in rendered
+    assert "Acción: Entrada de unidades sueltas" in rendered
+    assert f"Producto (id {catalog.product.id})" in rendered
+    assert "Cantidad: 3" in rendered
+    assert "Motivo: Compra" in rendered
+    assert f"Costo: {ABSENT_MARKER}" in rendered
     assert "- quantity" not in rendered
-    assert len(app.button) == 0
+    assert "- reason" not in rendered
+    assert [button.label for button in app.button] == [EDIT_SUBMIT_LABEL]
+    assert CONFIRM_LABEL not in [button.label for button in app.button]
     assert len(app.chat_input) == 0
 
 
 def test_the_proposals_view_does_not_confirm_nor_touch_the_session() -> None:
     """
-    Verifica la responsabilidad de vista de las propuestas (D-A, T041).
+    Verifica la responsabilidad de vista de las propuestas (D-A, T041, T051).
 
-    El módulo no contiene el punto de confirmación, no nombra el servicio de
-    propuestas y no escribe en la sesión: confirmar sigue siendo exclusivo de
-    `app/ui/main.py`.
+    El módulo no contiene el punto de confirmación ni invoca la edición del
+    servicio, no nombra el servicio de propuestas, no escribe en la sesión y no
+    importa el punto de entrada, los servicios, el dominio ni la persistencia:
+    confirmar sigue siendo exclusivo de `app/ui/main.py` y la edición se delega
+    en un callback con todo ya resuelto.
     """
     source = PROPOSALS_SECTION_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
 
     assert ".confirm(" not in source
+    assert ".edit(" not in source
     assert "proposal_service" not in source
     assert "st.session_state" not in source
+    assert "st.selectbox" not in source
+
+    for module in imported_modules(tree):
+        for prefix in FORBIDDEN_SECTION_IMPORTS:
+            assert not (
+                module == prefix or module.startswith(f"{prefix}.")
+            ), f"proposals.py importa {module}"
 
 
 def test_the_assistant_view_only_presents_and_delegates_confirmation() -> None:
@@ -1924,31 +2032,37 @@ def test_the_sections_do_not_depend_on_persistence_nor_domain() -> None:
         assert not called_names(tree) & FORBIDDEN_SECTION_CALLS, path.name
 
 
-@pytest.mark.parametrize("section", PENDING_SECTIONS)
-def test_each_unimplemented_section_declares_its_pending_state(
+def test_no_navigation_section_declares_a_pending_state(
     connection: sqlite3.Connection,
-    section: str,
 ) -> None:
     """
-    Verifica el aviso honesto de cada sección pendiente (C4, T041).
+    Verifica que ninguna sección de RF-09 queda pendiente (C4, T041, T049).
 
-    Una sección que todavía no consulta sus servicios muestra su aviso
-    explícito y ningún dato: no inventa valores, no presenta un vacío como un
-    cero y no ofrece controles de la conversación ni de confirmación.
+    «Operaciones» dejó de estar pendiente al implementarse T049: al recorrer la
+    navegación, ninguna sección muestra el aviso de pendiente ni presenta datos
+    inventados, y todas renderizan sin error.
     """
     app = app_for(make_assistant(connection))
 
     app.run()
-    app.radio[0].set_value(section).run()
 
-    assert not app.exception
-    assert [header.value for header in app.header] == [section]
-    assert [info.value for info in app.info] == [
-        f"«{section}»: {SECTION_PENDING_MESSAGE}"
-    ]
-    assert rendered_markdown(app) == ""
-    assert len(app.chat_input) == 0
-    assert len(app.button) == 0
+    assert PENDING_SECTIONS == ()
+
+    for section in SECTION_LABELS_EXPECTED:
+        app.radio[0].set_value(section).run()
+
+        shown = "\n".join(
+            [info.value for info in app.info]
+            + [warning.value for warning in app.warning]
+            + [error.value for error in app.error]
+        )
+
+        assert not app.exception, section
+        assert SECTION_PENDING_MESSAGE not in shown, section
+        assert not any(
+            "pendiente" in element.value.lower()
+            for element in app.markdown
+        ), section
 
 
 def test_the_navigation_works_without_the_model(
@@ -1959,9 +2073,9 @@ def test_the_navigation_works_without_the_model(
     Verifica la navegación lateral sin modelo configurado (C1, C2, T041).
 
     La aplicación no se abstiene: la sección del asistente —elegida por
-    defecto— muestra el motivo de su indisponibilidad, las secciones pendientes
-    muestran su aviso sin datos y la sección de propuestas informa su vacío
-    explícito, porque no hay asistente que las prepare ni datos que inventar.
+    defecto— muestra el motivo de su indisponibilidad, «Operaciones» ofrece sus
+    formularios y la sección de propuestas informa su vacío explícito, sin
+    datos que inventar.
     """
     configured_database_path(monkeypatch, tmp_path)
     monkeypatch.setattr(llm_module, "get_llm", failing_get_llm)
@@ -1987,9 +2101,10 @@ def test_the_navigation_works_without_the_model(
         assert not app.exception
         assert len(app.error) == 0
         assert [header.value for header in app.header] == ["Operaciones"]
-        assert [info.value for info in app.info] == [
-            f"«Operaciones»: {SECTION_PENDING_MESSAGE}"
-        ]
+        assert tuple(app.selectbox(key=ACTION_SELECTOR_KEY).options) == tuple(
+            label for _, label in OPERATION_ACTION_LABELS
+        )
+        assert any(button.label == SUBMIT_LABEL for button in app.button)
         assert len(app.chat_input) == 0
 
         app.radio[0].set_value("Propuestas pendientes").run()
@@ -5922,6 +6037,1931 @@ def test_the_price_history_view_uses_the_shared_formatting() -> None:
     assert "describe_price_change" not in source
     assert "_format_price" not in source
     assert "isoformat(" not in source
+
+
+# --- Sección Operaciones: formularios de propuestas (T049, RF-09) ---
+
+
+def open_operations_section(app: AppTest) -> None:
+    """Ejecuta la aplicación y abre la sección Operaciones (T049)."""
+    app.run()
+    app.radio[0].set_value("Operaciones").run()
+
+
+def choose_operation(app: AppTest, action: str) -> None:
+    """Elige la acción cuyo formulario se va a completar (T049)."""
+    labels = dict(OPERATION_ACTION_LABELS)
+    app.selectbox(key=ACTION_SELECTOR_KEY).set_value(labels[action]).run()
+
+
+def choose_operation_product(app: AppTest, product: ProductRecord) -> None:
+    """Elige el producto del formulario de operación (T049)."""
+    app.selectbox(key=PRODUCT_SELECTOR_KEY).set_value(
+        product_option_label(product)
+    ).run()
+
+
+def choose_operation_presentation(app: AppTest, catalog: Catalog) -> None:
+    """Elige la presentación cerrada del producto en el formulario (T049)."""
+    selector = app.selectbox(
+        key=PRESENTATION_SELECTOR_KEY_TEMPLATE.format(
+            product_id=catalog.product.id
+        )
+    )
+    option = next(
+        label for label in selector.options if catalog.box.name in label
+    )
+    selector.set_value(option)
+
+
+def choose_operation_movement(app: AppTest, catalog: Catalog) -> None:
+    """Elige el primer movimiento compensable en el formulario (T049)."""
+    selector = app.selectbox(
+        key=MOVEMENT_SELECTOR_KEY_TEMPLATE.format(
+            product_id=catalog.product.id
+        )
+    )
+    selector.set_value(selector.options[1])
+
+
+def operation_text_input(app: AppTest, label: str) -> Any:
+    """Devuelve el campo de texto con la etiqueta dada (T049)."""
+    return next(
+        element for element in app.text_input if element.label == label
+    )
+
+
+def operation_number_input(app: AppTest, label: str) -> Any:
+    """Devuelve el campo numérico del formulario con esa etiqueta (T049)."""
+    return next(
+        element for element in app.number_input if element.label == label
+    )
+
+
+def submit_operation(app: AppTest) -> None:
+    """Envía el formulario de la acción elegida (T049)."""
+    next(
+        button for button in app.button if button.label == SUBMIT_LABEL
+    ).click().run()
+
+
+def manual_proposals_of(app: AppTest) -> list[Proposal]:
+    """Devuelve las propuestas creadas con los formularios (T049)."""
+    stored = app.session_state.get(MANUAL_PROPOSALS_KEY)
+
+    return [] if stored is None else list(stored)
+
+
+def fill_operation_form(
+    app: AppTest,
+    action: str,
+    catalog: Catalog,
+) -> None:
+    """Completa el formulario de la acción con valores válidos (T049)."""
+    if action == "alta_producto":
+        operation_text_input(app, SKU_FIELD_LABEL).set_value("SKU-T049")
+        operation_text_input(app, NAME_FIELD_LABEL).set_value("Producto T049")
+        operation_text_input(app, BASE_UNIT_FIELD_LABEL).set_value("unidad")
+        operation_text_input(app, BASE_PRICE_FIELD_LABEL).set_value("150.50")
+    elif action == "modificacion_producto":
+        operation_text_input(app, NEW_NAME_LABEL).set_value(
+            "Producto T049 modificado"
+        )
+        operation_text_input(app, NEW_MINIMUM_STOCK_LABEL).set_value("25")
+    elif action == "alta_presentacion":
+        operation_text_input(app, NAME_FIELD_LABEL).set_value("Caja x12")
+        operation_number_input(app, FACTOR_FIELD_LABEL).set_value(12)
+        operation_text_input(app, PRESENTATION_PRICE_LABEL).set_value(
+            "1200.75"
+        )
+    elif action == "entrada_suelta":
+        operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(3)
+        operation_text_input(app, REASON_FIELD_LABEL).set_value("Compra")
+        operation_text_input(app, COST_FIELD_LABEL).set_value("10.25")
+    elif action == "entrada_cerrada":
+        choose_operation_presentation(app, catalog)
+        operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(2)
+        operation_text_input(app, REASON_FIELD_LABEL).set_value("Compra")
+        operation_text_input(app, COST_FIELD_LABEL).set_value("100")
+    elif action == "salida_suelta":
+        operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(1)
+        operation_text_input(app, REASON_FIELD_LABEL).set_value("Venta")
+    elif action == "salida_cerrada":
+        choose_operation_presentation(app, catalog)
+        operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(1)
+        operation_text_input(app, REASON_FIELD_LABEL).set_value("Venta")
+    elif action == "apertura":
+        choose_operation_presentation(app, catalog)
+        operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(1)
+        operation_text_input(app, REASON_FIELD_LABEL).set_value("Apertura")
+    elif action == "compensacion":
+        choose_operation_movement(app, catalog)
+        operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(1)
+        operation_text_input(app, REASON_FIELD_LABEL).set_value("Ajuste")
+    elif action == "cambio_precio":
+        choose_operation_presentation(app, catalog)
+        operation_text_input(app, NEW_PRICE_LABEL).set_value("110.5")
+    else:
+        raise AssertionError(f"Acción sin formulario en la prueba: {action}")
+
+
+def test_operations_offers_only_the_admitted_actions(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica las diez acciones y la ausencia de controles excluidos (C10).
+
+    El selector ofrece exactamente las diez acciones de las propuestas, en su
+    orden, sin ninguna opción para desactivar productos ni para cambiar el
+    factor de una presentación existente. La modificación de producto no tiene
+    ningún control de factor ni de baja, mientras que el alta de una
+    presentación nueva sí admite un factor.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+
+    options = tuple(app.selectbox(key=ACTION_SELECTOR_KEY).options)
+
+    assert not app.exception
+    assert [header.value for header in app.header] == ["Operaciones"]
+    assert options == tuple(label for _, label in OPERATION_ACTION_LABELS)
+    assert not any("desactiv" in option.lower() for option in options)
+    assert not any("factor" in option.lower() for option in options)
+
+    choose_operation(app, "modificacion_producto")
+    choose_operation_product(app, catalog.product)
+
+    labels = [
+        element.label
+        for element in (
+            [*app.text_input, *app.number_input, *app.selectbox]
+            + [*app.checkbox, *app.button]
+        )
+    ]
+
+    assert not app.exception
+    assert not any("desactiv" in label.lower() for label in labels)
+    assert not any("factor" in label.lower() for label in labels)
+
+    choose_operation(app, "alta_presentacion")
+    choose_operation_product(app, catalog.product)
+
+    assert not app.exception
+    assert operation_number_input(app, FACTOR_FIELD_LABEL).label == (
+        FACTOR_FIELD_LABEL
+    )
+
+
+@pytest.mark.parametrize(
+    "action", tuple(value for value, _ in OPERATION_ACTION_LABELS)
+)
+def test_sending_each_form_creates_one_pending_proposal(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    action: str,
+) -> None:
+    """
+    Verifica la creación de una propuesta por formulario enviado (C11, C12).
+
+    Cada uno de los diez formularios válidos crea exactamente una propuesta
+    pendiente en la colección de la sesión y no altera ninguna tabla ni el
+    contador de cambios de SQLite: enviar un formulario nunca escribe.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, action)
+    if action != "alta_producto":
+        choose_operation_product(app, catalog.product)
+    fill_operation_form(app, action, catalog)
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    submit_operation(app)
+
+    proposals = manual_proposals_of(app)
+    messages = [success.value for success in app.success]
+
+    assert not app.exception
+    assert len(proposals) == 1
+    assert proposals[0].action.value == action
+    assert proposals[0].payload.action == action
+    assert proposals[0].status is ProposalStatus.PENDING
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+    assert len(messages) == 1
+    assert "No se escribió ningún cambio" in messages[0]
+
+
+def test_a_rerun_without_submission_does_not_create_proposals(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica que un rerun sin envío no crea propuestas (C11).
+
+    Completar los campos y volver a ejecutar la aplicación sin enviar el
+    formulario no agrega ninguna propuesta a la colección ni escribe.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, "entrada_suelta")
+    choose_operation_product(app, catalog.product)
+    fill_operation_form(app, "entrada_suelta", catalog)
+    before = snapshot(connection)
+
+    app.run()
+    app.run()
+
+    assert not app.exception
+    assert manual_proposals_of(app) == []
+    assert len(app.success) == 0
+    assert snapshot(connection) == before
+
+
+def test_two_deliberate_submissions_create_two_proposals(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica que dos envíos iguales no se deduplican (C11, T049).
+
+    Las propuestas no tienen identificador y la interfaz no las deduplica por
+    igualdad: enviar dos veces el mismo payload produce dos propuestas
+    pendientes, en el orden en que se crearon.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, "entrada_suelta")
+    choose_operation_product(app, catalog.product)
+    fill_operation_form(app, "entrada_suelta", catalog)
+    submit_operation(app)
+    fill_operation_form(app, "entrada_suelta", catalog)
+    submit_operation(app)
+
+    proposals = manual_proposals_of(app)
+
+    assert not app.exception
+    assert len(proposals) == 2
+    assert [proposal.action.value for proposal in proposals] == [
+        "entrada_suelta",
+        "entrada_suelta",
+    ]
+    assert proposals[0].payload == proposals[1].payload
+
+
+def test_manual_and_assistant_proposals_are_concatenated_without_dedup(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica la concatenación de ambas colecciones sin deduplicar (T049).
+
+    Una propuesta del asistente y una propuesta manual con el mismo payload se
+    conservan por separado y la vista las muestra ambas, en dos colecciones
+    ordenadas que solo se concatenan.
+    """
+    assistant = make_assistant(
+        connection,
+        tool_call(
+            "propose_loose_entry",
+            {
+                "product_id": catalog.product.id,
+                "quantity": 3,
+                "reason": "Compra",
+            },
+        ),
+    )
+    app = app_for(assistant)
+
+    app.run()
+    app.chat_input[0].set_value("Propone una entrada suelta").run()
+    assistant_proposal = assistant.history[-1].state["pending_proposal"]
+
+    app.radio[0].set_value("Operaciones").run()
+    choose_operation(app, "entrada_suelta")
+    choose_operation_product(app, catalog.product)
+    operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(3)
+    operation_text_input(app, REASON_FIELD_LABEL).set_value("Compra")
+    submit_operation(app)
+
+    manual = manual_proposals_of(app)
+    app.radio[0].set_value("Propuestas pendientes").run()
+    rendered = rendered_markdown(app)
+
+    assert not app.exception
+    assert assistant_proposal is not None
+    assert len(manual) == 1
+    assert manual[0].payload == assistant_proposal.payload
+    assert rendered.count("Acción: Entrada de unidades sueltas") == 2
+    assert "1. Acción" in rendered
+    assert "2. Acción" in rendered
+
+
+@pytest.mark.parametrize(
+    ("action", "expected"),
+    (
+        ("alta_producto", "El campo «SKU» es obligatorio."),
+        ("modificacion_producto", UPDATE_WITHOUT_CHANGE_MESSAGE),
+        ("alta_presentacion", "debe ser mayor que cero"),
+        ("entrada_suelta", "El campo «Cantidad» debe ser mayor que cero."),
+        ("salida_suelta", "El campo «Motivo» es obligatorio."),
+        ("cambio_precio", "importe decimal válido"),
+    ),
+)
+def test_an_invalid_form_shows_a_validation_without_a_proposal(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    action: str,
+    expected: str,
+) -> None:
+    """
+    Verifica la validación explícita de los formularios (C21, T049).
+
+    Un formulario inválido muestra el motivo, no crea ninguna propuesta y no
+    escribe: la validación de los campos del payload es previa y explícita.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, action)
+    if action != "alta_producto":
+        choose_operation_product(app, catalog.product)
+    if action == "alta_producto":
+        operation_text_input(app, NAME_FIELD_LABEL).set_value("Producto")
+        operation_text_input(app, BASE_UNIT_FIELD_LABEL).set_value("unidad")
+        operation_text_input(app, BASE_PRICE_FIELD_LABEL).set_value("10")
+    elif action == "alta_presentacion":
+        operation_text_input(app, NAME_FIELD_LABEL).set_value("Caja")
+        operation_number_input(app, FACTOR_FIELD_LABEL).set_value(2)
+        operation_text_input(app, PRESENTATION_PRICE_LABEL).set_value("0")
+    elif action == "entrada_suelta":
+        operation_text_input(app, REASON_FIELD_LABEL).set_value("Compra")
+    elif action == "salida_suelta":
+        operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(1)
+    elif action == "cambio_precio":
+        choose_operation_presentation(app, catalog)
+        operation_text_input(app, NEW_PRICE_LABEL).set_value("10,50")
+    before = snapshot(connection)
+
+    submit_operation(app)
+
+    errors = [error.value for error in app.error]
+
+    assert not app.exception
+    assert any(expected in value for value in errors)
+    assert manual_proposals_of(app) == []
+    assert snapshot(connection) == before
+
+
+def test_operation_amounts_are_exact_decimals() -> None:
+    """
+    Verifica que los importes se convierten con `Decimal` exacto (T049).
+
+    La conversión parte del texto, conserva la precisión informada y rechaza
+    los valores no decimales, los precios no positivos y los costos negativos,
+    sin pasar por `float`.
+    """
+    assert parse_money("Precio", "10.005") == Decimal("10.005")
+    assert str(parse_money("Precio", "10.005")) == "10.005"
+    assert parse_optional_money("Costo", " 0 ") == Decimal("0")
+    assert parse_optional_money("Costo", "   ") is None
+
+    with pytest.raises(OperationValidationError):
+        parse_money("Precio", "abc")
+    with pytest.raises(OperationValidationError):
+        parse_money("Precio", "0")
+    with pytest.raises(OperationValidationError):
+        parse_optional_money("Costo", "-0.5")
+
+
+def test_a_product_registration_keeps_the_exact_price(
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica la precisión monetaria del alta de producto (T049).
+
+    El precio se informa con tres decimales y la propuesta conserva el
+    `Decimal` exacto, sin redondearlo ni convertirlo a `float`.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    operation_text_input(app, SKU_FIELD_LABEL).set_value("SKU-DECIMAL")
+    operation_text_input(app, NAME_FIELD_LABEL).set_value("Producto decimal")
+    operation_text_input(app, BASE_UNIT_FIELD_LABEL).set_value("unidad")
+    operation_text_input(app, BASE_PRICE_FIELD_LABEL).set_value("10.005")
+
+    submit_operation(app)
+
+    payload = manual_proposals_of(app)[0].payload
+
+    assert not app.exception
+    assert isinstance(payload.base_sale_price, Decimal)
+    assert payload.base_sale_price == Decimal("10.005")
+    assert payload.sku == "SKU-DECIMAL"
+    assert payload.name == "Producto decimal"
+    assert payload.base_unit == "unidad"
+    assert payload.presentations == ()
+
+
+def test_a_product_registration_admits_an_initial_presentation(
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica la presentación inicial opcional del alta de producto (T049).
+
+    El bloque opcional del formulario declara la presentación inicial con su
+    nombre, su factor, su precio exacto y su stock cerrado inicial; sin esos
+    datos, el payload no declara ninguna presentación inicial.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    operation_text_input(app, SKU_FIELD_LABEL).set_value("SKU-INICIAL")
+    operation_text_input(app, NAME_FIELD_LABEL).set_value("Producto inicial")
+    operation_text_input(app, BASE_UNIT_FIELD_LABEL).set_value("unidad")
+    operation_text_input(app, BASE_PRICE_FIELD_LABEL).set_value("10")
+    operation_text_input(app, INITIAL_PRESENTATION_NAME_LABEL).set_value(
+        "Caja x12"
+    )
+    operation_number_input(app, FACTOR_FIELD_LABEL).set_value(12)
+    operation_text_input(app, PRESENTATION_PRICE_LABEL).set_value("1200.75")
+    operation_number_input(app, INITIAL_CLOSED_STOCK_LABEL).set_value(3)
+
+    submit_operation(app)
+
+    payload = manual_proposals_of(app)[0].payload
+    presentation = payload.presentations[0]
+
+    assert not app.exception
+    assert len(payload.presentations) == 1
+    assert presentation.name == "Caja x12"
+    assert presentation.factor == 12
+    assert presentation.sale_price == Decimal("1200.75")
+    assert presentation.closed_stock == 3
+
+
+def test_the_price_update_form_builds_the_new_exact_price(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica el payload del cambio de precio (T049, RF-08).
+
+    El payload identifica la presentación elegida y conserva el precio nuevo
+    exacto; no declara el producto ni escribe el historial de precios.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, "cambio_precio")
+    choose_operation_product(app, catalog.product)
+    choose_operation_presentation(app, catalog)
+    operation_text_input(app, NEW_PRICE_LABEL).set_value("110.555")
+    before = snapshot(connection)
+
+    submit_operation(app)
+
+    payload = manual_proposals_of(app)[0].payload
+
+    assert not app.exception
+    assert payload.presentation_id == catalog.box.id
+    assert payload.new_price == Decimal("110.555")
+    assert snapshot(connection) == before
+
+
+def test_the_compensation_form_only_builds_the_payload(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    movements: SqliteMovementRepository,
+) -> None:
+    """
+    Verifica el alcance de la compensación en la interfaz (T049, RF-09).
+
+    El formulario solo construye el payload: no calcula ni muestra la cantidad
+    compensable ni afirma que la compensación sea posible, y solo ofrece
+    movimientos de los tipos que admiten compensación en el MVP.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, "compensacion")
+    choose_operation_product(app, catalog.product)
+
+    selector = app.selectbox(
+        key=MOVEMENT_SELECTOR_KEY_TEMPLATE.format(
+            product_id=catalog.product.id
+        )
+    )
+    captions = [caption.value for caption in app.caption]
+
+    assert not app.exception
+    assert selector.label == MOVEMENT_SELECTOR_LABEL
+    assert selector.options[0] == NO_SELECTION_LABEL
+    assert len(selector.options) == 3
+    assert not any(
+        "Apertura" in option
+        or "Compensación" in option
+        or "Salida cerrada" in option
+        for option in selector.options
+    )
+    assert COMPENSATION_NOTE in captions
+    assert "no las calcula ni las afirma" in COMPENSATION_NOTE
+
+    choose_operation_movement(app, catalog)
+    operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(1)
+    operation_text_input(app, REASON_FIELD_LABEL).set_value("Ajuste")
+
+    submit_operation(app)
+
+    errors = [error.value for error in app.error]
+
+    assert not app.exception, errors
+    assert not errors, errors
+    payload = manual_proposals_of(app)[0].payload
+    compensable = [
+        movement
+        for movement in movements.list_by_product(catalog.product.id)
+        if movement.kind
+        in ("entrada_cerrada", "entrada_suelta", "salida_suelta")
+    ]
+
+    assert not app.exception
+    assert len(compensable) == 2
+    assert payload.movement_id == compensable[0].id
+    assert payload.quantity == 1
+    assert payload.reason == "Ajuste"
+
+
+def test_operations_reports_an_empty_catalog_without_inventing_data(
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica el estado de catálogo vacío de Operaciones (C4, T049).
+
+    El alta de producto sigue disponible sin catálogo; las demás acciones
+    informan que no hay datos para prepararlas y no muestran ningún formulario
+    ni producto inventado.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+
+    assert not app.exception
+    assert any(button.label == SUBMIT_LABEL for button in app.button)
+    assert len(app.selectbox) == 1
+
+    choose_operation(app, "entrada_suelta")
+
+    infos = [info.value for info in app.info]
+
+    assert not app.exception
+    assert infos == [
+        EMPTY_OPERATIONS_CATALOG_TEMPLATE.format(
+            action="Entrada de unidades sueltas"
+        )
+    ]
+    assert not any(button.label == SUBMIT_LABEL for button in app.button)
+
+
+def test_the_compensation_of_a_product_without_movements_is_informed(
+    connection: sqlite3.Connection,
+    product_service: ProductService,
+) -> None:
+    """
+    Verifica el estado de un producto sin movimientos compensables (C4).
+
+    Un producto recién registrado no tiene movimientos compensables: la vista
+    lo informa y no ofrece un formulario de compensación.
+    """
+    stored = zero_stock_product(
+        product_service,
+        sku="SKU-SIN-MOV",
+        name="Sin movimientos",
+    )
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, "compensacion")
+    choose_operation_product(app, stored)
+
+    infos = [info.value for info in app.info]
+
+    assert not app.exception
+    assert infos == [EMPTY_OPERATIONS_MOVEMENTS_MESSAGE]
+    assert not any(button.label == SUBMIT_LABEL for button in app.button)
+
+
+def test_operations_works_without_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """
+    Verifica Operaciones y sus propuestas sin modelo configurado (C2, T049).
+
+    La sección crea propuestas manuales aunque el asistente no esté
+    disponible, y la sección de propuestas pendientes las muestra sin la
+    conversación.
+    """
+    database_path = configured_database_path(monkeypatch, tmp_path)
+    seed_connection = connect(database_path)
+    try:
+        create_schema(seed_connection)
+        seed_products = ProductService(
+            products=SqliteProductRepository(seed_connection),
+            presentations=SqlitePresentationRepository(seed_connection),
+            movements=SqliteMovementRepository(seed_connection),
+            transaction=partial(transaction, seed_connection),
+        )
+        stored = zero_stock_product(
+            seed_products,
+            sku="SKU-OP",
+            name="Operaciones sin modelo",
+        )
+    finally:
+        seed_connection.close()
+    monkeypatch.setattr(llm_module, "get_llm", failing_get_llm)
+    app = AppTest.from_file(str(APP_PATH), default_timeout=30)
+
+    app.run()
+
+    session = app.session_state.get(SESSION_KEY)
+
+    try:
+        assert len(app.error) == 1
+        assert MISSING_KEY_MESSAGE in app.error[0].value
+
+        app.radio[0].set_value("Operaciones").run()
+        choose_operation(app, "entrada_suelta")
+        choose_operation_product(app, stored)
+        operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(2)
+        operation_text_input(app, REASON_FIELD_LABEL).set_value(
+            "Compra sin modelo"
+        )
+        submit_operation(app)
+
+        assert not app.exception
+        assert len(app.error) == 0
+        actions = [
+            proposal.action.value for proposal in manual_proposals_of(app)
+        ]
+
+        assert actions == ["entrada_suelta"]
+
+        app.radio[0].set_value("Propuestas pendientes").run()
+
+        assert "Acción: Entrada de unidades sueltas" in rendered_markdown(app)
+    finally:
+        if session is not None:
+            session.connection.close()
+
+
+def test_the_operations_view_only_builds_payloads_without_writing() -> None:
+    """
+    Verifica los límites arquitectónicos de la vista (C12, T049).
+
+    La sección no importa los servicios, el dominio ni la persistencia, no usa
+    `st.session_state`, no contiene el punto de confirmación ni invoca métodos
+    de escritura o de lectura de servicios.
+    """
+    source = OPERATIONS_SECTION_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    assert OPERATIONS_SECTION_PATH.is_file()
+    assert "st.session_state" not in source
+    assert "proposal_service" not in source
+    for marker in (
+        ".confirm(",
+        ".create(",
+        ".register(",
+        ".edit(",
+        ".commit(",
+        ".execute(",
+    ):
+        assert marker not in source, marker
+
+    for module in imported_modules(tree):
+        for prefix in FORBIDDEN_SECTION_IMPORTS:
+            assert not (
+                module == prefix or module.startswith(f"{prefix}.")
+            ), f"operations.py importa {module}"
+
+    assert not called_names(tree) & {
+        "register",
+        "create",
+        "edit",
+        "confirm",
+        "list_products",
+        "get_product_presentations",
+        "get_movement_history",
+        "get_product_stock",
+        "build_session",
+        "open_connection",
+        "transaction",
+        "get_llm",
+        "build_workflow",
+    }
+
+
+def test_the_interface_keeps_a_single_confirmation_point() -> None:
+    """
+    Verifica que la confirmación sigue en un único punto (C12, T049).
+
+    Ninguna vista nueva agrega un punto de confirmación: en `app/ui/**` sigue
+    habiendo una sola aparición de `.confirm(` y está en `main.py`.
+    """
+    occurrences = {
+        path.name: path.read_text(encoding="utf-8").count(".confirm(")
+        for path in ui_sources()
+    }
+
+    assert sum(occurrences.values()) == 1
+    assert occurrences["main.py"] == 1
+
+
+# --- Revisión legible de las propuestas pendientes (T050, RF-09) ---
+
+
+T050_REVIEW_PAYLOADS: tuple[tuple[str, Any], ...] = (
+    (
+        "alta_producto",
+        ProductRegistrationPayload(
+            sku="SKU-1",
+            name="Producto",
+            base_unit="botella",
+            base_sale_price=Decimal("150.50"),
+            minimum_stock=0,
+            initial_loose_units=0,
+        ),
+    ),
+    (
+        "modificacion_producto",
+        ProductUpdatePayload(product_id=3, name="Producto nuevo"),
+    ),
+    (
+        "alta_presentacion",
+        PresentationRegistrationPayload(
+            product_id=3,
+            name="Caja x12",
+            factor=12,
+            sale_price=Decimal("1200.75"),
+        ),
+    ),
+    (
+        "entrada_suelta",
+        LooseEntryPayload(
+            product_id=3,
+            quantity=3,
+            reason="Compra",
+            cost=Decimal("10.25"),
+        ),
+    ),
+    (
+        "entrada_cerrada",
+        ClosedEntryPayload(
+            product_id=3,
+            presentation_id=2,
+            quantity=2,
+            reason="Compra",
+        ),
+    ),
+    (
+        "salida_suelta",
+        LooseExitPayload(product_id=3, quantity=1, reason="Venta"),
+    ),
+    (
+        "salida_cerrada",
+        ClosedExitPayload(
+            product_id=3,
+            presentation_id=2,
+            quantity=1,
+            reason="Venta",
+        ),
+    ),
+    (
+        "apertura",
+        AperturePayload(
+            product_id=3,
+            presentation_id=2,
+            quantity=1,
+            reason="Apertura",
+        ),
+    ),
+    (
+        "compensacion",
+        CompensationPayload(
+            product_id=3,
+            movement_id=7,
+            quantity=1,
+            reason="Ajuste",
+        ),
+    ),
+    (
+        "cambio_precio",
+        PriceUpdatePayload(presentation_id=2, new_price=Decimal("110.5")),
+    ),
+)
+"""Un payload por cada una de las diez acciones, con valores legibles (T050).
+
+Se declaran como tupla literal —no desde las constantes de la aplicación— para
+que la prueba verifique el alcance de C13 y no una comprobación tautológica.
+"""
+
+T050_FIELD_MARKERS: dict[str, str] = {
+    "alta_producto": "SKU: SKU-1",
+    "modificacion_producto": "Producto (id 3)",
+    "alta_presentacion": "Factor: 12",
+    "entrada_suelta": "Costo: 10.25",
+    "entrada_cerrada": "Presentación (id 2)",
+    "salida_suelta": "Motivo: Venta",
+    "salida_cerrada": "Presentación (id 2)",
+    "apertura": "Motivo: Apertura",
+    "compensacion": "Movimiento (id 7)",
+    "cambio_precio": "precio nuevo: 110.50",
+}
+"""Campo legible que cada acción debe mostrar en su revisión (T050)."""
+
+T050_PRICE_VIEW: PresentationPriceView = PresentationPriceView(
+    id=2,
+    name="Caja x6",
+    factor=6,
+    sale_price=Decimal("600"),
+)
+"""Presentación ya resuelta que usa la revisión del cambio de precio (T050)."""
+
+
+def proposal_review(
+    payload: Any,
+    presentation: PresentationPriceView | None = None,
+) -> ProposalReview:
+    """Construye la revisión de una propuesta a partir de su payload (T050)."""
+    proposal = Proposal(
+        action=ProposalAction(payload.action),
+        payload=payload,
+    )
+
+    return ProposalReview(
+        proposal=proposal,
+        key=id(proposal),
+        presentation=presentation,
+    )
+
+
+@pytest.mark.parametrize(
+    ("action", "payload"),
+    T050_REVIEW_PAYLOADS,
+    ids=[action for action, _ in T050_REVIEW_PAYLOADS],
+)
+def test_each_action_shows_its_readable_label_and_fields(
+    action: str,
+    payload: Any,
+) -> None:
+    """
+    Verifica la revisión legible de las diez acciones (C13, T050).
+
+    Cada acción se presenta con su nombre legible y sus campos etiquetados, sin
+    el volcado genérico del payload ni valores `None`.
+    """
+    presentation = (
+        T050_PRICE_VIEW if action == "cambio_precio" else None
+    )
+
+    described = "\n".join(
+        describe_proposal_review(proposal_review(payload, presentation))
+    )
+
+    assert dict(OPERATION_ACTION_LABELS)[action] in described
+    assert T050_FIELD_MARKERS[action] in described
+    assert "None" not in described
+
+
+def test_the_readable_labels_cover_the_ten_actions() -> None:
+    """
+    Verifica que las etiquetas legibles cubren las diez acciones (C13, T050).
+
+    La primera línea de cada revisión nombra la acción con su etiqueta de la
+    sección Operaciones y con su identificador, sin depender del valor crudo.
+    """
+    expected = dict(OPERATION_ACTION_LABELS)
+    headlines = [
+        describe_proposal_review(proposal_review(payload))[0]
+        for _, payload in T050_REVIEW_PAYLOADS
+    ]
+
+    assert [action for action, _ in T050_REVIEW_PAYLOADS] == list(expected)
+    for headline, (action, _) in zip(headlines, T050_REVIEW_PAYLOADS):
+        assert expected[action] in headline
+        assert action in headline
+
+
+def test_a_price_update_shows_the_presentation_and_both_prices() -> None:
+    """
+    Verifica el detalle del cambio de precio en la revisión (C13, T050).
+
+    La revisión muestra la presentación afectada con su nombre, su id y su
+    factor, el precio vigente y el precio nuevo, con el mismo detalle que la
+    conversación.
+    """
+    review = proposal_review(
+        PriceUpdatePayload(presentation_id=2, new_price=Decimal("700")),
+        T050_PRICE_VIEW,
+    )
+
+    described = "\n".join(describe_proposal_review(review))
+
+    assert "presentación: Caja x6 (id 2, factor 6)" in described
+    assert "precio vigente: 600.00" in described
+    assert "precio nuevo: 700.00" in described
+    detail = describe_price_update_fields(
+        review.proposal, review.presentation
+    )
+    assert detail == (
+        "presentación: Caja x6 (id 2, factor 6)",
+        "precio vigente: 600.00",
+        "precio nuevo: 700.00",
+    )
+
+
+def test_a_missing_presentation_shows_the_reason_without_a_price() -> None:
+    """
+    Verifica la presentación inexistente en la revisión (C4, T050).
+
+    Se muestra el motivo explícito, no aparece `None` y no se inventa un precio
+    vigente: la línea del precio vigente no se dibuja.
+    """
+    review = proposal_review(
+        PriceUpdatePayload(presentation_id=99, new_price=Decimal("700"))
+    )
+
+    described = "\n".join(describe_proposal_review(review))
+
+    assert "presentación: no existe la presentación con id 99" in described
+    assert "precio vigente" not in described
+    assert "precio nuevo: 700.00" in described
+    assert "None" not in described
+
+
+def test_absent_optional_values_are_informed_as_absent() -> None:
+    """
+    Verifica los valores ausentes de la revisión (C4, T050).
+
+    Un costo `None`, un nombre o un stock mínimo no informados y una
+    presentación base ausente se muestran como `no informado`, nunca como
+    `None` ni como cero.
+    """
+    reviews = (
+        proposal_review(
+            LooseEntryPayload(product_id=1, quantity=1, reason="Compra")
+        ),
+        proposal_review(
+            ProductUpdatePayload(product_id=1, minimum_stock=25)
+        ),
+        proposal_review(
+            ProductRegistrationPayload(
+                sku="SKU-1",
+                name="Producto",
+                base_unit="botella",
+                base_sale_price=Decimal("10"),
+            )
+        ),
+    )
+
+    described = "\n".join(
+        line
+        for review in reviews
+        for line in describe_proposal_review(review)
+    )
+
+    assert f"Costo: {ABSENT_MARKER}" in described
+    assert f"Nombre nuevo: {ABSENT_MARKER}" in described
+    assert (
+        f"Nombre de la presentación base: {ABSENT_MARKER}" in described
+    )
+    assert "None" not in described
+
+
+def test_real_zeros_are_not_presented_as_absent() -> None:
+    """
+    Verifica que los ceros reales se conservan en la revisión (C4, T050).
+
+    Un stock mínimo cero, un stock cerrado inicial cero y un costo cero se
+    muestran como cero y no como un valor ausente.
+    """
+    reviews = (
+        proposal_review(
+            ProductRegistrationPayload(
+                sku="SKU-1",
+                name="Producto",
+                base_unit="botella",
+                base_sale_price=Decimal("10"),
+                minimum_stock=0,
+                initial_loose_units=0,
+                presentations=(
+                    InitialPresentationPayload(
+                        name="Caja x6",
+                        factor=6,
+                        sale_price=Decimal("60"),
+                        closed_stock=0,
+                    ),
+                ),
+            )
+        ),
+        proposal_review(
+            LooseEntryPayload(
+                product_id=1,
+                quantity=1,
+                reason="Compra",
+                cost=Decimal("0"),
+            )
+        ),
+    )
+
+    described = "\n".join(
+        line
+        for review in reviews
+        for line in describe_proposal_review(review)
+    )
+
+    assert "Stock mínimo: 0" in described
+    assert "Unidades sueltas iniciales: 0" in described
+    assert "stock cerrado 0" in described
+    assert "Costo: 0.00" in described
+
+
+def test_a_product_registration_without_presentations_says_so() -> None:
+    """
+    Verifica el alta sin presentaciones iniciales en la revisión (C4, T050).
+
+    `presentations=()` se informa con un mensaje explícito y no con un cero que
+    podría leerse como una presentación declarada.
+    """
+    review = proposal_review(
+        ProductRegistrationPayload(
+            sku="SKU-1",
+            name="Producto",
+            base_unit="botella",
+            base_sale_price=Decimal("10"),
+            presentations=(),
+        )
+    )
+
+    described = "\n".join(describe_proposal_review(review))
+
+    assert NO_INITIAL_PRESENTATIONS_MESSAGE in described
+    assert "Presentaciones iniciales: 0" not in described
+
+
+def test_the_section_shows_only_pending_proposals(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica que una propuesta confirmada sale de la sección (C13, T050).
+
+    La propuesta confirmada no se ofrece como pendiente, pero permanece en
+    `assistant.history` con su resultado real y la confirmación siguió
+    funcionando desde su único punto.
+    """
+    assistant = make_assistant(
+        connection,
+        tool_call(
+            "propose_loose_entry",
+            {
+                "product_id": catalog.product.id,
+                "quantity": 3,
+                "reason": "Compra",
+            },
+        ),
+    )
+    app = app_for(assistant)
+
+    app.run()
+    app.chat_input[0].set_value("Propone una entrada suelta").run()
+    app.radio[0].set_value("Propuestas pendientes").run()
+
+    assert "Acción: Entrada de unidades sueltas" in rendered_markdown(app)
+
+    app.radio[0].set_value(DEFAULT_SECTION_LABEL).run()
+    app.button[0].set_value(True).run()
+
+    state = assistant.history[-1].state
+
+    assert state["pending_proposal"].status is ProposalStatus.CONFIRMED
+    assert state["execution_result"] is not None
+
+    app.radio[0].set_value("Propuestas pendientes").run()
+
+    assert not app.exception
+    assert [info.value for info in app.info] == [EMPTY_PROPOSALS_MESSAGE]
+    assert "Acción: Entrada de unidades sueltas" not in rendered_markdown(app)
+    assert len(assistant.history) == 1
+
+
+def test_a_manual_price_proposal_is_reviewed_without_the_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """
+    Verifica la revisión de una propuesta manual sin modelo (C2, T050).
+
+    El cambio de precio preparado con el formulario se revisa con el servicio
+    de presentaciones de la sesión —sin asistente— y muestra el precio vigente
+    y el precio nuevo reales.
+    """
+    database_path = configured_database_path(monkeypatch, tmp_path)
+    seed_connection = connect(database_path)
+    try:
+        create_schema(seed_connection)
+        seed_products = ProductService(
+            products=SqliteProductRepository(seed_connection),
+            presentations=SqlitePresentationRepository(seed_connection),
+            movements=SqliteMovementRepository(seed_connection),
+            transaction=partial(transaction, seed_connection),
+        )
+        stored = register_low_stock_product(
+            seed_products,
+            sku="SKU-T050",
+            name="Producto T050",
+            minimum_stock=0,
+            loose_units=0,
+        )
+    finally:
+        seed_connection.close()
+    monkeypatch.setattr(llm_module, "get_llm", failing_get_llm)
+    app = AppTest.from_file(str(APP_PATH), default_timeout=30)
+
+    app.run()
+
+    session = app.session_state.get(SESSION_KEY)
+
+    try:
+        assert app.session_state.get(ASSISTANT_KEY) is None
+
+        app.radio[0].set_value("Operaciones").run()
+        choose_operation(app, "cambio_precio")
+        choose_operation_product(app, stored)
+        selector = app.selectbox(
+            key=PRESENTATION_SELECTOR_KEY_TEMPLATE.format(
+                product_id=stored.id
+            )
+        )
+        selector.set_value(selector.options[1])
+        operation_text_input(app, NEW_PRICE_LABEL).set_value("110.5")
+        submit_operation(app)
+
+        assert not app.exception
+        assert [
+            proposal.action.value for proposal in manual_proposals_of(app)
+        ] == ["cambio_precio"]
+
+        app.radio[0].set_value("Propuestas pendientes").run()
+
+        rendered = rendered_markdown(app)
+
+        assert not app.exception
+        assert "presentación: unidad (id " in rendered
+        assert "factor 1)" in rendered
+        assert "precio vigente: 10.00" in rendered
+        assert "precio nuevo: 110.50" in rendered
+    finally:
+        if session is not None:
+            session.connection.close()
+
+
+def test_the_review_does_not_write(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica que revisar las propuestas no escribe (C12, T050).
+
+    Mostrar la revisión de un cambio de precio —con su precio vigente leído—
+    no altera ninguna tabla ni el contador de cambios de SQLite.
+    """
+    assistant = make_assistant(
+        connection, price_call(catalog.box.id, "700")
+    )
+    app = app_for(assistant)
+
+    app.run()
+    app.chat_input[0].set_value("Cambia el precio a 700").run()
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    app.radio[0].set_value("Propuestas pendientes").run()
+
+    assert not app.exception
+    assert "precio vigente: 600.00" in rendered_markdown(app)
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+# --- Edición de propuestas pendientes (T051, RF-09) ---
+
+
+T051_PREFILLED_FIELDS: tuple[tuple[str, str, str, Any], ...] = (
+    ("alta_producto", "text_input", "sku", "SKU-1"),
+    ("modificacion_producto", "text_input", "name", "Producto nuevo"),
+    ("alta_presentacion", "number_input", "factor", 12),
+    ("entrada_suelta", "number_input", "quantity", 3),
+    ("entrada_cerrada", "number_input", "quantity", 2),
+    ("salida_suelta", "text_input", "reason", "Venta"),
+    ("salida_cerrada", "number_input", "quantity", 1),
+    ("apertura", "text_input", "reason", "Apertura"),
+    ("compensacion", "number_input", "quantity", 1),
+    ("cambio_precio", "text_input", "new_price", "110.5"),
+)
+"""Campo prellenado que se comprueba por acción en el formulario (T051)."""
+
+
+def proposal_for(payload: Any) -> Proposal:
+    """Construye una propuesta pendiente a partir de su payload (T051)."""
+    return Proposal(action=ProposalAction(payload.action), payload=payload)
+
+
+def proposal_edit_key(proposal: Proposal, field: str) -> str:
+    """Devuelve la clave del campo de edición de una propuesta (T051)."""
+    return f"proposal_edit_{id(proposal)}_{field}"
+
+
+def proposal_edit_presentation_key(
+    proposal: Proposal,
+    position: int,
+    field: str,
+) -> str:
+    """Devuelve la clave de un campo de presentación inicial (T051)."""
+    return f"proposal_edit_{id(proposal)}_presentation_{position}_{field}"
+
+
+def proposal_edit_submit(app: AppTest, proposal: Proposal) -> None:
+    """Envía el formulario de edición de la propuesta indicada (T051)."""
+    app.button(key=f"proposal_edit_{id(proposal)}_submit").click().run()
+
+
+def open_pending_proposals(
+    app: AppTest,
+    proposals: Sequence[Proposal] | None = None,
+) -> None:
+    """Ejecuta la aplicación y abre Propuestas pendientes (T051)."""
+    if proposals is not None:
+        app.session_state[MANUAL_PROPOSALS_KEY] = list(proposals)
+    app.run()
+    app.radio[0].set_value("Propuestas pendientes").run()
+
+
+def test_each_action_shows_an_edit_form_with_its_current_values(
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica el formulario de edición de las diez acciones (T051, C14).
+
+    Cada propuesta pendiente ofrece un formulario con sus valores actuales, sin
+    selector de acción, producto, presentación ni movimiento: la acción y los
+    destinos no se pueden cambiar desde la edición.
+    """
+    proposals = [
+        proposal_for(payload) for _, payload in T050_REVIEW_PAYLOADS
+    ]
+    app = app_for(make_assistant(connection))
+
+    open_pending_proposals(app, proposals)
+
+    assert not app.exception
+    assert len(app.selectbox) == 0
+    assert [button.label for button in app.button] == [
+        EDIT_SUBMIT_LABEL
+    ] * len(proposals)
+    for action, widget, field, expected in T051_PREFILLED_FIELDS:
+        proposal = next(
+            proposal
+            for proposal in proposals
+            if proposal.action.value == action
+        )
+        element = getattr(app, widget)(key=proposal_edit_key(proposal, field))
+        assert element.value == expected, action
+    assert [
+        expander.label for expander in app.expander
+    ] == [
+        f"Editar propuesta {index}"
+        for index in range(1, len(proposals) + 1)
+    ]
+
+
+def test_a_manual_proposal_is_edited_in_place_without_writing(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica la edición de una propuesta manual (T051, C14).
+
+    La propuesta se reemplaza solo en la colección manual, conserva su acción y
+    su producto y sigue pendiente; editar dos veces no la duplica ni la pierde
+    y no modifica la base ni el contador de cambios de SQLite.
+    """
+    proposal = proposal_for(
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=3,
+            reason="Compra",
+            cost=Decimal("10.25"),
+        )
+    )
+    app = app_for(make_assistant(connection))
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    open_pending_proposals(app, [proposal])
+    app.number_input(
+        key=proposal_edit_key(proposal, "quantity")
+    ).set_value(5)
+    app.text_input(
+        key=proposal_edit_key(proposal, "reason")
+    ).set_value("Compra editada")
+    proposal_edit_submit(app, proposal)
+
+    stored = manual_proposals_of(app)
+
+    assert not app.exception
+    assert len(stored) == 1
+    edited = stored[0]
+    assert edited is not proposal
+    assert edited.action is ProposalAction.LOOSE_ENTRY
+    assert edited.status is ProposalStatus.PENDING
+    assert edited.payload.product_id == catalog.product.id
+    assert edited.payload.quantity == 5
+    assert edited.payload.reason == "Compra editada"
+    assert edited.payload.cost == Decimal("10.25")
+
+    app.text_input(
+        key=proposal_edit_key(edited, "reason")
+    ).set_value("Compra editada otra vez")
+    proposal_edit_submit(app, edited)
+
+    stored_again = manual_proposals_of(app)
+
+    assert not app.exception
+    assert len(stored_again) == 1
+    assert stored_again[0] is not edited
+    assert stored_again[0].payload.reason == "Compra editada otra vez"
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_an_assistant_proposal_is_edited_in_its_turn_without_writing(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica la edición de una propuesta del asistente (T051, C14).
+
+    Se reemplaza solo el `pending_proposal` del turno: el historial no crece,
+    la propuesta conserva su acción y su producto, sigue pendiente y no se
+    ejecuta ni se escribe nada.
+    """
+    assistant = make_assistant(
+        connection,
+        tool_call(
+            "propose_loose_entry",
+            {
+                "product_id": catalog.product.id,
+                "quantity": 3,
+                "reason": "Compra",
+            },
+        ),
+    )
+    app = app_for(assistant)
+    app.run()
+    app.chat_input[0].set_value("Propone una entrada suelta").run()
+    proposal = assistant.history[-1].state["pending_proposal"]
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    app.radio[0].set_value("Propuestas pendientes").run()
+    app.text_input(
+        key=proposal_edit_key(proposal, "reason")
+    ).set_value("Compra del asistente editada")
+    proposal_edit_submit(app, proposal)
+
+    state = assistant.history[-1].state
+    edited = state["pending_proposal"]
+
+    assert not app.exception
+    assert len(assistant.history) == 1
+    assert edited is not proposal
+    assert edited.action is ProposalAction.LOOSE_ENTRY
+    assert edited.status is ProposalStatus.PENDING
+    assert edited.payload.product_id == catalog.product.id
+    assert edited.payload.quantity == 3
+    assert edited.payload.reason == "Compra del asistente editada"
+    assert state["execution_result"] is None
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_two_identical_manual_proposals_are_edited_independently(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica la identidad por objeto entre propuestas idénticas (T051).
+
+    Dos propuestas manuales con el mismo payload tienen claves de formulario
+    distintas: editar una no modifica la otra.
+    """
+    payload = LooseEntryPayload(
+        product_id=catalog.product.id,
+        quantity=3,
+        reason="Compra",
+    )
+    first = proposal_for(payload)
+    second = proposal_for(payload)
+    app = app_for(make_assistant(connection))
+
+    assert first == second
+    assert first is not second
+
+    open_pending_proposals(app, [first, second])
+
+    assert not app.exception
+    assert len(
+        [
+            button
+            for button in app.button
+            if button.label == EDIT_SUBMIT_LABEL
+        ]
+    ) == 2
+    assert proposal_edit_key(first, "reason") != proposal_edit_key(
+        second, "reason"
+    )
+
+    app.text_input(
+        key=proposal_edit_key(first, "reason")
+    ).set_value("Solo la primera")
+    proposal_edit_submit(app, first)
+
+    stored = manual_proposals_of(app)
+
+    assert not app.exception
+    assert len(stored) == 2
+    assert stored[0].payload.reason == "Solo la primera"
+    assert stored[1] is second
+    assert stored[1].payload == payload
+
+
+def test_a_manual_and_an_assistant_proposal_are_independent(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica la identidad entre una propuesta manual y una del asistente
+    (T051).
+
+    Las dos propuestas comparten payload pero tienen claves distintas: editar
+    una no modifica la otra y cada una se reemplaza en su propio origen.
+    """
+    assistant = make_assistant(
+        connection,
+        tool_call(
+            "propose_loose_entry",
+            {
+                "product_id": catalog.product.id,
+                "quantity": 3,
+                "reason": "Compra",
+            },
+        ),
+    )
+    app = app_for(assistant)
+    app.run()
+    app.chat_input[0].set_value("Propone una entrada suelta").run()
+    assistant_proposal = assistant.history[-1].state["pending_proposal"]
+    manual_proposal = proposal_for(
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=3,
+            reason="Compra",
+        )
+    )
+    app.session_state[MANUAL_PROPOSALS_KEY] = [manual_proposal]
+
+    app.radio[0].set_value("Propuestas pendientes").run()
+
+    assert not app.exception
+    assert assistant_proposal.payload == manual_proposal.payload
+    assert assistant_proposal is not manual_proposal
+    assert proposal_edit_key(
+        assistant_proposal, "reason"
+    ) != proposal_edit_key(manual_proposal, "reason")
+
+    app.text_input(
+        key=proposal_edit_key(manual_proposal, "reason")
+    ).set_value("Compra manual editada")
+    proposal_edit_submit(app, manual_proposal)
+
+    manual = manual_proposals_of(app)
+    assert manual[0].payload.reason == "Compra manual editada"
+    assert (
+        assistant.history[-1].state["pending_proposal"]
+        is assistant_proposal
+    )
+    assert (
+        assistant.history[-1].state["pending_proposal"].payload.reason
+        == "Compra"
+    )
+
+    current_assistant = assistant.history[-1].state["pending_proposal"]
+    app.text_input(
+        key=proposal_edit_key(current_assistant, "reason")
+    ).set_value("Compra del asistente editada")
+    proposal_edit_submit(app, current_assistant)
+
+    assert not app.exception
+    assert (
+        manual_proposals_of(app)[0].payload.reason == "Compra manual editada"
+    )
+    assert (
+        assistant.history[-1].state["pending_proposal"].payload.reason
+        == "Compra del asistente editada"
+    )
+
+
+def test_a_confirmed_proposal_is_not_offered_for_editing(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica que una propuesta confirmada no se edite (T051, C14).
+
+    La sección solo reúne propuestas pendientes: una confirmada no muestra
+    formulario de edición y la base no cambia al abrir la sección.
+    """
+    confirmed = Proposal(
+        action=ProposalAction.LOOSE_ENTRY,
+        payload=LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=3,
+            reason="Compra",
+        ),
+        status=ProposalStatus.CONFIRMED,
+    )
+    app = app_for(make_assistant(connection))
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    open_pending_proposals(app, [confirmed])
+
+    assert not app.exception
+    assert [info.value for info in app.info] == [EMPTY_PROPOSALS_MESSAGE]
+    assert not any(
+        button.label == EDIT_SUBMIT_LABEL for button in app.button
+    )
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_edit_proposal_rejects_a_confirmed_proposal(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Verifica el rechazo de la edición de una propuesta confirmada (T051, C14).
+
+    La interfaz entrega la propuesta al servicio, que exige el estado
+    pendiente: devuelve su motivo y no reemplaza la referencia ni escribe.
+    """
+    confirmed = Proposal(
+        action=ProposalAction.LOOSE_ENTRY,
+        payload=LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=3,
+            reason="Compra",
+        ),
+        status=ProposalStatus.CONFIRMED,
+    )
+    manual = [confirmed]
+    monkeypatch.setattr("app.ui.main.manual_proposals", lambda: manual)
+    session = build_session(connection=connection)
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    error = edit_proposal(
+        None,
+        session,
+        id(confirmed),
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=5,
+            reason="Compra editada",
+        ),
+    )
+
+    assert error is not None
+    assert "confirmada" in error
+    assert "pendientes" in error
+    assert manual == [confirmed]
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_edit_proposal_reports_a_proposal_that_is_no_longer_available(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Verifica la clave inexistente al editar una propuesta (T051).
+
+    Si la propuesta se confirmó o desapareció entre el render y el envío, la
+    interfaz devuelve un motivo explícito sin modificar nada ni escribir.
+    """
+    payload = LooseEntryPayload(
+        product_id=catalog.product.id,
+        quantity=3,
+        reason="Compra",
+    )
+    manual: list[Proposal] = []
+    monkeypatch.setattr("app.ui.main.manual_proposals", lambda: manual)
+    session = build_session(connection=connection)
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    assert locate_proposal(None, 999999) is None
+    error = edit_proposal(None, session, 999999, payload)
+
+    assert error == PROPOSAL_NOT_AVAILABLE_MESSAGE
+    assert manual == []
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_edit_proposal_rejects_a_withdrawn_proposal(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Verifica el rechazo al editar una propuesta retirada (T051, C14).
+
+    La retirada local elimina la propuesta de su colección de sesión, sin
+    asignarle un estado adicional en el dominio. El callback no la reemplaza ni
+    modifica el objeto retirado y tampoco escribe inventario o movimientos.
+    """
+    withdrawn = Proposal(
+        action=ProposalAction.LOOSE_ENTRY,
+        payload=LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=3,
+            reason="Compra",
+        ),
+    )
+    original = withdrawn.model_copy(deep=True)
+    manual = [withdrawn]
+    monkeypatch.setattr("app.ui.main.manual_proposals", lambda: manual)
+    session = build_session(connection=connection)
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    manual.remove(withdrawn)
+    error = edit_proposal(
+        None,
+        session,
+        id(withdrawn),
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=5,
+            reason="Compra editada",
+        ),
+    )
+
+    assert error == PROPOSAL_NOT_AVAILABLE_MESSAGE
+    assert manual == []
+    assert withdrawn == original
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_an_invalid_edit_shows_the_reason_and_keeps_the_proposal(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica la validación del formulario de edición (T051, C21).
+
+    Un motivo vacío se muestra como error, no se entrega al callback y la
+    propuesta original sigue en la sesión sin reemplazarse ni escribirse.
+    """
+    proposal = proposal_for(
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=3,
+            reason="Compra",
+        )
+    )
+    app = app_for(make_assistant(connection))
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    open_pending_proposals(app, [proposal])
+    app.text_input(key=proposal_edit_key(proposal, "reason")).set_value("")
+    proposal_edit_submit(app, proposal)
+
+    assert not app.exception
+    assert any(
+        "Motivo" in error.value and "obligatorio" in error.value
+        for error in app.error
+    )
+    assert manual_proposals_of(app)[0] is proposal
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_editing_conserves_absent_values_and_real_zeros(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica los valores opcionales al editar (T051, C4).
+
+    Un costo ausente sigue ausente, un costo cero sigue siendo cero y el stock
+    mínimo distingue `None` de `0` al editar el nombre.
+    """
+    without_cost = proposal_for(
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=1,
+            reason="Compra",
+        )
+    )
+    zero_cost = proposal_for(
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=1,
+            reason="Compra",
+            cost=Decimal("0"),
+        )
+    )
+    zero_minimum = proposal_for(
+        ProductUpdatePayload(
+            product_id=catalog.product.id,
+            name="Producto",
+            minimum_stock=0,
+        )
+    )
+    absent_minimum = proposal_for(
+        ProductUpdatePayload(
+            product_id=catalog.product.id,
+            name="Producto",
+        )
+    )
+    app = app_for(make_assistant(connection))
+
+    open_pending_proposals(
+        app,
+        [without_cost, zero_cost, zero_minimum, absent_minimum],
+    )
+
+    app.text_input(
+        key=proposal_edit_key(without_cost, "reason")
+    ).set_value("Compra sin costo")
+    proposal_edit_submit(app, without_cost)
+    app.text_input(
+        key=proposal_edit_key(zero_cost, "reason")
+    ).set_value("Compra con costo cero")
+    proposal_edit_submit(app, zero_cost)
+    app.text_input(
+        key=proposal_edit_key(zero_minimum, "name")
+    ).set_value("Producto cero")
+    proposal_edit_submit(app, zero_minimum)
+    app.text_input(
+        key=proposal_edit_key(absent_minimum, "name")
+    ).set_value("Producto ausente")
+    proposal_edit_submit(app, absent_minimum)
+
+    stored = manual_proposals_of(app)
+
+    assert not app.exception
+    assert stored[0].payload.cost is None
+    assert stored[1].payload.cost == Decimal("0")
+    assert stored[2].payload.minimum_stock == 0
+    assert stored[3].payload.minimum_stock is None
+
+
+def test_editing_the_initial_presentations_conserves_their_count_and_order(
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica la edición de las presentaciones iniciales (T051).
+
+    Se editan los campos de las presentaciones existentes conservando su
+    cantidad y su orden; el formulario no permite añadir ni eliminar
+    presentaciones.
+    """
+    proposal = proposal_for(
+        ProductRegistrationPayload(
+            sku="SKU-T051",
+            name="Producto T051",
+            base_unit="unidad",
+            base_sale_price=Decimal("150"),
+            minimum_stock=0,
+            initial_loose_units=0,
+            presentations=(
+                InitialPresentationPayload(
+                    name="Caja x6",
+                    factor=6,
+                    sale_price=Decimal("60"),
+                    closed_stock=2,
+                ),
+                InitialPresentationPayload(
+                    name="Bolsa x10",
+                    factor=10,
+                    sale_price=Decimal("100"),
+                    closed_stock=0,
+                ),
+            ),
+        )
+    )
+    app = app_for(make_assistant(connection))
+    before = snapshot(connection)
+
+    open_pending_proposals(app, [proposal])
+    app.text_input(
+        key=proposal_edit_presentation_key(proposal, 1, "name")
+    ).set_value("Caja x12")
+    app.number_input(
+        key=proposal_edit_presentation_key(proposal, 1, "factor")
+    ).set_value(12)
+    app.text_input(
+        key=proposal_edit_presentation_key(proposal, 1, "sale_price")
+    ).set_value("75.5")
+    app.number_input(
+        key=proposal_edit_presentation_key(proposal, 1, "closed_stock")
+    ).set_value(3)
+    app.number_input(
+        key=proposal_edit_presentation_key(proposal, 2, "closed_stock")
+    ).set_value(7)
+    proposal_edit_submit(app, proposal)
+
+    edited = manual_proposals_of(app)[0].payload.presentations
+
+    assert not app.exception
+    assert len(edited) == 2
+    assert edited[0].name == "Caja x12"
+    assert edited[0].factor == 12
+    assert edited[0].sale_price == Decimal("75.5")
+    assert edited[0].closed_stock == 3
+    assert edited[1].name == "Bolsa x10"
+    assert edited[1].factor == 10
+    assert edited[1].sale_price == Decimal("100")
+    assert edited[1].closed_stock == 7
+    assert snapshot(connection) == before
+
+
+def test_editing_a_price_update_keeps_the_presentation_and_does_not_write(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica la edición del cambio de precio (T051, C14).
+
+    La revisión muestra el precio vigente y el nuevo; la edición conserva la
+    presentación afectada y no registra historial ni modifica la base.
+    """
+    proposal = proposal_for(
+        PriceUpdatePayload(
+            presentation_id=catalog.box.id,
+            new_price=Decimal("500"),
+        )
+    )
+    app = app_for(make_assistant(connection))
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    open_pending_proposals(app, [proposal])
+
+    rendered = rendered_markdown(app)
+
+    assert not app.exception
+    assert "precio vigente: 600.00" in rendered
+    assert "precio nuevo: 500.00" in rendered
+
+    app.text_input(
+        key=proposal_edit_key(proposal, "new_price")
+    ).set_value("700.5")
+    proposal_edit_submit(app, proposal)
+
+    edited = manual_proposals_of(app)[0]
+
+    assert edited.action is ProposalAction.PRICE_UPDATE
+    assert edited.payload.presentation_id == catalog.box.id
+    assert edited.payload.new_price == Decimal("700.5")
+    assert snapshot(connection) == before
+    assert snapshot(connection)["price_changes"] == []
+    assert connection.total_changes == changes_before
 
 
 # --- Rediseño visual (T057) ---
