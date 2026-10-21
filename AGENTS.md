@@ -10,10 +10,10 @@
 
 ## Memoria del proyecto
 
-- Al comenzar una tarea, lee `MEMORY.md` para conocer el estado del proyecto y las decisiones tomadas.
-- Consulta `docs/constitution.md` y la especificación funcional correspondiente cuando sean relevantes para la tarea.
-- Al terminar una tarea o fase aprobada, actualiza `MEMORY.md` con el estado actual, las decisiones importantes y los próximos pasos.
-- Mantén `MEMORY.md` breve, con un objetivo aproximado de 50 líneas.
+- Al comenzar una tarea, lee solo el bloque `## Estado actual` de `MEMORY.md` y el bloque de la tarea objetivo en `tasks.md`. Usa `grep` para localizar detalles históricos; no cargues esos documentos completos de forma rutinaria.
+- Consulta `docs/constitution.md` y las secciones de `spec.md` o `plan.md` citadas o necesarias, localizadas por RF, criterio de aceptación, decisión o símbolo.
+- Al cerrar una tarea aprobada, actualiza `MEMORY.md` una sola vez con el estado verificado y el commit; no registres supuestos ni historial duplicado.
+- Mantén el bloque `## Estado actual` breve; el historial detallado corresponde a `tasks.md` y no debe cargarse por defecto.
 - Si una decisión se convierte en una regla permanente, propón incorporarla a `AGENTS.md` o `docs/constitution.md`, según corresponda.
 - Nunca guardes claves, tokens, credenciales ni otros secretos en `MEMORY.md`.
 
@@ -25,10 +25,20 @@
 - No implementes funcionalidades que no estén contempladas en la especificación aprobada.
 - Antes de implementar, verifica que exista un plan técnico aprobado y tareas definidas.
 - Trabaja únicamente en la rama `main`, salvo que el usuario autorice un cambio.
-- Resuelve manualmente los cambios pequeños y evidentes cuando sea más eficiente que delegarlos a un agente.
+- El Coordinator solo edita `MEMORY.md`; los cambios pequeños de código, pruebas o documentación se delegan al rol correspondiente.
 - Mantén los cambios simples y evita la sobreingeniería.
 - Utiliza commits que sigan Conventional Commits, con mensajes en inglés.
 
+
+## Protocolo SDD mínimo
+
+- **Fuentes de verdad:** comportamiento → `spec.md` y `docs/constitution.md`; arquitectura → `plan.md`; estado de tareas → `tasks.md` y Git; `MEMORY.md` solo resume el estado actual.
+- **Contexto mínimo:** al iniciar, lee `AGENTS.md`, el bloque `## Estado actual` de `MEMORY.md` y el bloque de la tarea objetivo en `tasks.md`. De `spec.md` y `plan.md`, lee las secciones citadas o necesarias, localizadas por RF, criterio de aceptación, decisión o símbolo. No cargues documentos completos de forma rutinaria.
+- **Delegación:** cada encargo debe indicar tarea, objetivo, bloque documental, decisiones aprobadas, criterios de aceptación, archivos permitidos, restricciones de archivos y permisos, evidencia esperada y condición de parada. No repitas las reglas generales de este archivo.
+- **Evidencia:** el Implementer entrega un bloque compacto con archivos modificados; pruebas ejecutadas y resultado; `git status --short --branch`; `git diff --check`; `git diff --stat`; `git diff --name-status`; riesgos y bloqueos.
+- **Revisión:** el Reviewer es solo lectura. No ejecuta pruebas ni Git; verifica la evidencia y juzga requisitos, regresiones, arquitectura y cobertura. `APROBADO` no autoriza commit, cierre ni push.
+- **Autorizaciones:** implementar, preparar staging, hacer commit, cerrar documentación y hacer push requieren autorización humana explícita e independiente. Ningún agente puede inferirla.
+- **Cierre:** tras el commit verificado y la autorización de cierre, actualiza `tasks.md` y `MEMORY.md` una sola vez con el estado y el hash verificados. No cierres una tarea antes de esa autorización. El número y alcance de los commits de cierre se acuerdan con el usuario.
 
 ## Skills de desarrollo
 

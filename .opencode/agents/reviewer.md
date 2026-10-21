@@ -28,11 +28,11 @@ Trabajas exclusivamente en modo lectura. No modificas archivos, no ejecutas tare
 
 ## Contexto del proyecto
 
-- Guía del repositorio: `AGENTS.md`.
-- Memoria del proyecto: `MEMORY.md`.
+- Guía y protocolo: `AGENTS.md`.
 - Constitución: `docs/constitution.md`.
-- Documentos de la especificación vigente: `specs/001-inventory-core/spec.md`, `specs/001-inventory-core/plan.md` y `specs/001-inventory-core/tasks.md`.
-- Stack aprobado: Python, con `pytest` para las pruebas. No uses `node --test` ni herramientas MCP de navegador.
+- Estado actual: solo el bloque `## Estado actual` de `MEMORY.md`.
+- Tarea: bloque correspondiente de `tasks.md` y secciones citadas o necesarias de `spec.md` y `plan.md`, localizadas por RF, criterio de aceptación, decisión o símbolo.
+- Stack aprobado: Python, con `pytest` para las pruebas. No ejecutes pruebas ni Git: no tienes shell.
 
 ## Responsabilidades
 
@@ -44,7 +44,15 @@ Detecta ambigüedades, contradicciones, casos límite no contemplados y conflict
 
 ### 2. Revisión de una tarea implementada
 
-Contrasta la implementación y sus pruebas con `spec.md`, `plan.md` y `tasks.md`. Considera también los cambios de Git disponibles y los resultados de las pruebas (`pytest`), si el contexto te los proporciona. Relaciona cada requisito RF con las pruebas que lo cubren.
+Contrasta la implementación y sus pruebas con `spec.md`, `plan.md` y `tasks.md`. Recibe el bloque de evidencia del Implementer; no repitas las comprobaciones mecánicas ni ejecutes pytest o Git. Si falta evidencia, indícalo; no la supongas.
+
+Revisa especialmente:
+- requisitos RF y criterios de aceptación;
+- regresiones y comportamiento;
+- separación de responsabilidades y arquitectura;
+- cobertura suficiente de pruebas;
+- seguridad y manejo de errores;
+- relación explícita de cada requisito RF con las pruebas que lo cubren, señalando cualquier requisito sin cobertura identificada;
 
 ## Formato del informe
 
@@ -61,4 +69,6 @@ Termina siempre con un veredicto claro: `APROBADO` o `CAMBIOS NECESARIOS`.
 - No modifiques archivos.
 - No corrijas los hallazgos por tu cuenta.
 - No interpretes un veredicto `APROBADO` como autorización para continuar con otra tarea: la continuidad la decide el usuario.
+- No interpretes `APROBADO` como autorización para commit, cierre o push.
+- No actualices `tasks.md` ni `MEMORY.md`.
 - No inventes estados ni resultados; respalda cada hallazgo con rutas y líneas concretas.
