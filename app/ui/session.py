@@ -49,13 +49,15 @@ class SessionResources:
 
     Agrupa la conexión SQLite de la sesión y los servicios que consumen las
     secciones de consulta: las lecturas del inventario (existencias, alertas e
-    historial de movimientos), la lectura de presentaciones y del historial de
-    precios, y el servicio de propuestas que ejecutan las confirmaciones del
-    usuario. Vive en `st.session_state`, no se serializa y no se persiste.
+    historial de movimientos), la lectura de compensabilidad de los movimientos
+    (T054), la lectura de presentaciones y del historial de precios, y el
+    servicio de propuestas que ejecutan las confirmaciones del usuario. Vive en
+    `st.session_state`, no se serializa y no se persiste.
     """
 
     connection: sqlite3.Connection
     inventory_service: InventoryService
+    movement_service: MovementService
     presentation_service: PresentationService
     price_history_service: PriceHistoryService
     proposal_service: ProposalService
@@ -88,9 +90,10 @@ def build_session(
 
     Sobre la conexión —la inyectada o, sin ella, la base durable del proyecto—
     compone los repositorios SQLite, la transacción compartida y los servicios
-    de consulta que consumen las secciones: las lecturas del inventario, las
-    presentaciones, el historial de precios y las propuestas. No invoca
-    `get_llm()` ni compone el grafo: la lectura funciona sin modelo.
+    de consulta que consumen las secciones: las lecturas del inventario, la
+    compensabilidad de los movimientos, las presentaciones, el historial de
+    precios y las propuestas. No invoca `get_llm()` ni compone el grafo: la
+    lectura funciona sin modelo.
 
     Args:
         connection: Conexión SQLite ya abierta, o `None` para abrir la conexión
@@ -146,6 +149,7 @@ def build_session(
     return SessionResources(
         connection=resolved_connection,
         inventory_service=inventory_service,
+        movement_service=movement_service,
         presentation_service=presentation_service,
         price_history_service=price_history_service,
         proposal_service=proposal_service,

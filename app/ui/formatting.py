@@ -13,6 +13,9 @@ Contrato de formateo:
   política explícita `ROUND_HALF_UP` (`MONEY_ROUNDING`), sin depender del
   contexto global de `Decimal`, sin usar `float` y sin modificar el valor
   recibido.
+- Costo unitario de referencia: derivado solo para mostrarlo, con `Decimal`,
+  como el total del grupo dividido por sus unidades equivalentes; no se
+  persiste y no modifica el total (T058).
 - Fechas y horas: `YYYY-MM-DD HH:MM:SS ±HH:MM`, con un espacio antes del
   desplazamiento y el desplazamiento con dos puntos, convertidas a la zona
   IANA `America/Argentina/Buenos_Aires` con `local_timezone()`. El
@@ -107,6 +110,72 @@ def format_money(value: Decimal | None) -> str:
     quantized = value.quantize(_MONEY_QUANTUM, rounding=MONEY_ROUNDING)
 
     return format(quantized, "f")
+
+
+def unit_cost_reference(
+    total: Decimal | None,
+    quantity: int | None,
+    *,
+    factor: int | None = None,
+) -> Decimal | None:
+    """
+    Calcula el costo unitario de referencia de un grupo de stock (T058).
+
+    El costo informado es el importe total del grupo, no un costo unitario. La
+    referencia se deriva solo para mostrarla: para unidades sueltas se divide el
+    total por la cantidad y para presentaciones cerradas por la cantidad de
+    paquetes multiplicada por su equivalencia. No se persiste ni modifica el
+    total recibido.
+
+    Args:
+        total: Costo total informado, o `None` si no se informó.
+        quantity: Cantidad inicial del grupo, o `None` si no se conoce.
+        factor: Equivalencia de la presentación cerrada; `None` para unidades
+            sueltas.
+
+    Returns:
+        El costo unitario exacto como `Decimal`, o `None` si falta el costo, la
+        cantidad no es positiva o la equivalencia de una presentación cerrada
+        no es positiva.
+    """
+    if total is None or quantity is None or quantity <= 0:
+        return None
+
+    if factor is not None and factor <= 0:
+        return None
+
+    units = quantity if factor is None else quantity * factor
+
+    return total / units
+
+
+def format_unit_cost_reference(
+    total: Decimal | None,
+    quantity: int | None,
+    *,
+    factor: int | None = None,
+) -> str | None:
+    """
+    Muestra el costo unitario de referencia con el formato monetario (T058).
+
+    Reutiliza `format_money`, de modo que la referencia se presenta con dos
+    decimales y `ROUND_HALF_UP`. El redondeo es solo de presentación: no altera
+    el costo total persistido ni los cálculos internos.
+
+    Args:
+        total: Costo total informado, o `None` si no se informó.
+        quantity: Cantidad inicial del grupo, o `None` si no se conoce.
+        factor: Equivalencia de la presentación cerrada; `None` para unidades
+            sueltas.
+
+    Returns:
+        La referencia formateada, o `None` si no corresponde mostrarla.
+    """
+    reference = unit_cost_reference(total, quantity, factor=factor)
+    if reference is None:
+        return None
+
+    return format_money(reference)
 
 
 def format_instant(value: datetime | None) -> str:

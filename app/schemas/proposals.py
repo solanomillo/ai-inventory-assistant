@@ -128,13 +128,17 @@ class InitialPresentationPayload(ProposalPayloadModel):
 
     `closed_stock` es el stock cerrado inicial de esa presentación: cuando es
     cero no genera ningún movimiento de stock inicial, regla que aplica el
-    servicio de productos.
+    servicio de productos. `cost` es el costo total opcional de ese grupo
+    inicial: un importe del grupo, no un costo unitario; el servicio de
+    productos rechaza un costo informado cuando la cantidad inicial es cero y
+    conserva el importe en el movimiento inicial existente (T058).
     """
 
     name: str
     factor: int = Field(ge=1)
     sale_price: MonetaryValue
     closed_stock: int = Field(default=0, ge=0)
+    cost: MonetaryValue | None = None
 
 
 class ProductRegistrationPayload(ProposalPayloadModel):
@@ -143,6 +147,8 @@ class ProductRegistrationPayload(ProposalPayloadModel):
 
     Declara el SKU, el nombre y la unidad base del producto, el precio de la
     presentación base y, de forma opcional, el stock inicial suelto y cerrado.
+    `initial_loose_cost` es el costo total opcional de las unidades sueltas
+    iniciales, independiente del costo de cada presentación adicional (T058).
     Los textos se validan en el dominio: quedan vacíos si solo tienen espacios y
     se conservan con su texto original recortado.
     """
@@ -154,6 +160,7 @@ class ProductRegistrationPayload(ProposalPayloadModel):
     base_sale_price: MonetaryValue
     minimum_stock: int = Field(default=0, ge=0)
     initial_loose_units: int = Field(default=0, ge=0)
+    initial_loose_cost: MonetaryValue | None = None
     presentations: tuple[InitialPresentationPayload, ...] = ()
     base_presentation_name: str | None = None
 

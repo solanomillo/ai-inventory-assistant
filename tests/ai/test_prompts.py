@@ -73,6 +73,74 @@ def test_inventory_agent_prompt_consults_and_prepares_proposals() -> None:
     )
 
 
+def test_inventory_agent_prompt_guides_the_partial_product_search() -> None:
+    """Verifica que el prompt guía la búsqueda parcial de productos."""
+    text = INVENTORY_AGENT_PROMPT.lower()
+
+    assert "find_products_by_name" in text, (
+        "El prompt debe nombrar la herramienta de búsqueda parcial."
+    )
+    assert re.search(r"nombre o (?:un )?texto parcial", text), (
+        "El prompt debe indicar que el nombre o el texto parcial se busca con "
+        "la búsqueda parcial."
+    )
+    assert re.search(r"varias coincidencias", text), (
+        "El prompt debe contemplar el caso de varias coincidencias."
+    )
+    assert re.search(r"mu[eé]stralas todas", text), (
+        "El prompt debe indicar que se muestran todas las coincidencias."
+    )
+
+
+def test_inventory_agent_prompt_prioritizes_an_exact_sku() -> None:
+    """Verifica que un SKU completo prefiere la búsqueda exacta (D5)."""
+    text = INVENTORY_AGENT_PROMPT.lower()
+
+    assert "find_product_by_sku" in text, (
+        "El prompt debe nombrar la búsqueda exacta por SKU."
+    )
+    assert re.search(r"sku completo", text), (
+        "El prompt debe referirse al SKU completo del usuario."
+    )
+    assert re.search(r"prefier\w*", text), (
+        "El prompt debe indicar que se prefiere la búsqueda exacta por SKU."
+    )
+    assert text.index("find_product_by_sku") < text.index(
+        "find_products_by_name"
+    ), (
+        "El prompt debe mencionar la búsqueda exacta por SKU antes de la "
+        "búsqueda parcial."
+    )
+
+
+def test_inventory_agent_prompt_requires_confirmation_for_a_single_partial_match() -> None:
+    """Verifica que una coincidencia parcial única se confirma (D5)."""
+    text = INVENTORY_AGENT_PROMPT.lower()
+
+    assert re.search(r"[uú]nica coincidencia parcial", text), (
+        "El prompt debe contemplar la coincidencia parcial única."
+    )
+    assert re.search(r"candidat\w*", text), (
+        "El prompt debe presentar la coincidencia parcial única como "
+        "candidata."
+    )
+    assert re.search(r"pide confirmaci[oó]n", text), (
+        "El prompt debe pedir confirmación antes de usar la candidata."
+    )
+
+
+def test_inventory_agent_prompt_does_not_assume_a_single_partial_match_is_unique() -> None:
+    """Verifica que la coincidencia parcial única no se da por inequívoca."""
+    text = INVENTORY_AGENT_PROMPT.lower()
+
+    assert re.search(
+        r"no asumas que identifica\s+inequ[ií]vocamente", text
+    ), (
+        "El prompt no debe asumir que una coincidencia parcial identifica "
+        "inequívocamente el producto."
+    )
+
+
 @pytest.mark.parametrize(("name", "prompt"), _PROMPTS)
 def test_prompts_require_real_data_and_forbid_inventing(
     name: str,

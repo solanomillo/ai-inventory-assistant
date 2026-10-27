@@ -1,11 +1,14 @@
-"""Pruebas del estado compartido del grafo del asistente (T018).
+"""Pruebas del estado compartido del grafo del asistente (T018, T063).
 
 Verifican la construcción y la conservación del estado mínimo que circula
-entre los nodos del grafo: el mensaje del usuario, la propuesta pendiente y el
-resultado de la confirmación. El estado es un contenedor pasivo, por lo que
-estas pruebas cubren únicamente la construcción y la conservación de los
-objetos, no la propagación real entre nodos del grafo (`app/graph/workflow.py`
-aún no existe en esta tarea).
+entre los nodos del grafo: el mensaje del usuario, la conversación reciente, la
+propuesta pendiente y el resultado de la confirmación. El estado es un
+contenedor pasivo, por lo que estas pruebas cubren únicamente la construcción y
+la conservación de los objetos, no la propagación real entre nodos del grafo.
+
+La conversación reciente se representa como una tupla de pares `(rol, texto)`
+sin objetos de LangChain (T063): la traducción a mensajes del modelo corresponde
+a `app/graph/workflow.py`.
 
 Los objetos de `Proposal` y de `ConfirmationResult` que se usan aquí son
 fixtures de prueba, construidos solo para verificar que el estado los conserva
@@ -70,19 +73,44 @@ def confirmation_result() -> ConfirmationResult:
 
 
 def test_initial_state_carries_the_message_and_none_for_optional_fields() -> None:
-    """Verifica la construcción del estado inicial con los cuatro campos."""
+    """Verifica la construcción del estado inicial con sus campos."""
     state = create_initial_state("Consulta de stock")
 
     assert isinstance(state, dict)
     assert set(state.keys()) == {
         "user_message",
+        "conversation",
         "pending_proposal",
         "execution_result",
         "response",
     }
     assert state["user_message"] == "Consulta de stock"
+    assert state["conversation"] == ()
     assert state["pending_proposal"] is None
     assert state["execution_result"] is None
+    assert state["response"] is None
+
+
+def test_create_initial_state_stores_recent_conversation() -> None:
+    """Verifica que el estado conserva la conversación reciente como tupla."""
+    conversation = (
+        ("human", "Busca Coca"),
+        ("ai", "¿Te refieres a coca-cola-3L?"),
+    )
+
+    state = create_initial_state("sí, es ese", conversation=conversation)
+
+    assert isinstance(state["conversation"], tuple)
+    assert state["conversation"] == conversation
+    assert state["conversation"][0] == ("human", "Busca Coca")
+    assert state["conversation"][1] == ("ai", "¿Te refieres a coca-cola-3L?")
+    assert all(
+        isinstance(part, str)
+        for message in state["conversation"]
+        for part in message
+    )
+    assert state["user_message"] == "sí, es ese"
+    assert state["pending_proposal"] is None
     assert state["response"] is None
 
 

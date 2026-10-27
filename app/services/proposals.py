@@ -312,14 +312,18 @@ def _product_registration(
     """
     Traduce el payload del alta a los datos del servicio de productos (RF-01).
 
-    No valida nada: el alta del producto y de sus presentaciones se valida en el
-    servicio de productos, con las reglas del dominio.
+    Transporta el costo total opcional de las unidades sueltas iniciales y el
+    de cada presentación cerrada inicial, sin derivarlos ni mezclarlos con los
+    precios de venta. No valida nada: el alta del producto, de sus
+    presentaciones y de sus costos se valida en el servicio de productos, con
+    las reglas del dominio (T058).
 
     Args:
         payload: Payload validado del alta de un producto.
 
     Returns:
-        Los datos del alta de productos, con sus presentaciones iniciales.
+        Los datos del alta de productos, con sus presentaciones iniciales y sus
+        costos opcionales.
     """
     return ProductRegistration(
         sku=payload.sku,
@@ -328,12 +332,14 @@ def _product_registration(
         base_sale_price=payload.base_sale_price,
         minimum_stock=payload.minimum_stock,
         initial_loose_units=payload.initial_loose_units,
+        initial_loose_cost=payload.initial_loose_cost,
         presentations=tuple(
             InitialClosedStock(
                 name=presentation.name,
                 factor=presentation.factor,
                 sale_price=presentation.sale_price,
                 closed_stock=presentation.closed_stock,
+                cost=presentation.cost,
             )
             for presentation in payload.presentations
         ),

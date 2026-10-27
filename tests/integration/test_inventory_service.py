@@ -5,7 +5,13 @@ Cubren la lectura pública del listado de productos añadida a
 las lecturas existentes: incluye activos e inactivos con su estado, hereda el
 orden de registro del repositorio y no escribe en la base.
 
-También verifican la regresión de las lecturas existentes (búsqueda por nombre
+También cubren la búsqueda parcial por nombre o SKU de `search_products`
+(RF-01): normalización sin distinguir mayúsculas, con guiones y guiones bajos
+equivalentes a espacios, coincidencias múltiples, prioridad del SKU exacto,
+luego del nombre exacto y después de las coincidencias parciales, productos
+inactivos y la regresión de la búsqueda exacta por nombre.
+
+Además verifican la regresión de las lecturas existentes (búsqueda por nombre
 y por SKU, existencias, presentaciones e historial), que las alertas siguen
 excluyendo los productos inactivos y que la fábrica de herramientas del asistente
 sigue devolviendo siete herramientas.
@@ -25,6 +31,7 @@ from typing import Any
 import pytest
 
 from app.domain.movements import MovementKind
+from app.domain.products import ProductError
 from app.infrastructure.sqlite.connection import (
     IN_MEMORY_DATABASE,
     connect,
@@ -62,6 +69,23 @@ class Catalog:
     inactive_low: ProductRecord
     active_enough: ProductRecord
     movement: MovementRecord
+
+
+@dataclass(frozen=True)
+class SearchCatalog:
+    """
+    Inventario controlado para la búsqueda parcial (datos de prueba).
+
+    `coca` tiene el nombre exacto buscado y un SKU con guiones; `bebida`
+    contiene ese nombre y se registra antes, de modo que su nombre normalizado
+    ordena antes que el exacto; `zero` es otra coincidencia parcial e
+    `inactive` está desactivado y también coincide.
+    """
+
+    coca: ProductRecord
+    bebida: ProductRecord
+    zero: ProductRecord
+    inactive: ProductRecord
 
 
 @pytest.fixture
@@ -177,6 +201,39 @@ def catalog(
     )
 
 
+@pytest.fixture
+def search_catalog(products: SqliteProductRepository) -> SearchCatalog:
+    """Registra el inventario controlado de la búsqueda parcial."""
+    bebida = products.add(
+        sku="SKU-BEBIDA",
+        name="Bebida Coca Cola",
+        base_unit="botella",
+    )
+    coca = products.add(
+        sku="Coca-Cola-3L",
+        name="Coca Cola",
+        base_unit="botella",
+    )
+    zero = products.add(
+        sku="SKU-ZERO",
+        name="Coca Cola Zero",
+        base_unit="botella",
+    )
+    inactive = products.add(
+        sku="SKU-LIGHT",
+        name="Coca Cola Light",
+        base_unit="botella",
+        active=False,
+    )
+
+    return SearchCatalog(
+        coca=coca,
+        bebida=bebida,
+        zero=zero,
+        inactive=inactive,
+    )
+
+
 def snapshot(
     connection: sqlite3.Connection,
 ) -> dict[str, list[tuple[Any, ...]]]:
@@ -259,6 +316,159 @@ def test_list_products_does_not_write_to_the_database(
     ]
     assert snapshot(connection) == before
     assert connection.total_changes == changes_before
+
+
+# --- Búsqueda parcial por nombre o SKU (RF-01) ---
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Coca",
+        "coca",
+        "Coca-Cola",
+        "coca_cola",
+        "COCA   COLA",
+        "  coca cola  ",
+    ],
+)
+def test_search_products_matches_a_partial_name(
+    service: InventoryService,
+    search_catalog: SearchCatalog,
+    query: str,
+) -> None:
+    """Verifica la subcadena del nombre normalizado y sus variantes."""
+    found = service.search_products(query)
+    found_ids = [product.id for product in found]
+
+    assert search_catalog.coca.id in found_ids
+    assert search_catalog.zero.id in found_ids
+    assert all(
+        isinstance(product, ProductRecord) for product in found
+    )
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Coca-Cola 3L",
+        "coca_cola_3l",
+        "COCA-COLA-3L",
+        "Coca Cola 3L",
+        "Cola-3L",
+        "3l",
+    ],
+)
+def test_search_products_matches_a_partial_sku(
+    service: InventoryService,
+    search_catalog: SearchCatalog,
+    query: str,
+) -> None:
+    """Verifica la subcadena del SKU normalizado."""
+    found = service.search_products(query)
+
+    assert [product.id for product in found] == [search_catalog.coca.id]
+    assert found[0].sku == "Coca-Cola-3L"
+
+
+def test_search_products_returns_every_match(
+    service: InventoryService,
+    search_catalog: SearchCatalog,
+) -> None:
+    """Verifica que se devuelven todas las coincidencias, sin seleccionar."""
+    found = service.search_products("Coca")
+
+    assert len(found) == 4
+    assert [product.id for product in found] == [
+        search_catalog.bebida.id,
+        search_catalog.coca.id,
+        search_catalog.inactive.id,
+        search_catalog.zero.id,
+    ]
+
+
+def test_search_products_prioritizes_an_exact_sku(
+    service: InventoryService,
+    products: SqliteProductRepository,
+) -> None:
+    """Verifica que el SKU exacto precede al nombre exacto (D3)."""
+    name_exact = products.add(
+        sku="SKU-OTRO",
+        name="Bebida 1L",
+        base_unit="botella",
+    )
+    sku_exact = products.add(
+        sku="Bebida-1L",
+        name="Bebida uno",
+        base_unit="botella",
+    )
+
+    found = service.search_products("Bebida 1L")
+
+    assert [product.id for product in found] == [
+        sku_exact.id,
+        name_exact.id,
+    ]
+    assert found[0].sku == "Bebida-1L"
+    assert found[1].name == "Bebida 1L"
+
+
+def test_search_products_prioritizes_an_exact_name(
+    service: InventoryService,
+    search_catalog: SearchCatalog,
+) -> None:
+    """Verifica que el nombre exacto precede a las coincidencias parciales."""
+    found = service.search_products("Coca Cola")
+
+    assert [product.id for product in found] == [
+        search_catalog.coca.id,
+        search_catalog.bebida.id,
+        search_catalog.inactive.id,
+        search_catalog.zero.id,
+    ]
+    assert found[0].name == "Coca Cola"
+
+
+def test_search_products_includes_inactive_products(
+    service: InventoryService,
+    search_catalog: SearchCatalog,
+) -> None:
+    """Verifica que los productos desactivados también se consideran."""
+    found = service.search_products("Light")
+
+    assert [product.id for product in found] == [search_catalog.inactive.id]
+    assert found[0].active is False
+
+
+def test_search_products_returns_an_empty_list_without_matches(
+    service: InventoryService,
+    search_catalog: SearchCatalog,
+) -> None:
+    """Verifica que una consulta sin coincidencias devuelve una lista vacía."""
+    assert service.search_products("Inexistente") == []
+
+
+@pytest.mark.parametrize("query", ["   ", "\t\n", "-", "_"])
+def test_search_products_rejects_a_query_without_text(
+    service: InventoryService,
+    search_catalog: SearchCatalog,
+    query: str,
+) -> None:
+    """Verifica que una consulta vacía o sin texto se rechaza."""
+    with pytest.raises(ProductError):
+        service.search_products(query)
+
+
+def test_exact_name_search_keeps_its_previous_behavior(
+    service: InventoryService,
+    search_catalog: SearchCatalog,
+) -> None:
+    """Verifica que la búsqueda exacta de la UI no cambia (RF-09)."""
+    assert service.find_products_by_name("Coca") == []
+    assert [
+        product.id
+        for product in service.find_products_by_name("Coca Cola")
+    ] == [search_catalog.coca.id]
 
 
 # --- Alertas solo de activos (RF-04) ---

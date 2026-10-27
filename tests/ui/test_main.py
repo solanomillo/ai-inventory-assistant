@@ -43,12 +43,12 @@ servicio, el aviso de no paginación con el número real, la ausencia de
 escrituras, el funcionamiento sin modelo y la separación de la vista.
 
 Cubren el detalle de producto de T045 sobre RF-09: las presentaciones con
-factor y stock cerrado, las unidades sueltas y el total equivalente derivado,
-los movimientos con fecha local y campos opcionales, el historial de precios
-en orden cronológico, la consulta de un producto inactivo, los vacíos
-diferenciados, los avisos C8 sin truncamiento, una lectura de cada servicio sin
-escrituras, el funcionamiento sin modelo y el error de lectura que no se
-presenta como historial vacío.
+factor, precio de venta y stock cerrado, las unidades sueltas y el total
+equivalente derivado, los movimientos con fecha local y campos opcionales, el
+historial de precios en orden cronológico, la consulta de un producto inactivo,
+los vacíos diferenciados, los avisos C8 sin truncamiento, una lectura de cada
+servicio sin escrituras, el funcionamiento sin modelo y el error de lectura que
+no se presenta como historial vacío.
 
 Cubren la sección de operaciones de T049 sobre RF-09: los formularios de las
 diez acciones admitidas —sin desactivación de productos ni cambio de factor de
@@ -56,6 +56,18 @@ una presentación existente—, la creación de propuestas pendientes sin escrib
 la colección ordenada de la sesión sin deduplicar, la validación explícita y la
 precisión monetaria con `Decimal`, el funcionamiento sin modelo y los límites
 arquitectónicos de la vista.
+
+Cubren la confirmación centralizada de T053 sobre RF-09: la confirmación de
+propuestas manuales y del asistente desde «Propuestas pendientes» a través de
+un único punto de `main.py`, la ausencia del control una vez confirmada, el
+segundo intento sin ejecución, la protección de reenvío mientras hay una
+confirmación en curso y la comprobación estructural de una sola aparición de
+`.confirm(` en `app/ui/**`.
+
+Cubren los estados transversales de T055 sobre RF-09: la carga explícita de las
+secciones que leen servicios, la validación local distinta del rechazo del
+servicio y de la confirmación, el rechazo con su motivo real y la presentación
+consistente de las fechas locales sobre el almacenamiento en UTC.
 
 Queda fuera de este alcance y corresponde a T025: la validación end-to-end de
 RF-01 a RF-07.
@@ -65,11 +77,13 @@ import ast
 import re
 import sqlite3
 from collections.abc import Iterator, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -78,6 +92,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
+    HumanMessage,
     ToolMessage,
 )
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -87,6 +102,7 @@ from streamlit.testing.v1 import AppTest
 
 from app import config
 from app.domain.movements import MovementKind
+from app.graph.state import create_initial_state
 from app.infrastructure.sqlite.connection import connect, transaction
 from app.infrastructure.sqlite.repositories import (
     SqliteMovementRepository,
@@ -100,6 +116,7 @@ from app.schemas.proposals import (
     ClosedEntryPayload,
     ClosedExitPayload,
     CompensationPayload,
+    ConfirmationResult,
     InitialPresentationPayload,
     LooseEntryPayload,
     LooseExitPayload,
@@ -132,14 +149,22 @@ from app.services.ports import (
 )
 from app.services.proposals import ProposalService
 from app.tools.inventory_tools import create_inventory_tools
+from app.ui import main as main_module
 from app.ui import session as session_module
-from app.ui.formatting import ABSENT_MARKER
+from app.ui.formatting import ABSENT_MARKER, format_money
 from app.ui.main import (
     ALREADY_CONFIRMED_MESSAGE,
     ASSISTANT_KEY,
     CONFIRMATION_ERROR_PREFIX,
+    CONFIRMATION_IN_PROGRESS_MESSAGE,
+    CONFIRMATION_NOTICE_KEY,
+    CONFIRMATION_NOT_AVAILABLE_MESSAGE,
     CONFIRM_LABEL,
+    DISCARDED_PROPOSAL_MESSAGE,
+    LOADING_MESSAGE,
+    DISCARDED_PROPOSALS_KEY,
     MANUAL_PROPOSALS_KEY,
+    MAX_CONVERSATION_MESSAGES,
     NO_PENDING_PROPOSAL_MESSAGE,
     NO_RESPONSE_MESSAGE,
     PENDING_PROPOSAL_NOTE,
@@ -148,11 +173,15 @@ from app.ui.main import (
     SECTION_LABELS,
     SECTION_PENDING_MESSAGE,
     Assistant,
+    Turn,
     answer,
     build_assistant,
     confirm_pending,
+    confirm_proposal,
+    describe_price_history,
     describe_price_update,
     describe_proposal,
+    describe_result,
     edit_proposal,
     locate_proposal,
     section_renderers,
@@ -168,9 +197,13 @@ from app.ui.sections.home import (
     REPLENISHMENT_HEADER,
 )
 from app.ui.sections.proposals import (
+    DISCARD_LABEL,
     EDIT_SUBMIT_LABEL,
     EMPTY_PROPOSALS_MESSAGE,
+    INITIAL_LOOSE_COST_FIELD_LABEL,
+    INITIAL_PRESENTATION_COST_FIELD_LABEL,
     NO_INITIAL_PRESENTATIONS_MESSAGE,
+    UNIT_COST_REFERENCE_FIELD_LABEL,
     PresentationPriceView,
     ProposalReview,
     describe_price_update_fields,
@@ -185,6 +218,7 @@ from app.ui.sections.product_detail import (
     EMPTY_PRICE_HISTORY_MESSAGE,
     EMPTY_PRESENTATIONS_MESSAGE,
     EVENT_LABEL,
+    FACTOR_HELP_CAPTION,
     FACTOR_LABEL,
     INITIAL_STOCK_LABEL,
     MOVEMENTS_HEADER,
@@ -204,6 +238,7 @@ from app.ui.sections.product_detail import (
     PRODUCT_SELECTOR_LABEL,
     QUANTITY_LABEL,
     REASON_LABEL,
+    SALE_PRICE_LABEL,
     TABLE_YES_TEXT,
     TOTAL_EQUIVALENT_LABEL,
     ProductView,
@@ -240,25 +275,39 @@ from app.ui.sections.movements import (
 )
 from app.ui.sections.operations import (
     ACTION_SELECTOR_KEY,
+    ACTION_SELECTOR_LABEL,
+    APERTURE_QUANTITY_LABEL,
     BASE_PRICE_FIELD_LABEL,
     BASE_UNIT_FIELD_LABEL,
+    CLOSED_ENTRY_PRESENTATION_LABEL,
+    CLOSED_PRESENTATION_NO_SELECTION_LABEL,
+    CLOSED_QUANTITY_LABEL,
+    COMPENSABLE_QUANTITY_TEMPLATE,
+    COMPENSATION_QUANTITY_LABEL,
     COMPENSATION_NOTE,
+    COMPENSATION_UNAVAILABLE_MESSAGE,
     COST_FIELD_LABEL,
     EMPTY_CATALOG_TEMPLATE as EMPTY_OPERATIONS_CATALOG_TEMPLATE,
     EMPTY_MOVEMENTS_MESSAGE as EMPTY_OPERATIONS_MOVEMENTS_MESSAGE,
     FACTOR_FIELD_LABEL,
     INITIAL_CLOSED_STOCK_LABEL,
+    INITIAL_LOOSE_COST_LABEL,
+    INITIAL_LOOSE_UNITS_LABEL,
+    INITIAL_PRESENTATION_COST_LABEL,
     INITIAL_PRESENTATION_NAME_LABEL,
+    LOOSE_QUANTITY_LABEL,
     MOVEMENT_SELECTOR_KEY_TEMPLATE,
     MOVEMENT_SELECTOR_LABEL,
     NAME_FIELD_LABEL,
     NEW_MINIMUM_STOCK_LABEL,
     NEW_NAME_LABEL,
     NEW_PRICE_LABEL,
+    NO_CLOSED_EXIT_PRESENTATIONS_MESSAGE,
+    NO_CLOSED_PRESENTATIONS_MESSAGE,
+    PRESENTATION_NAME_FIELD_LABEL,
     PRESENTATION_PRICE_LABEL,
     PRESENTATION_SELECTOR_KEY_TEMPLATE,
     PRODUCT_SELECTOR_KEY,
-    QUANTITY_FIELD_LABEL,
     REASON_FIELD_LABEL,
     SKU_FIELD_LABEL,
     SUBMIT_LABEL,
@@ -637,6 +686,7 @@ def product_records(app: AppTest) -> list[dict[str, Any]]:
 DETAIL_PRESENTATION_COLUMNS: tuple[str, ...] = (
     PRESENTATION_LABEL,
     FACTOR_LABEL,
+    SALE_PRICE_LABEL,
     CLOSED_STOCK_LABEL,
     BASE_COLUMN_LABEL,
 )
@@ -1084,6 +1134,97 @@ def test_the_app_keeps_the_conversation_between_runs(
     assert len(assistant.history) == 2
 
 
+# --- Contexto conversacional (T063) ---
+
+
+def conversation_turn(user_message: str, response: str | None) -> Turn:
+    """Construye un turno previo de la conversación (T063)."""
+    state = create_initial_state(user_message)
+    state["response"] = response
+
+    return Turn(user_message=user_message, state=state)
+
+
+def conversation_context(model: RelayChatModel) -> list[str]:
+    """Devuelve los mensajes de conversación que recibió el modelo (T063)."""
+    return [
+        message.content
+        for message in model.received[-1]
+        if isinstance(message, (HumanMessage, AIMessage))
+    ]
+
+
+def test_answer_preserves_recent_conversation_context(
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica que «sí, es ese» llega al modelo junto con la aclaración previa.
+
+    El historial de la sesión aporta la consulta original y la aclaración del
+    asistente; el mensaje actual se envía después de ellas y una sola vez, sin
+    formar parte del historial previo (T063).
+    """
+    model = RelayChatModel()
+    assistant = build_assistant(model=model, connection=connection)
+    assistant.history.append(
+        conversation_turn("Busca Coca", "¿Te refieres a coca-cola-3L?")
+    )
+
+    turn = answer(assistant, "sí, es ese")
+
+    assert conversation_context(model) == [
+        "Busca Coca",
+        "¿Te refieres a coca-cola-3L?",
+        "sí, es ese",
+    ]
+    assert conversation_context(model).count("sí, es ese") == 1
+    assert turn.state["conversation"] == (
+        ("human", "Busca Coca"),
+        ("ai", "¿Te refieres a coca-cola-3L?"),
+    )
+    assert len(assistant.history) == 1
+
+
+def test_answer_limits_the_recent_conversation_context(
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica la ventana de 12 mensajes en la frontera 12/13 (T063).
+
+    Con doce mensajes previos —seis turnos completos— se descarta el más
+    antiguo y el modelo recibe once mensajes de historial más el actual:
+    doce en total, con el mensaje actual al final.
+    """
+    model = RelayChatModel()
+    assistant = build_assistant(model=model, connection=connection)
+    for index in range(6):
+        assistant.history.append(
+            conversation_turn(f"consulta {index}", f"respuesta {index}")
+        )
+
+    answer(assistant, "sí, es ese")
+
+    context = conversation_context(model)
+    assert MAX_CONVERSATION_MESSAGES == 12
+    assert len(context) == 12
+    assert context == [
+        "respuesta 0",
+        "consulta 1",
+        "respuesta 1",
+        "consulta 2",
+        "respuesta 2",
+        "consulta 3",
+        "respuesta 3",
+        "consulta 4",
+        "respuesta 4",
+        "consulta 5",
+        "respuesta 5",
+        "sí, es ese",
+    ]
+    assert "consulta 0" not in context
+    assert context[-1] == "sí, es ese"
+
+
 # --- Lectura sin modelo y contenedor de sesión (T039) ---
 
 
@@ -1155,6 +1296,7 @@ def test_build_session_composes_and_reads_without_the_model(
 
     assert isinstance(session, SessionResources)
     assert session.connection is connection
+    assert isinstance(session.movement_service, MovementService)
     assert isinstance(session.proposal_service, ProposalService)
     assert stock.product.sku == "SKU-1"
     assert stock.total_equivalent == catalog.total_equivalent
@@ -1392,7 +1534,7 @@ def test_confirming_a_pending_proposal_executes_it_once(
     assert products.get(catalog.product.id).loose_units == 7
     assert len(movements.list_by_product(catalog.product.id)) == 3
     assert "Operación confirmada" in rendered
-    assert "- quantity: 3" in rendered
+    assert "- **Cantidad:** 3" in rendered
     assert len(app.button) == 0
 
 
@@ -1437,7 +1579,14 @@ def test_a_rejected_confirmation_shows_the_error_without_changes(
     catalog: Catalog,
     products: SqliteProductRepository,
 ) -> None:
-    """Verifica el rechazo de una confirmación sin cambios parciales (T024)."""
+    """
+    Verifica el rechazo de una confirmación sin cambios parciales (T024,
+    T055).
+
+    El rechazo muestra el motivo real devuelto por el servicio —la falta de
+    unidades sueltas—, no se presenta como una operación ejecutada y no deja
+    cambios parciales.
+    """
     assistant = make_assistant(
         connection,
         tool_call(
@@ -1463,7 +1612,9 @@ def test_a_rejected_confirmation_shows_the_error_without_changes(
     assert not app.exception
     assert len(app.error) == 1
     assert CONFIRMATION_ERROR_PREFIX in app.error[0].value
-    assert len(app.error[0].value) > len(CONFIRMATION_ERROR_PREFIX)
+    assert "No hay unidades sueltas suficientes" in app.error[0].value
+    assert app.success == []
+    assert "Operación confirmada" not in rendered_markdown(app)
     assert state["execution_result"] is None
     assert state["pending_proposal"].status is ProposalStatus.PENDING
     assert products.get(catalog.product.id).loose_units == 4
@@ -1615,7 +1766,7 @@ def test_the_app_shows_the_price_update_with_its_prices(
     rendered = rendered_markdown(app)
     state = assistant.history[0].state
     expected_presentation = (
-        f"- presentación: Caja x6 (id {catalog.box.id}, factor 6)"
+        f"- presentación: Caja x6 (id {catalog.box.id}, equivalencia 6)"
     )
 
     assert not app.exception
@@ -1893,12 +2044,12 @@ def test_the_pending_proposals_section_shows_the_action_and_the_status(
     catalog: Catalog,
 ) -> None:
     """
-    Verifica la vista de las propuestas sin confirmar (C13, T041, T050).
+    Verifica la vista de las propuestas pendientes (C13, T041, T050, T053).
 
     La sección muestra la acción en lenguaje legible, su estado real y los
-    campos de la propuesta —en lugar del volcado genérico del payload—, sin
-    ofrecer la confirmación —que sigue siendo exclusiva del único punto de
-    `main.py` (D-A)—.
+    campos de la propuesta —en lugar del volcado genérico del payload— y ofrece
+    la confirmación delegada al único punto de `main.py` (D-A), además de la
+    edición y el descarte.
     """
     assistant = make_assistant(
         connection,
@@ -1935,26 +2086,34 @@ def test_the_pending_proposals_section_shows_the_action_and_the_status(
     assert f"Costo: {ABSENT_MARKER}" in rendered
     assert "- quantity" not in rendered
     assert "- reason" not in rendered
-    assert [button.label for button in app.button] == [EDIT_SUBMIT_LABEL]
-    assert CONFIRM_LABEL not in [button.label for button in app.button]
+    assert [button.label for button in app.button] == [
+        CONFIRM_LABEL,
+        DISCARD_LABEL,
+        EDIT_SUBMIT_LABEL,
+    ]
     assert len(app.chat_input) == 0
 
 
 def test_the_proposals_view_does_not_confirm_nor_touch_the_session() -> None:
     """
-    Verifica la responsabilidad de vista de las propuestas (D-A, T041, T051).
+    Verifica la responsabilidad de vista de las propuestas (D-A, T041, T051,
+    T053).
 
     El módulo no contiene el punto de confirmación ni invoca la edición del
     servicio, no nombra el servicio de propuestas, no escribe en la sesión y no
     importa el punto de entrada, los servicios, el dominio ni la persistencia:
-    confirmar sigue siendo exclusivo de `app/ui/main.py` y la edición se delega
-    en un callback con todo ya resuelto.
+    confirmar sigue siendo exclusivo de `app/ui/main.py`, y tanto la
+    confirmación como la edición se delegan en callbacks con todo ya resuelto.
+    La marca de confirmación en curso llega como un dato, no se lee del
+    estado.
     """
     source = PROPOSALS_SECTION_PATH.read_text(encoding="utf-8")
     tree = ast.parse(source)
 
     assert ".confirm(" not in source
     assert ".edit(" not in source
+    assert "on_confirm" in source
+    assert "PROCESSING_KEY" not in source
     assert "proposal_service" not in source
     assert "st.session_state" not in source
     assert "st.selectbox" not in source
@@ -3247,11 +3406,12 @@ def test_product_detail_shows_presentations_and_the_derived_total(
     catalog: Catalog,
 ) -> None:
     """
-    Verifica presentaciones, factor, stock cerrado y total equivalente (C9).
+    Verifica presentaciones, factor, precio, stock cerrado y total (C9).
 
     El total equivalente es el derivado por el servicio —4 sueltas + 2 cajas
-    de factor 6 = 16— y no la suma de stock cerrado (2). La presentación base
-    se indica y el precio vigente no forma parte del detalle (D3).
+    con equivalencia 6 = 16— y no la suma de stock cerrado (2). La presentación
+    base se indica y cada fila muestra el precio de venta vigente de su propia
+    presentación (D3).
     """
     app = app_for(make_assistant(connection))
 
@@ -3274,17 +3434,60 @@ def test_product_detail_shows_presentations_and_the_derived_total(
         selectbox.label for selectbox in app.selectbox
     ]
     assert tuple(by_name) == ("botella", "Caja x6")
+    assert "Equivalencia" in by_name["Caja x6"]
     assert by_name["Caja x6"][FACTOR_LABEL] == "6"
+    assert by_name["Caja x6"][SALE_PRICE_LABEL] == "600.00"
     assert by_name["Caja x6"][CLOSED_STOCK_LABEL] == "2"
     assert by_name["Caja x6"][BASE_COLUMN_LABEL] == ""
     assert by_name["botella"][FACTOR_LABEL] == "1"
+    assert by_name["botella"][SALE_PRICE_LABEL] == "100.00"
+    assert by_name["botella"][CLOSED_STOCK_LABEL] == "0"
     assert by_name["botella"][BASE_COLUMN_LABEL] == TABLE_YES_TEXT
+    assert FACTOR_HELP_CAPTION in [caption.value for caption in app.caption]
     assert f"{LOOSE_UNITS_LABEL}: 4" in rendered
     assert f"{TOTAL_EQUIVALENT_LABEL}: 16" in rendered
     assert f"{TOTAL_EQUIVALENT_LABEL}: 6" not in rendered
     assert ":green-badge[Activo]" in rendered_markdown(app)
-    assert "600.00" not in rendered
-    assert "100.00" not in rendered
+
+
+def test_product_detail_shows_each_presentation_sale_price(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    presentations: SqlitePresentationRepository,
+) -> None:
+    """
+    Verifica el precio de venta vigente de cada presentación (D3).
+
+    Los precios reales almacenados son distintos —100 para la botella y 600
+    para la caja—, de modo que una fila que reutilizara el precio de otra
+    presentación no pasaría. Los importes se comparan con `format_money`, que
+    fija dos decimales.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_product_detail(app, catalog.product)
+
+    stored = {
+        presentation.name: presentation
+        for presentation in presentations.list_by_product(catalog.product.id)
+    }
+    by_name = {
+        row[PRESENTATION_LABEL]: row
+        for row in detail_records(app, DETAIL_PRESENTATION_COLUMNS)
+    }
+
+    assert not app.exception
+    assert set(by_name) == set(stored)
+    for name, presentation in stored.items():
+        assert by_name[name][SALE_PRICE_LABEL] == format_money(
+            presentation.sale_price
+        )
+    assert by_name["botella"][SALE_PRICE_LABEL] == "100.00"
+    assert by_name["Caja x6"][SALE_PRICE_LABEL] == "600.00"
+    assert all(
+        re.fullmatch(r"\d+\.\d{2}", row[SALE_PRICE_LABEL])
+        for row in by_name.values()
+    )
 
 
 def test_product_detail_does_not_read_without_a_selection(
@@ -6081,7 +6284,7 @@ def choose_operation_movement(app: AppTest, catalog: Catalog) -> None:
             product_id=catalog.product.id
         )
     )
-    selector.set_value(selector.options[1])
+    selector.set_value(selector.options[1]).run()
 
 
 def operation_text_input(app: AppTest, label: str) -> Any:
@@ -6129,34 +6332,36 @@ def fill_operation_form(
         )
         operation_text_input(app, NEW_MINIMUM_STOCK_LABEL).set_value("25")
     elif action == "alta_presentacion":
-        operation_text_input(app, NAME_FIELD_LABEL).set_value("Caja x12")
+        operation_text_input(app, PRESENTATION_NAME_FIELD_LABEL).set_value(
+            "Caja x12"
+        )
         operation_number_input(app, FACTOR_FIELD_LABEL).set_value(12)
         operation_text_input(app, PRESENTATION_PRICE_LABEL).set_value(
             "1200.75"
         )
     elif action == "entrada_suelta":
-        operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(3)
+        operation_number_input(app, LOOSE_QUANTITY_LABEL).set_value(3)
         operation_text_input(app, REASON_FIELD_LABEL).set_value("Compra")
         operation_text_input(app, COST_FIELD_LABEL).set_value("10.25")
     elif action == "entrada_cerrada":
         choose_operation_presentation(app, catalog)
-        operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(2)
+        operation_number_input(app, CLOSED_QUANTITY_LABEL).set_value(2)
         operation_text_input(app, REASON_FIELD_LABEL).set_value("Compra")
         operation_text_input(app, COST_FIELD_LABEL).set_value("100")
     elif action == "salida_suelta":
-        operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(1)
+        operation_number_input(app, LOOSE_QUANTITY_LABEL).set_value(1)
         operation_text_input(app, REASON_FIELD_LABEL).set_value("Venta")
     elif action == "salida_cerrada":
         choose_operation_presentation(app, catalog)
-        operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(1)
+        operation_number_input(app, CLOSED_QUANTITY_LABEL).set_value(1)
         operation_text_input(app, REASON_FIELD_LABEL).set_value("Venta")
     elif action == "apertura":
         choose_operation_presentation(app, catalog)
-        operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(1)
+        operation_number_input(app, APERTURE_QUANTITY_LABEL).set_value(1)
         operation_text_input(app, REASON_FIELD_LABEL).set_value("Apertura")
     elif action == "compensacion":
         choose_operation_movement(app, catalog)
-        operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(1)
+        operation_number_input(app, COMPENSATION_QUANTITY_LABEL).set_value(1)
         operation_text_input(app, REASON_FIELD_LABEL).set_value("Ajuste")
     elif action == "cambio_precio":
         choose_operation_presentation(app, catalog)
@@ -6186,6 +6391,9 @@ def test_operations_offers_only_the_admitted_actions(
 
     assert not app.exception
     assert [header.value for header in app.header] == ["Operaciones"]
+    assert app.selectbox(key=ACTION_SELECTOR_KEY).label == (
+        "Acción a preparar"
+    )
     assert options == tuple(label for _, label in OPERATION_ACTION_LABELS)
     assert not any("desactiv" in option.lower() for option in options)
     assert not any("factor" in option.lower() for option in options)
@@ -6208,9 +6416,544 @@ def test_operations_offers_only_the_admitted_actions(
     choose_operation(app, "alta_presentacion")
     choose_operation_product(app, catalog.product)
 
+    factor_input = next(
+        element
+        for element in app.number_input
+        if element.label == "Equivalencia (unidades base)"
+    )
+
     assert not app.exception
-    assert operation_number_input(app, FACTOR_FIELD_LABEL).label == (
-        FACTOR_FIELD_LABEL
+    assert factor_input.label == FACTOR_FIELD_LABEL
+    assert "unidades base" in factor_input.help
+
+
+def test_product_and_presentation_forms_show_the_approved_labels_and_help(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica las etiquetas, placeholders y ayudas de los formularios (RF-09).
+
+    Las etiquetas visibles describen la unidad base, la presentación adicional
+    y la equivalencia; los ejemplos de los `text_input` son orientativos y las
+    ayudas aportan el contexto que el placeholder no repite. Los campos
+    numéricos no usan placeholder: su ayuda incluye un ejemplo visible.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+
+    action_selector = app.selectbox(key=ACTION_SELECTOR_KEY)
+
+    assert not app.exception
+    assert action_selector.label == "Acción a preparar"
+    assert action_selector.help == "Operación que se va a preparar."
+
+    sku = operation_text_input(app, "SKU")
+    name = operation_text_input(app, "Nombre del producto")
+    base_unit = operation_text_input(app, "Unidad base")
+    base_price = operation_text_input(app, "Precio de venta de la unidad base")
+    minimum_stock = operation_number_input(app, "Stock mínimo")
+    initial_loose_units = operation_number_input(
+        app, "Unidades sueltas iniciales"
+    )
+    base_name = operation_text_input(
+        app, "Nombre visible de la unidad base (opcional)"
+    )
+    additional_name = operation_text_input(
+        app, "Nombre de la presentación adicional"
+    )
+    factor = operation_number_input(app, "Equivalencia (unidades base)")
+    presentation_price = operation_text_input(
+        app, "Precio de venta de la presentación"
+    )
+    initial_closed_stock = operation_number_input(
+        app, "Cantidad inicial de presentaciones cerradas"
+    )
+    captions = [caption.value for caption in app.caption]
+
+    assert not app.exception
+    assert sku.placeholder == "Ej.: COCA-500"
+    assert sku.help == "Código único; no se modifica después del alta."
+    assert name.placeholder == "Ej.: Coca-Cola 500 ml"
+    assert base_unit.placeholder == "Ej.: botella"
+    assert base_unit.help == "Unidad mínima con la que se mide el stock."
+    assert base_price.placeholder == "Ej.: 1500.00"
+    assert base_price.help == (
+        "Precio de una unidad base; no es el precio de un fardo."
+    )
+    assert minimum_stock.help == (
+        "Umbral de alerta en unidades base. Ej.: 6."
+    )
+    assert initial_loose_units.help == (
+        "Stock inicial no agrupado en presentaciones cerradas. Ej.: 2."
+    )
+    assert base_name.placeholder == "Ej.: Botella 500 ml"
+    assert base_name.help == (
+        "Solo cambia el nombre de la presentación de factor 1; si se "
+        "omite, se usa la unidad base."
+    )
+    assert any("Presentación adicional" in value for value in captions)
+    assert additional_name.placeholder == "Ej.: Fardo x 6"
+    assert additional_name.help == "Empaque opcional además de la unidad base."
+    assert factor.help == (
+        "Cantidad de unidades base que contiene la presentación; un fardo "
+        "con equivalencia 6 contiene 6 botellas. Ej.: 6."
+    )
+    assert presentation_price.placeholder == "Ej.: 7500.00"
+    assert presentation_price.help == (
+        "Precio de una presentación completa, no de cada unidad base."
+    )
+    assert initial_closed_stock.help == (
+        "Presentaciones cerradas existentes al dar de alta. Ej.: 1."
+    )
+
+    choose_operation(app, "alta_presentacion")
+    choose_operation_product(app, catalog.product)
+
+    product_selector = app.selectbox(key=PRODUCT_SELECTOR_KEY)
+    presentation_name = operation_text_input(
+        app, "Nombre de la presentación"
+    )
+    presentation_factor = operation_number_input(
+        app, "Equivalencia (unidades base)"
+    )
+    presentation_sale_price = operation_text_input(
+        app, "Precio de venta de la presentación"
+    )
+
+    assert not app.exception
+    assert product_selector.label == "Producto"
+    assert product_selector.help == "Producto afectado por la operación."
+    assert presentation_name.placeholder == "Ej.: Fardo x 6"
+    assert presentation_factor.help == (
+        "Cantidad de unidades base que contiene la presentación; un fardo "
+        "con equivalencia 6 contiene 6 botellas. Ej.: 6."
+    )
+    assert presentation_sale_price.placeholder == "Ej.: 7500.00"
+    assert presentation_sale_price.help == (
+        "Precio de una presentación completa, no de cada unidad base."
+    )
+
+    choose_operation(app, "cambio_precio")
+    choose_operation_product(app, catalog.product)
+
+    presentation_selector = app.selectbox(
+        key=PRESENTATION_SELECTOR_KEY_TEMPLATE.format(
+            product_id=catalog.product.id
+        )
+    )
+    new_price = operation_text_input(app, "Nuevo precio de venta")
+
+    assert not app.exception
+    assert presentation_selector.label == "Presentación"
+    assert presentation_selector.help == (
+        "Presentación afectada por la operación."
+    )
+    assert new_price.placeholder == "Ej.: 1600.00"
+    assert new_price.help == (
+        "Precio que tendrá la presentación después de confirmar."
+    )
+
+
+def test_movement_forms_use_contextual_labels_and_reason_examples(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """Verifica las etiquetas contextuales de cantidad y motivos (RF-09)."""
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, "entrada_suelta")
+    choose_operation_product(app, catalog.product)
+
+    loose_quantity = operation_number_input(
+        app, "Cantidad de unidades sueltas"
+    )
+    reason = operation_text_input(app, "Motivo")
+    cost = operation_text_input(app, "Costo de ingreso (opcional)")
+
+    assert not app.exception
+    assert loose_quantity.label == LOOSE_QUANTITY_LABEL
+    assert loose_quantity.help == "Cantidad entera de la operación. Ej.: 2."
+    assert reason.placeholder == "Ej.: Compra de mercadería"
+    assert reason.help == "Queda registrado en el historial."
+    assert cost.placeholder == "Ej.: 1200.00"
+    assert cost.help == (
+        "Importe total informado; no se distribuye entre unidades; solo en "
+        "entradas."
+    )
+
+    choose_operation(app, "salida_suelta")
+    choose_operation_product(app, catalog.product)
+
+    assert not app.exception
+    loose_exit_quantity = operation_number_input(
+        app, "Cantidad de unidades sueltas"
+    )
+    assert loose_exit_quantity.label == LOOSE_QUANTITY_LABEL
+    assert loose_exit_quantity.help == (
+        "Cantidad entera de la operación. Ej.: 2."
+    )
+    assert operation_text_input(app, "Motivo").placeholder == "Ej.: Venta"
+
+    choose_operation(app, "entrada_cerrada")
+    choose_operation_product(app, catalog.product)
+
+    assert not app.exception
+    closed_entry_quantity = operation_number_input(
+        app, "Cantidad de presentaciones cerradas"
+    )
+    assert closed_entry_quantity.label == CLOSED_QUANTITY_LABEL
+    assert closed_entry_quantity.help == (
+        "Cantidad entera de la operación. Ej.: 2."
+    )
+    assert operation_text_input(app, "Motivo").placeholder == (
+        "Ej.: Compra de mercadería"
+    )
+
+    choose_operation(app, "salida_cerrada")
+    choose_operation_product(app, catalog.product)
+
+    assert not app.exception
+    closed_exit_quantity = operation_number_input(
+        app, "Cantidad de presentaciones cerradas"
+    )
+    assert closed_exit_quantity.label == CLOSED_QUANTITY_LABEL
+    assert closed_exit_quantity.help == (
+        "Cantidad entera de la operación. Ej.: 2."
+    )
+    assert operation_text_input(app, "Motivo").placeholder == "Ej.: Venta"
+
+    choose_operation(app, "apertura")
+    choose_operation_product(app, catalog.product)
+
+    assert not app.exception
+    aperture_quantity = operation_number_input(
+        app, "Cantidad de presentaciones a abrir"
+    )
+    assert aperture_quantity.label == APERTURE_QUANTITY_LABEL
+    assert aperture_quantity.help == (
+        "Cantidad entera de la operación. Ej.: 2."
+    )
+    assert operation_text_input(app, "Motivo").placeholder == (
+        "Ej.: Apertura para venta"
+    )
+
+    choose_operation(app, "compensacion")
+    choose_operation_product(app, catalog.product)
+
+    movement_selector = app.selectbox(
+        key=MOVEMENT_SELECTOR_KEY_TEMPLATE.format(
+            product_id=catalog.product.id
+        )
+    )
+
+    assert not app.exception
+    assert movement_selector.label == "Movimiento a compensar"
+    assert movement_selector.help == "Movimiento que se va a compensar."
+
+    choose_operation_movement(app, catalog)
+
+    assert not app.exception
+    compensation_quantity = operation_number_input(
+        app, "Cantidad a compensar"
+    )
+    assert compensation_quantity.label == COMPENSATION_QUANTITY_LABEL
+    assert compensation_quantity.help == (
+        "Cantidad entera de la operación. Ej.: 2."
+    )
+    assert operation_text_input(app, "Motivo").placeholder == (
+        "Ej.: Corrección de inventario"
+    )
+
+
+def test_closed_entry_selector_offers_only_closed_presentations(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica la etiqueta y las opciones del selector de entrada cerrada.
+
+    La presentación base (equivalencia 1) no es una presentación cerrada: el
+    selector usa la etiqueta contextual aprobada y solo ofrece la caja x6 del
+    catálogo de prueba.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, "entrada_cerrada")
+    choose_operation_product(app, catalog.product)
+
+    selector = app.selectbox(
+        key=PRESENTATION_SELECTOR_KEY_TEMPLATE.format(
+            product_id=catalog.product.id
+        )
+    )
+
+    assert not app.exception
+    assert selector.label == CLOSED_ENTRY_PRESENTATION_LABEL
+    assert selector.label == "Presentación cerrada recibida"
+    assert selector.options == [
+        NO_SELECTION_LABEL,
+        f"{catalog.box.name} (equivalencia {catalog.box.factor})",
+    ]
+    assert "botella (equivalencia 1)" not in selector.options
+
+
+def test_closed_entry_submits_the_chosen_closed_presentation(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    presentations: SqlitePresentationRepository,
+) -> None:
+    """
+    Verifica que la entrada cerrada conserva la presentación elegida (RF-03).
+
+    El payload identifica la caja x6 del catálogo y no la presentación base,
+    aunque la base exista con factor 1 en el mismo producto.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, "entrada_cerrada")
+    choose_operation_product(app, catalog.product)
+    choose_operation_presentation(app, catalog)
+    operation_number_input(app, CLOSED_QUANTITY_LABEL).set_value(2)
+    operation_text_input(app, REASON_FIELD_LABEL).set_value("Compra")
+    operation_text_input(app, COST_FIELD_LABEL).set_value("100")
+
+    submit_operation(app)
+
+    payload = manual_proposals_of(app)[0].payload
+    base = next(
+        presentation
+        for presentation in presentations.list_by_product(
+            catalog.product.id
+        )
+        if presentation.factor == 1
+    )
+
+    assert not app.exception
+    assert isinstance(payload, ClosedEntryPayload)
+    assert payload.presentation_id == catalog.box.id
+    assert payload.presentation_id != base.id
+
+
+def test_closed_entry_without_closed_presentations_is_informed(
+    connection: sqlite3.Connection,
+    product_service: ProductService,
+) -> None:
+    """
+    Verifica el estado de un producto que solo tiene la unidad base (C4).
+
+    Sin presentaciones de factor mayor que 1 no se muestra el selector ni el
+    formulario, se informa el mensaje exacto y no se puede crear una propuesta
+    de entrada cerrada.
+    """
+    stored = zero_stock_product(
+        product_service,
+        sku="SKU-SOLO-BASE",
+        name="Solo unidad base",
+    )
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, "entrada_cerrada")
+    choose_operation_product(app, stored)
+
+    infos = [info.value for info in app.info]
+
+    assert not app.exception
+    assert infos == [NO_CLOSED_PRESENTATIONS_MESSAGE]
+    assert NO_CLOSED_PRESENTATIONS_MESSAGE == (
+        "El producto no tiene presentaciones cerradas registradas. Usá la "
+        "entrada de unidades sueltas para la unidad base."
+    )
+    assert [selectbox.label for selectbox in app.selectbox] == [
+        ACTION_SELECTOR_LABEL,
+        "Producto",
+    ]
+    assert not any(button.label == SUBMIT_LABEL for button in app.button)
+    assert manual_proposals_of(app) == []
+
+
+def test_closed_exit_selector_uses_its_own_sentinel_and_only_closed_presentations(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica el selector de la salida de presentaciones cerradas (T049, C4).
+
+    La presentación base no se ofrece y el selector usa un centinela propio,
+    distinto del de los demás formularios, para no confundir la ausencia de
+    selección con la de un producto.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, "salida_cerrada")
+    choose_operation_product(app, catalog.product)
+
+    selector = app.selectbox(
+        key=PRESENTATION_SELECTOR_KEY_TEMPLATE.format(
+            product_id=catalog.product.id
+        )
+    )
+
+    assert not app.exception
+    assert selector.label == "Presentación"
+    assert selector.options == [
+        CLOSED_PRESENTATION_NO_SELECTION_LABEL,
+        f"{catalog.box.name} (equivalencia {catalog.box.factor})",
+    ]
+    assert selector.value == CLOSED_PRESENTATION_NO_SELECTION_LABEL
+    assert CLOSED_PRESENTATION_NO_SELECTION_LABEL == (
+        "Elegí una presentación cerrada"
+    )
+    assert f"{catalog.product.base_unit} (equivalencia 1)" not in (
+        selector.options
+    )
+
+
+def test_closed_exit_without_closed_presentations_is_informed(
+    connection: sqlite3.Connection,
+    product_service: ProductService,
+) -> None:
+    """
+    Verifica el estado de una salida cerrada sin presentaciones cerradas (C4).
+
+    Si el producto solo tiene la unidad base no se muestra el selector ni el
+    formulario de salida cerrada, se informa el mensaje exacto y no se puede
+    crear una propuesta.
+    """
+    stored = zero_stock_product(
+        product_service,
+        sku="SKU-SALIDA-SOLO-BASE",
+        name="Salida solo unidad base",
+    )
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, "salida_cerrada")
+    choose_operation_product(app, stored)
+
+    infos = [info.value for info in app.info]
+
+    assert not app.exception
+    assert infos == [NO_CLOSED_EXIT_PRESENTATIONS_MESSAGE]
+    assert NO_CLOSED_EXIT_PRESENTATIONS_MESSAGE == (
+        "El producto no tiene presentaciones cerradas disponibles para "
+        "retirar."
+    )
+    assert [selectbox.label for selectbox in app.selectbox] == [
+        ACTION_SELECTOR_LABEL,
+        "Producto",
+    ]
+    assert not any(button.label == SUBMIT_LABEL for button in app.button)
+    assert manual_proposals_of(app) == []
+
+
+def test_closed_exit_submits_the_chosen_closed_presentation(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    presentations: SqlitePresentationRepository,
+) -> None:
+    """
+    Verifica que la salida cerrada conserva la presentación elegida (RF-03).
+
+    El payload identifica la caja x6 del catálogo y no la presentación base,
+    aunque la base exista con factor 1 en el mismo producto, y conserva el
+    producto afectado.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, "salida_cerrada")
+    choose_operation_product(app, catalog.product)
+    choose_operation_presentation(app, catalog)
+    operation_number_input(app, CLOSED_QUANTITY_LABEL).set_value(1)
+    operation_text_input(app, REASON_FIELD_LABEL).set_value("Venta")
+
+    submit_operation(app)
+
+    payload = manual_proposals_of(app)[0].payload
+    base = next(
+        presentation
+        for presentation in presentations.list_by_product(
+            catalog.product.id
+        )
+        if presentation.factor == 1
+    )
+
+    assert not app.exception
+    assert isinstance(payload, ClosedExitPayload)
+    assert payload.product_id == catalog.product.id
+    assert payload.presentation_id == catalog.box.id
+    assert payload.presentation_id != base.id
+
+
+def test_price_update_presentation_selector_keeps_the_base_presentation(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica que el filtro de entrada cerrada no afecta a otros formularios.
+
+    El cambio de precio conserva el selector compartido con la etiqueta
+    «Presentación» y sigue ofreciendo la presentación base del producto.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, "cambio_precio")
+    choose_operation_product(app, catalog.product)
+
+    selector = app.selectbox(
+        key=PRESENTATION_SELECTOR_KEY_TEMPLATE.format(
+            product_id=catalog.product.id
+        )
+    )
+
+    assert not app.exception
+    assert selector.label == "Presentación"
+    assert f"{catalog.box.name} (equivalencia {catalog.box.factor})" in (
+        selector.options
+    )
+    assert "botella (equivalencia 1)" in selector.options
+
+
+def test_the_equivalencia_is_sent_as_the_unchanged_factor(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica que la etiqueta de equivalencia conserva el payload (RF-07).
+
+    Informar 6 en «Equivalencia (unidades base)» sigue construyendo el mismo
+    `PresentationRegistrationPayload` con `factor=6`: solo cambia el texto
+    visible, no el contrato de la propuesta.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, "alta_presentacion")
+    choose_operation_product(app, catalog.product)
+    operation_text_input(app, PRESENTATION_NAME_FIELD_LABEL).set_value(
+        "Fardo x 6"
+    )
+    operation_number_input(app, FACTOR_FIELD_LABEL).set_value(6)
+    operation_text_input(app, PRESENTATION_PRICE_LABEL).set_value("7500.00")
+
+    submit_operation(app)
+
+    payload = manual_proposals_of(app)[0].payload
+
+    assert not app.exception
+    assert payload == PresentationRegistrationPayload(
+        product_id=catalog.product.id,
+        name="Fardo x 6",
+        factor=6,
+        sale_price=Decimal("7500.00"),
     )
 
 
@@ -6345,7 +7088,7 @@ def test_manual_and_assistant_proposals_are_concatenated_without_dedup(
     app.radio[0].set_value("Operaciones").run()
     choose_operation(app, "entrada_suelta")
     choose_operation_product(app, catalog.product)
-    operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(3)
+    operation_number_input(app, LOOSE_QUANTITY_LABEL).set_value(3)
     operation_text_input(app, REASON_FIELD_LABEL).set_value("Compra")
     submit_operation(app)
 
@@ -6368,7 +7111,11 @@ def test_manual_and_assistant_proposals_are_concatenated_without_dedup(
         ("alta_producto", "El campo «SKU» es obligatorio."),
         ("modificacion_producto", UPDATE_WITHOUT_CHANGE_MESSAGE),
         ("alta_presentacion", "debe ser mayor que cero"),
-        ("entrada_suelta", "El campo «Cantidad» debe ser mayor que cero."),
+        (
+            "entrada_suelta",
+            "El campo «Cantidad de unidades sueltas» debe ser mayor que "
+            "cero.",
+        ),
         ("salida_suelta", "El campo «Motivo» es obligatorio."),
         ("cambio_precio", "importe decimal válido"),
     ),
@@ -6380,10 +7127,11 @@ def test_an_invalid_form_shows_a_validation_without_a_proposal(
     expected: str,
 ) -> None:
     """
-    Verifica la validación explícita de los formularios (C21, T049).
+    Verifica la validación explícita de los formularios (C21, T049, T055).
 
-    Un formulario inválido muestra el motivo, no crea ninguna propuesta y no
-    escribe: la validación de los campos del payload es previa y explícita.
+    Un formulario inválido muestra el motivo como validación —no como rechazo
+    del servicio ni como confirmación—, no crea ninguna propuesta y no escribe:
+    la validación de los campos del payload es previa y explícita.
     """
     app = app_for(make_assistant(connection))
 
@@ -6396,13 +7144,15 @@ def test_an_invalid_form_shows_a_validation_without_a_proposal(
         operation_text_input(app, BASE_UNIT_FIELD_LABEL).set_value("unidad")
         operation_text_input(app, BASE_PRICE_FIELD_LABEL).set_value("10")
     elif action == "alta_presentacion":
-        operation_text_input(app, NAME_FIELD_LABEL).set_value("Caja")
+        operation_text_input(app, PRESENTATION_NAME_FIELD_LABEL).set_value(
+            "Caja"
+        )
         operation_number_input(app, FACTOR_FIELD_LABEL).set_value(2)
         operation_text_input(app, PRESENTATION_PRICE_LABEL).set_value("0")
     elif action == "entrada_suelta":
         operation_text_input(app, REASON_FIELD_LABEL).set_value("Compra")
     elif action == "salida_suelta":
-        operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(1)
+        operation_number_input(app, LOOSE_QUANTITY_LABEL).set_value(1)
     elif action == "cambio_precio":
         choose_operation_presentation(app, catalog)
         operation_text_input(app, NEW_PRICE_LABEL).set_value("10,50")
@@ -6410,10 +7160,12 @@ def test_an_invalid_form_shows_a_validation_without_a_proposal(
 
     submit_operation(app)
 
-    errors = [error.value for error in app.error]
+    warnings = [warning.value for warning in app.warning]
 
     assert not app.exception
-    assert any(expected in value for value in errors)
+    assert any(expected in value for value in warnings)
+    assert app.error == []
+    assert app.success == []
     assert manual_proposals_of(app) == []
     assert snapshot(connection) == before
 
@@ -6473,11 +7225,11 @@ def test_a_product_registration_admits_an_initial_presentation(
     connection: sqlite3.Connection,
 ) -> None:
     """
-    Verifica la presentación inicial opcional del alta de producto (T049).
+    Verifica la presentación adicional opcional del alta de producto (T049).
 
-    El bloque opcional del formulario declara la presentación inicial con su
-    nombre, su factor, su precio exacto y su stock cerrado inicial; sin esos
-    datos, el payload no declara ninguna presentación inicial.
+    El bloque opcional del formulario declara la presentación adicional con su
+    nombre, su equivalencia, su precio exacto y su stock cerrado inicial; sin
+    esos datos, el payload no declara ninguna presentación adicional.
     """
     app = app_for(make_assistant(connection))
 
@@ -6487,9 +7239,9 @@ def test_a_product_registration_admits_an_initial_presentation(
     operation_text_input(app, BASE_UNIT_FIELD_LABEL).set_value("unidad")
     operation_text_input(app, BASE_PRICE_FIELD_LABEL).set_value("10")
     operation_text_input(app, INITIAL_PRESENTATION_NAME_LABEL).set_value(
-        "Caja x12"
+        "Caja x6"
     )
-    operation_number_input(app, FACTOR_FIELD_LABEL).set_value(12)
+    operation_number_input(app, FACTOR_FIELD_LABEL).set_value(6)
     operation_text_input(app, PRESENTATION_PRICE_LABEL).set_value("1200.75")
     operation_number_input(app, INITIAL_CLOSED_STOCK_LABEL).set_value(3)
 
@@ -6500,8 +7252,8 @@ def test_a_product_registration_admits_an_initial_presentation(
 
     assert not app.exception
     assert len(payload.presentations) == 1
-    assert presentation.name == "Caja x12"
-    assert presentation.factor == 12
+    assert presentation.name == "Caja x6"
+    assert presentation.factor == 6
     assert presentation.sale_price == Decimal("1200.75")
     assert presentation.closed_stock == 3
 
@@ -6541,11 +7293,12 @@ def test_the_compensation_form_only_builds_the_payload(
     movements: SqliteMovementRepository,
 ) -> None:
     """
-    Verifica el alcance de la compensación en la interfaz (T049, RF-09).
+    Verifica el alcance de la compensación en la interfaz (T049, T054).
 
-    El formulario solo construye el payload: no calcula ni muestra la cantidad
-    compensable ni afirma que la compensación sea posible, y solo ofrece
-    movimientos de los tipos que admiten compensación en el MVP.
+    El formulario solo construye el payload y muestra la cantidad compensable
+    que recibe de la lectura pública: no la calcula, no afirma que la
+    compensación sea posible y solo ofrece movimientos de los tipos que admiten
+    compensación en el MVP.
     """
     app = app_for(make_assistant(connection))
 
@@ -6571,10 +7324,10 @@ def test_the_compensation_form_only_builds_the_payload(
         for option in selector.options
     )
     assert COMPENSATION_NOTE in captions
-    assert "no las calcula ni las afirma" in COMPENSATION_NOTE
+    assert "no la calcula" in COMPENSATION_NOTE
 
     choose_operation_movement(app, catalog)
-    operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(1)
+    operation_number_input(app, COMPENSATION_QUANTITY_LABEL).set_value(1)
     operation_text_input(app, REASON_FIELD_LABEL).set_value("Ajuste")
 
     submit_operation(app)
@@ -6657,6 +7410,379 @@ def test_the_compensation_of_a_product_without_movements_is_informed(
     assert not any(button.label == SUBMIT_LABEL for button in app.button)
 
 
+# --- Compensación condicional por lectura pública (T054, RF-09) ---
+
+
+class UnavailableCompensationReadService:
+    """
+    Servicio que simula una lectura de compensabilidad no disponible (T054).
+
+    El resto de las operaciones delega en el servicio real; solo la lectura
+    pública de compensación falla, para verificar que la interfaz no afirma una
+    cantidad compensable cuando no puede leerla.
+    """
+
+    def __init__(self, service: MovementService) -> None:
+        """Envuelve el servicio real y conserva la lectura a fallar."""
+        self._service = service
+
+    def get_compensation_availability(
+        self,
+        product_id: int,
+        movement_id: int,
+    ) -> Any:
+        """Induce el fallo de la lectura pública de compensabilidad."""
+        raise RecordNotFoundError(
+            "No se pudo leer la compensabilidad del movimiento "
+            f"{movement_id} del producto {product_id}."
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        """Delega cualquier otra operación en el servicio real."""
+        return getattr(self._service, name)
+
+
+class FixedCompensationReadService:
+    """
+    Servicio que devuelve una cantidad compensable fija (T054).
+
+    Registra las llamadas a la lectura pública para comprobar que la interfaz
+    usa ese valor y no recalcula la cantidad a partir de los movimientos.
+    """
+
+    def __init__(self, service: MovementService, quantity: int) -> None:
+        """Envuelve el servicio real y conserva la cantidad a devolver."""
+        self._service = service
+        self._quantity = quantity
+        self.calls: list[tuple[int, int]] = []
+
+    def get_compensation_availability(
+        self,
+        product_id: int,
+        movement_id: int,
+    ) -> Any:
+        """Registra la consulta y devuelve la cantidad fija."""
+        self.calls.append((product_id, movement_id))
+
+        return SimpleNamespace(
+            compensable_quantity=self._quantity,
+            available_stock=0,
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        """Delega cualquier otra operación en el servicio real."""
+        return getattr(self._service, name)
+
+
+def product_with_closed_entry(
+    product_service: ProductService,
+    presentations: SqlitePresentationRepository,
+    movement_service: MovementService,
+    *,
+    sku: str,
+    quantity: int,
+) -> tuple[ProductRecord, PresentationRecord, MovementRecord]:
+    """
+    Registra un producto con una única entrada cerrada real (T054).
+
+    El producto no tiene stock inicial ni presenta movimientos de stock
+    inicial, de modo que la entrada cerrada es el único movimiento compensable
+    y su cantidad compensable es exactamente la indicada.
+    """
+    stored = product_service.register(
+        ProductRegistration(
+            sku=sku,
+            name=f"Producto {sku}",
+            base_unit="unidad",
+            base_sale_price=Decimal("100"),
+            minimum_stock=0,
+            initial_loose_units=0,
+            presentations=(
+                InitialClosedStock(
+                    name="Caja x6",
+                    factor=6,
+                    sale_price=Decimal("600"),
+                    closed_stock=0,
+                ),
+            ),
+        )
+    )
+    _, box = presentations.list_by_product(stored.id)
+    entry = movement_service.register_closed_entry(
+        stored.id,
+        presentation_id=box.id,
+        quantity=quantity,
+        reason="Compra",
+    )
+
+    return stored, box, entry
+
+
+def select_compensation_movement(
+    app: AppTest,
+    product_id: int,
+) -> None:
+    """Elige el primer movimiento compensable del producto (T054)."""
+    selector = app.selectbox(
+        key=MOVEMENT_SELECTOR_KEY_TEMPLATE.format(product_id=product_id)
+    )
+    selector.set_value(selector.options[1]).run()
+
+
+def compensation_captions(app: AppTest) -> list[str]:
+    """Devuelve los textos de ayuda de la sección de compensación (T054)."""
+    return [caption.value for caption in app.caption]
+
+
+def test_compensation_shows_the_quantity_of_the_public_read(
+    connection: sqlite3.Connection,
+    product_service: ProductService,
+    presentations: SqlitePresentationRepository,
+    movement_service: MovementService,
+) -> None:
+    """
+    Verifica una entrada cerrada con cantidad compensable pendiente (T054).
+
+    La cantidad que muestra el formulario procede de la lectura pública del
+    servicio de movimientos, no de un cálculo de la vista.
+    """
+    stored, _, _ = product_with_closed_entry(
+        product_service,
+        presentations,
+        movement_service,
+        sku="SKU-T054-PEND",
+        quantity=4,
+    )
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, "compensacion")
+    choose_operation_product(app, stored)
+    select_compensation_movement(app, stored.id)
+
+    captions = compensation_captions(app)
+
+    assert not app.exception
+    assert COMPENSABLE_QUANTITY_TEMPLATE.format(quantity=4) in captions
+    assert COMPENSATION_NOTE in captions
+
+
+def test_compensation_shows_zero_when_no_compensation_is_pending(
+    connection: sqlite3.Connection,
+    product_service: ProductService,
+    presentations: SqlitePresentationRepository,
+    movement_service: MovementService,
+) -> None:
+    """
+    Verifica una entrada cerrada sin cantidad compensable pendiente (T054).
+
+    La salida cerrada consume toda la entrada; la lectura pública devuelve cero
+    y la interfaz muestra ese cero real, sin inventar una cantidad pendiente.
+    """
+    stored, box, _ = product_with_closed_entry(
+        product_service,
+        presentations,
+        movement_service,
+        sku="SKU-T054-CERO",
+        quantity=3,
+    )
+    movement_service.register_closed_exit(
+        stored.id,
+        presentation_id=box.id,
+        quantity=3,
+        reason="Venta",
+    )
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, "compensacion")
+    choose_operation_product(app, stored)
+    select_compensation_movement(app, stored.id)
+
+    captions = compensation_captions(app)
+
+    assert not app.exception
+    assert COMPENSABLE_QUANTITY_TEMPLATE.format(quantity=0) in captions
+
+
+def test_compensation_does_not_affirm_quantity_without_the_public_read(
+    connection: sqlite3.Connection,
+    product_service: ProductService,
+    presentations: SqlitePresentationRepository,
+    movement_service: MovementService,
+) -> None:
+    """
+    Verifica una lectura pública no disponible (T054, D-D).
+
+    Si la lectura de compensabilidad falla, el formulario informa el motivo y
+    no muestra ni afirma una cantidad compensable.
+    """
+    stored, _, _ = product_with_closed_entry(
+        product_service,
+        presentations,
+        movement_service,
+        sku="SKU-T054-SIN-LECTURA",
+        quantity=2,
+    )
+    assistant = make_assistant(connection)
+    assistant.session.movement_service = UnavailableCompensationReadService(
+        assistant.session.movement_service
+    )
+    app = app_for(assistant)
+
+    open_operations_section(app)
+    choose_operation(app, "compensacion")
+    choose_operation_product(app, stored)
+    select_compensation_movement(app, stored.id)
+
+    captions = compensation_captions(app)
+
+    assert not app.exception
+    assert COMPENSATION_UNAVAILABLE_MESSAGE in captions
+    assert not any(
+        caption.startswith("Cantidad compensable pendiente:")
+        for caption in captions
+    )
+
+
+def test_compensation_uses_the_public_read_instead_of_recalculating(
+    connection: sqlite3.Connection,
+    product_service: ProductService,
+    presentations: SqlitePresentationRepository,
+    movement_service: MovementService,
+) -> None:
+    """
+    Verifica que la interfaz no recalcula la cantidad compensable (T054).
+
+    El servicio se sustituye por uno que devuelve una cantidad distinta de la
+    que resultaría de los movimientos y se comprueba que la interfaz muestra
+    ese valor y que consultó la lectura pública una sola vez.
+    """
+    stored, _, entry = product_with_closed_entry(
+        product_service,
+        presentations,
+        movement_service,
+        sku="SKU-T054-LECTURA",
+        quantity=4,
+    )
+    assistant = make_assistant(connection)
+    read_service = FixedCompensationReadService(
+        assistant.session.movement_service,
+        41,
+    )
+    assistant.session.movement_service = read_service
+    app = app_for(assistant)
+
+    open_operations_section(app)
+    choose_operation(app, "compensacion")
+    choose_operation_product(app, stored)
+    select_compensation_movement(app, stored.id)
+
+    captions = compensation_captions(app)
+
+    assert not app.exception
+    assert COMPENSABLE_QUANTITY_TEMPLATE.format(quantity=41) in captions
+    assert COMPENSABLE_QUANTITY_TEMPLATE.format(quantity=4) not in captions
+    assert read_service.calls == [(stored.id, entry.id)]
+
+
+def test_reading_the_compensable_quantity_does_not_write(
+    connection: sqlite3.Connection,
+    product_service: ProductService,
+    presentations: SqlitePresentationRepository,
+    movement_service: MovementService,
+) -> None:
+    """
+    Verifica que la consulta de compensabilidad no escribe (T054).
+
+    Mostrar el formulario y consultar la cantidad compensable no altera ninguna
+    tabla ni el contador de cambios de SQLite.
+    """
+    stored, _, _ = product_with_closed_entry(
+        product_service,
+        presentations,
+        movement_service,
+        sku="SKU-T054-LECTURA-SIN-ESCRITURA",
+        quantity=4,
+    )
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    choose_operation(app, "compensacion")
+    choose_operation_product(app, stored)
+    select_compensation_movement(app, stored.id)
+
+    assert not app.exception
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_get_compensation_availability_reads_without_writing(
+    connection: sqlite3.Connection,
+    product_service: ProductService,
+    presentations: SqlitePresentationRepository,
+    movement_service: MovementService,
+) -> None:
+    """
+    Verifica la lectura pública de compensabilidad (T054, C18).
+
+    La lectura reutiliza la regla de compensación vigente, devuelve la cantidad
+    pendiente y el stock afectado, y no altera el inventario.
+    """
+    stored, _, entry = product_with_closed_entry(
+        product_service,
+        presentations,
+        movement_service,
+        sku="SKU-T054-SERVICIO",
+        quantity=5,
+    )
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    availability = movement_service.get_compensation_availability(
+        stored.id,
+        entry.id,
+    )
+
+    assert availability.compensable_quantity == 5
+    assert availability.available_stock == 5
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_the_compensation_ui_delegates_to_the_public_read() -> None:
+    """
+    Verifica los límites estructurales de la compensación (T054, C18).
+
+    `main.py` consulta la lectura pública de compensabilidad y no usa
+    `register_compensation`; la vista solo recibe la cantidad ya leída y no
+    recalcula contadores de compensación ni de consumo.
+    """
+    main_source = APP_PATH.read_text(encoding="utf-8")
+    operations_source = OPERATIONS_SECTION_PATH.read_text(encoding="utf-8")
+    main_tree = ast.parse(main_source)
+    operations_tree = ast.parse(operations_source)
+    main_calls = {
+        node.func.attr
+        for node in ast.walk(main_tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    operations_calls = {
+        node.func.attr
+        for node in ast.walk(operations_tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+
+    assert "get_compensation_availability" in main_calls
+    assert "register_compensation" not in main_calls
+    assert "get_compensation_availability" not in operations_calls
+    assert "register_compensation" not in operations_calls
+    assert "compensated_quantity" not in operations_source
+    assert "consumed_quantity" not in operations_source
+
+
 def test_operations_works_without_the_model(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -6699,7 +7825,7 @@ def test_operations_works_without_the_model(
         app.radio[0].set_value("Operaciones").run()
         choose_operation(app, "entrada_suelta")
         choose_operation_product(app, stored)
-        operation_number_input(app, QUANTITY_FIELD_LABEL).set_value(2)
+        operation_number_input(app, LOOSE_QUANTITY_LABEL).set_value(2)
         operation_text_input(app, REASON_FIELD_LABEL).set_value(
             "Compra sin modelo"
         )
@@ -6875,7 +8001,7 @@ que la prueba verifique el alcance de C13 y no una comprobación tautológica.
 T050_FIELD_MARKERS: dict[str, str] = {
     "alta_producto": "SKU: SKU-1",
     "modificacion_producto": "Producto (id 3)",
-    "alta_presentacion": "Factor: 12",
+    "alta_presentacion": "Equivalencia: 12",
     "entrada_suelta": "Costo: 10.25",
     "entrada_cerrada": "Presentación (id 2)",
     "salida_suelta": "Motivo: Venta",
@@ -6974,14 +8100,14 @@ def test_a_price_update_shows_the_presentation_and_both_prices() -> None:
 
     described = "\n".join(describe_proposal_review(review))
 
-    assert "presentación: Caja x6 (id 2, factor 6)" in described
+    assert "presentación: Caja x6 (id 2, equivalencia 6)" in described
     assert "precio vigente: 600.00" in described
     assert "precio nuevo: 700.00" in described
     detail = describe_price_update_fields(
         review.proposal, review.presentation
     )
     assert detail == (
-        "presentación: Caja x6 (id 2, factor 6)",
+        "presentación: Caja x6 (id 2, equivalencia 6)",
         "precio vigente: 600.00",
         "precio nuevo: 700.00",
     )
@@ -7040,7 +8166,7 @@ def test_absent_optional_values_are_informed_as_absent() -> None:
     assert f"Costo: {ABSENT_MARKER}" in described
     assert f"Nombre nuevo: {ABSENT_MARKER}" in described
     assert (
-        f"Nombre de la presentación base: {ABSENT_MARKER}" in described
+        f"Nombre visible de la unidad base: {ABSENT_MARKER}" in described
     )
     assert "None" not in described
 
@@ -7095,7 +8221,7 @@ def test_real_zeros_are_not_presented_as_absent() -> None:
 
 def test_a_product_registration_without_presentations_says_so() -> None:
     """
-    Verifica el alta sin presentaciones iniciales en la revisión (C4, T050).
+    Verifica el alta sin presentaciones adicionales en la revisión (C4, T050).
 
     `presentations=()` se informa con un mensaje explícito y no con un cero que
     podría leerse como una presentación declarada.
@@ -7113,7 +8239,7 @@ def test_a_product_registration_without_presentations_says_so() -> None:
     described = "\n".join(describe_proposal_review(review))
 
     assert NO_INITIAL_PRESENTATIONS_MESSAGE in described
-    assert "Presentaciones iniciales: 0" not in described
+    assert "Presentaciones adicionales: 0" not in described
 
 
 def test_the_section_shows_only_pending_proposals(
@@ -7225,7 +8351,7 @@ def test_a_manual_price_proposal_is_reviewed_without_the_model(
 
         assert not app.exception
         assert "presentación: unidad (id " in rendered
-        assert "factor 1)" in rendered
+        assert "equivalencia 1)" in rendered
         assert "precio vigente: 10.00" in rendered
         assert "precio nuevo: 110.50" in rendered
     finally:
@@ -7294,7 +8420,7 @@ def proposal_edit_presentation_key(
     position: int,
     field: str,
 ) -> str:
-    """Devuelve la clave de un campo de presentación inicial (T051)."""
+    """Devuelve la clave de un campo de presentación adicional (T051)."""
     return f"proposal_edit_{id(proposal)}_presentation_{position}_{field}"
 
 
@@ -7333,9 +8459,16 @@ def test_each_action_shows_an_edit_form_with_its_current_values(
 
     assert not app.exception
     assert len(app.selectbox) == 0
-    assert [button.label for button in app.button] == [
-        EDIT_SUBMIT_LABEL
-    ] * len(proposals)
+    assert [
+        button.label
+        for button in app.button
+        if button.label == EDIT_SUBMIT_LABEL
+    ] == [EDIT_SUBMIT_LABEL] * len(proposals)
+    assert [
+        button.label
+        for button in app.button
+        if button.label == DISCARD_LABEL
+    ] == [DISCARD_LABEL] * len(proposals)
     for action, widget, field, expected in T051_PREFILLED_FIELDS:
         proposal = next(
             proposal
@@ -7350,6 +8483,121 @@ def test_each_action_shows_an_edit_form_with_its_current_values(
         f"Editar propuesta {index}"
         for index in range(1, len(proposals) + 1)
     ]
+
+
+def test_presentation_additional_label_is_shared_by_both_surfaces(
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica que la presentación adicional usa una única etiqueta (RF-07).
+
+    El alta de producto y la edición de esa misma propuesta muestran el nombre
+    de la presentación adicional con la misma etiqueta visible en ambos
+    formularios.
+    """
+    proposal = proposal_for(
+        ProductRegistrationPayload(
+            sku="SKU-T051",
+            name="Producto T051",
+            base_unit="unidad",
+            base_sale_price=Decimal("150"),
+            minimum_stock=0,
+            initial_loose_units=0,
+            presentations=(
+                InitialPresentationPayload(
+                    name="Caja x6",
+                    factor=6,
+                    sale_price=Decimal("60"),
+                    closed_stock=2,
+                ),
+            ),
+        )
+    )
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    registration_field = operation_text_input(
+        app, INITIAL_PRESENTATION_NAME_LABEL
+    )
+
+    assert not app.exception
+    assert registration_field.label == INITIAL_PRESENTATION_NAME_LABEL
+
+    open_pending_proposals(app, [proposal])
+    edition_field = app.text_input(
+        key=proposal_edit_presentation_key(proposal, 1, "name")
+    )
+
+    assert not app.exception
+    assert edition_field.label == registration_field.label
+    assert edition_field.label == INITIAL_PRESENTATION_NAME_LABEL
+
+
+def test_the_edit_form_number_inputs_show_an_example_in_their_help(
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica las ayudas de los campos numéricos editables (T051, RF-09).
+
+    Los campos equivalentes de la edición de propuestas muestran en su ayuda un
+    ejemplo visible, sin depender de un placeholder que Streamlit no muestra
+    para los `number_input` con valor precargado.
+    """
+    registration = proposal_for(
+        ProductRegistrationPayload(
+            sku="SKU-T051",
+            name="Producto T051",
+            base_unit="unidad",
+            base_sale_price=Decimal("150"),
+            minimum_stock=4,
+            initial_loose_units=2,
+            presentations=(
+                InitialPresentationPayload(
+                    name="Caja x6",
+                    factor=6,
+                    sale_price=Decimal("60"),
+                    closed_stock=1,
+                ),
+            ),
+        )
+    )
+    loose_entry = proposal_for(
+        LooseEntryPayload(product_id=3, quantity=2, reason="Compra")
+    )
+    presentation_registration = proposal_for(
+        PresentationRegistrationPayload(
+            product_id=3,
+            name="Caja x12",
+            factor=12,
+            sale_price=Decimal("1200.75"),
+        )
+    )
+    app = app_for(make_assistant(connection))
+
+    open_pending_proposals(
+        app,
+        [registration, presentation_registration, loose_entry],
+    )
+
+    assert not app.exception
+    assert "Ej.: 6" in app.number_input(
+        key=proposal_edit_key(registration, "minimum_stock")
+    ).help
+    assert "Ej.: 2" in app.number_input(
+        key=proposal_edit_key(registration, "initial_loose_units")
+    ).help
+    assert "Ej.: 6" in app.number_input(
+        key=proposal_edit_presentation_key(registration, 1, "factor")
+    ).help
+    assert "Ej.: 1" in app.number_input(
+        key=proposal_edit_presentation_key(registration, 1, "closed_stock")
+    ).help
+    assert "Ej.: 6" in app.number_input(
+        key=proposal_edit_key(presentation_registration, "factor")
+    ).help
+    assert "Ej.: 2" in app.number_input(
+        key=proposal_edit_key(loose_entry, "quantity")
+    ).help
 
 
 def test_a_manual_proposal_is_edited_in_place_without_writing(
@@ -7750,10 +8998,11 @@ def test_an_invalid_edit_shows_the_reason_and_keeps_the_proposal(
     catalog: Catalog,
 ) -> None:
     """
-    Verifica la validación del formulario de edición (T051, C21).
+    Verifica la validación del formulario de edición (T051, C21, T055).
 
-    Un motivo vacío se muestra como error, no se entrega al callback y la
-    propuesta original sigue en la sesión sin reemplazarse ni escribirse.
+    Un motivo vacío se muestra como advertencia de validación —no como rechazo
+    ni como confirmación—, no se entrega al callback y la propuesta original
+    sigue en la sesión sin reemplazarse ni escribirse.
     """
     proposal = proposal_for(
         LooseEntryPayload(
@@ -7772,9 +9021,11 @@ def test_an_invalid_edit_shows_the_reason_and_keeps_the_proposal(
 
     assert not app.exception
     assert any(
-        "Motivo" in error.value and "obligatorio" in error.value
-        for error in app.error
+        "Motivo" in warning.value and "obligatorio" in warning.value
+        for warning in app.warning
     )
+    assert app.error == []
+    assert app.success == []
     assert manual_proposals_of(app)[0] is proposal
     assert snapshot(connection) == before
     assert connection.total_changes == changes_before
@@ -7855,7 +9106,7 @@ def test_editing_the_initial_presentations_conserves_their_count_and_order(
     connection: sqlite3.Connection,
 ) -> None:
     """
-    Verifica la edición de las presentaciones iniciales (T051).
+    Verifica la edición de las presentaciones adicionales (T051).
 
     Se editan los campos de las presentaciones existentes conservando su
     cantidad y su orden; el formulario no permite añadir ni eliminar
@@ -7964,16 +9215,680 @@ def test_editing_a_price_update_keeps_the_presentation_and_does_not_write(
     assert connection.total_changes == changes_before
 
 
+# --- Descarte local de propuestas pendientes (T052, RF-09) ---
+
+
+def proposal_discard_key(proposal: Proposal) -> str:
+    """Devuelve la clave del botón de descarte de una propuesta (T052)."""
+    return f"proposal_discard_{id(proposal)}"
+
+
+def discard_pending_proposal(app: AppTest, proposal: Proposal) -> None:
+    """Descarta la propuesta indicada desde la sección (T052)."""
+    app.button(key=proposal_discard_key(proposal)).click().run()
+
+
+def test_discarding_a_manual_proposal_hides_only_that_proposal(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica el descarte local de una propuesta manual (T052, C15).
+
+    La propuesta descartada deja de ofrecerse, las demás siguen disponibles, la
+    colección de la sesión y la propuesta original no cambian y no se escribe
+    en la base ni se incrementa el contador de cambios de SQLite.
+    """
+    first = proposal_for(
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=3,
+            reason="Primera",
+        )
+    )
+    second = proposal_for(
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=5,
+            reason="Segunda",
+        )
+    )
+    original = first.model_copy(deep=True)
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+    app = app_for(make_assistant(connection))
+
+    open_pending_proposals(app, [first, second])
+    discard_pending_proposal(app, first)
+
+    rendered = rendered_markdown(app)
+    stored = manual_proposals_of(app)
+
+    assert not app.exception
+    assert "Motivo: Primera" not in rendered
+    assert "Motivo: Segunda" in rendered
+    assert len(stored) == 2
+    assert stored[0] is first
+    assert stored[1] is second
+    assert first == original
+    assert [
+        button.label
+        for button in app.button
+        if button.label == DISCARD_LABEL
+    ] == [DISCARD_LABEL]
+    assert app.session_state[DISCARDED_PROPOSALS_KEY] == {id(first)}
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_discarding_an_assistant_proposal_keeps_its_turn_and_the_manual_one(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica el descarte de una propuesta del asistente (T052, C15).
+
+    Se oculta solo la propuesta descartada: el turno conserva su propuesta
+    pendiente original, las demás propuestas siguen disponibles y no se
+    confirma, edita ni escribe nada.
+    """
+    assistant = make_assistant(
+        connection,
+        tool_call(
+            "propose_loose_entry",
+            {
+                "product_id": catalog.product.id,
+                "quantity": 3,
+                "reason": "Del asistente",
+            },
+        ),
+    )
+    app = app_for(assistant)
+
+    app.run()
+    app.chat_input[0].set_value("Propone una entrada suelta").run()
+    assistant_proposal = assistant.history[0].state["pending_proposal"]
+    manual = proposal_for(
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=7,
+            reason="Manual",
+        )
+    )
+    original = assistant_proposal.model_copy(deep=True)
+    app.session_state[MANUAL_PROPOSALS_KEY] = [manual]
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    app.radio[0].set_value("Propuestas pendientes").run()
+    discard_pending_proposal(app, assistant_proposal)
+
+    rendered = rendered_markdown(app)
+
+    assert not app.exception
+    assert "Motivo: Del asistente" not in rendered
+    assert "Motivo: Manual" in rendered
+    assert len(assistant.history) == 1
+    assert (
+        assistant.history[0].state["pending_proposal"] is assistant_proposal
+    )
+    assert assistant.history[0].state["execution_result"] is None
+    assert assistant_proposal == original
+    assert manual_proposals_of(app)[0] is manual
+    assert app.session_state[DISCARDED_PROPOSALS_KEY] == {
+        id(assistant_proposal)
+    }
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_discarding_an_assistant_proposal_hides_it_from_the_assistant_section(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica que el descarte alcanza también la sección Asistente (T052, C15).
+
+    La propuesta descartada desde «Propuestas pendientes» deja de ofrecerse en
+    la conversación y no muestra su control de confirmación; la propuesta manual
+    sigue disponible en la sección de propuestas. La propuesta original no
+    cambia, el turno conserva su estado y no se escribe en la base.
+    """
+    assistant = make_assistant(
+        connection,
+        tool_call(
+            "propose_loose_entry",
+            {
+                "product_id": catalog.product.id,
+                "quantity": 3,
+                "reason": "Del asistente",
+            },
+        ),
+    )
+    app = app_for(assistant)
+
+    app.run()
+    app.chat_input[0].set_value("Propone una entrada suelta").run()
+    assistant_proposal = assistant.history[0].state["pending_proposal"]
+    manual = proposal_for(
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=5,
+            reason="Manual",
+        )
+    )
+    original = assistant_proposal.model_copy(deep=True)
+    app.session_state[MANUAL_PROPOSALS_KEY] = [manual]
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    app.radio[0].set_value("Propuestas pendientes").run()
+    discard_pending_proposal(app, assistant_proposal)
+
+    pending_rendered = rendered_markdown(app)
+
+    assert "Motivo: Del asistente" not in pending_rendered
+    assert "Motivo: Manual" in pending_rendered
+
+    app.radio[0].set_value(DEFAULT_SECTION_LABEL).run()
+
+    rendered = rendered_markdown(app)
+
+    assert not app.exception
+    assert "- reason: Del asistente" not in rendered
+    assert DISCARDED_PROPOSAL_MESSAGE in rendered
+    assert [button.label for button in app.button] == []
+    assert manual_proposals_of(app)[0] is manual
+    assert (
+        assistant.history[0].state["pending_proposal"] is assistant_proposal
+    )
+    assert assistant.history[0].state["execution_result"] is None
+    assert assistant_proposal == original
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_confirm_pending_rejects_a_discarded_proposal_without_the_service(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Verifica que una propuesta descartada no se confirma (T052, C15).
+
+    `confirm_pending` rechaza la propuesta descartada antes de invocar al
+    servicio, sin escribir, sin cambiar el estado de la propuesta y sin mutar
+    el turno.
+    """
+    assistant = make_assistant(
+        connection,
+        tool_call(
+            "propose_loose_entry",
+            {
+                "product_id": catalog.product.id,
+                "quantity": 3,
+                "reason": "Compra",
+            },
+        ),
+    )
+    turn = answer(assistant, "Propone una entrada")
+    proposal = turn.state["pending_proposal"]
+    original = proposal.model_copy(deep=True)
+    calls: list[Proposal] = []
+    monkeypatch.setattr(
+        assistant.session.proposal_service,
+        "confirm",
+        lambda discarded_proposal: calls.append(discarded_proposal),
+    )
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    reason = confirm_pending(assistant, turn, discarded={id(proposal)})
+
+    assert reason == DISCARDED_PROPOSAL_MESSAGE
+    assert calls == []
+    assert proposal.status is ProposalStatus.PENDING
+    assert proposal == original
+    assert turn.state["pending_proposal"] is proposal
+    assert turn.state["execution_result"] is None
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_a_discarded_proposal_stays_hidden_between_section_changes(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica que el descarte se conserva en la sesión (T052, C15).
+
+    Al descartar todas las propuestas pendientes la sección muestra su estado
+    vacío, y las descartadas no reaparecen al cambiar de sección y volver.
+    """
+    first = proposal_for(
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=3,
+            reason="Primera",
+        )
+    )
+    second = proposal_for(
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=5,
+            reason="Segunda",
+        )
+    )
+    app = app_for(make_assistant(connection))
+
+    open_pending_proposals(app, [first, second])
+    discard_pending_proposal(app, first)
+    discard_pending_proposal(app, second)
+
+    assert not app.exception
+    assert [info.value for info in app.info] == [EMPTY_PROPOSALS_MESSAGE]
+
+    app.radio[0].set_value(DEFAULT_SECTION_LABEL).run()
+    app.radio[0].set_value("Propuestas pendientes").run()
+
+    assert not app.exception
+    assert [info.value for info in app.info] == [EMPTY_PROPOSALS_MESSAGE]
+    assert app.session_state[DISCARDED_PROPOSALS_KEY] == {
+        id(first),
+        id(second),
+    }
+    assert len(manual_proposals_of(app)) == 2
+
+
+def test_the_discard_is_local_and_keeps_the_proposal_contract() -> None:
+    """
+    Verifica el alcance local del descarte (T052, C15).
+
+    La vista solo delega en su callback: no usa `st.session_state`, no nombra el
+    servicio de propuestas ni invoca creación, edición o confirmación. Los
+    estados de la propuesta siguen siendo solo pendiente y confirmada.
+    """
+    source = PROPOSALS_SECTION_PATH.read_text(encoding="utf-8")
+
+    assert DISCARD_LABEL in source
+    assert "on_discard" in source
+    for marker in (
+        "st.session_state",
+        "proposal_service",
+        ".create(",
+        ".edit(",
+        ".confirm(",
+    ):
+        assert marker not in source, marker
+
+    assert [status.value for status in ProposalStatus] == [
+        "pendiente",
+        "confirmada",
+    ]
+
+
+# --- Confirmación centralizada y doble ejecución (T053, RF-09) ---
+
+
+def proposal_confirm_key(proposal: Proposal) -> str:
+    """Devuelve la clave del botón de confirmación de una propuesta (T053)."""
+    return f"proposal_confirm_{id(proposal)}"
+
+
+def confirm_pending_proposal(app: AppTest, proposal: Proposal) -> None:
+    """Confirma la propuesta indicada desde «Propuestas pendientes» (T053)."""
+    app.button(key=proposal_confirm_key(proposal)).click().run()
+
+
+def test_confirming_a_manual_proposal_executes_it_once(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    products: SqliteProductRepository,
+    movements: SqliteMovementRepository,
+) -> None:
+    """
+    Verifica la confirmación de una propuesta manual desde la sección (T053).
+
+    La sección ofrece el control de confirmación para la propuesta creada por
+    los formularios de «Operaciones», la confirmación la ejecuta el único punto
+    de `main.py` y, al completarse, el resultado real se muestra una vez y la
+    propuesta confirmada deja de ofrecerse.
+    """
+    manual = proposal_for(
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=3,
+            reason="Compra manual",
+        )
+    )
+    assistant = make_assistant(connection)
+    app = app_for(assistant)
+
+    open_pending_proposals(app, [manual])
+
+    assert [button.label for button in app.button] == [
+        CONFIRM_LABEL,
+        DISCARD_LABEL,
+        EDIT_SUBMIT_LABEL,
+    ]
+    assert manual.status is ProposalStatus.PENDING
+
+    confirm_pending_proposal(app, manual)
+
+    confirmed = manual_proposals_of(app)[0]
+
+    assert not app.exception
+    assert confirmed.status is ProposalStatus.CONFIRMED
+    assert manual.status is ProposalStatus.PENDING
+    assert products.get(catalog.product.id).loose_units == 7
+    assert len(movements.list_by_product(catalog.product.id)) == 3
+    assert len(app.button) == 0
+    assert CONFIRM_LABEL not in [button.label for button in app.button]
+    assert [info.value for info in app.info] == [EMPTY_PROPOSALS_MESSAGE]
+    assert any(
+        "Operación confirmada" in success.value for success in app.success
+    )
+    assert app.session_state.get(CONFIRMATION_NOTICE_KEY) is None
+
+
+def test_a_confirmed_manual_proposal_is_not_executed_twice(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    products: SqliteProductRepository,
+    movements: SqliteMovementRepository,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Verifica el segundo intento sobre una propuesta manual confirmada (T053).
+
+    La propuesta confirmada no vuelve a ejecutarse: la confirmación por
+    identidad rechaza su estado confirmado antes de invocar al servicio, y una
+    clave que ya no está en la sesión devuelve un motivo explícito. La base y
+    el contador de cambios de SQLite no cambian.
+    """
+    manual = proposal_for(
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=3,
+            reason="Compra manual",
+        )
+    )
+    assistant = make_assistant(connection)
+    app = app_for(assistant)
+
+    open_pending_proposals(app, [manual])
+    confirm_pending_proposal(app, manual)
+    confirmed = manual_proposals_of(app)[0]
+    monkeypatch.setattr(
+        "app.ui.main.manual_proposals",
+        lambda: [confirmed],
+    )
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    repeated = confirm_proposal(
+        assistant,
+        assistant.session,
+        id(confirmed),
+    )
+    stale = confirm_proposal(
+        assistant,
+        assistant.session,
+        id(manual),
+    )
+
+    assert repeated == ALREADY_CONFIRMED_MESSAGE
+    assert stale == CONFIRMATION_NOT_AVAILABLE_MESSAGE
+    assert confirmed.status is ProposalStatus.CONFIRMED
+    assert products.get(catalog.product.id).loose_units == 7
+    assert len(movements.list_by_product(catalog.product.id)) == 3
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_confirming_an_assistant_proposal_from_the_proposals_section(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    movements: SqliteMovementRepository,
+) -> None:
+    """
+    Verifica la confirmación de una propuesta del asistente desde la sección
+    (T053).
+
+    La confirmación actualiza el turno del asistente —copia confirmada y
+    resultado real—, deja de ofrecerse en «Propuestas pendientes» y tampoco
+    ofrece el control en la conversación. La operación se ejecuta una sola vez.
+    """
+    assistant = make_assistant(
+        connection,
+        tool_call(
+            "propose_loose_entry",
+            {
+                "product_id": catalog.product.id,
+                "quantity": 3,
+                "reason": "Compra del asistente",
+            },
+        ),
+    )
+    app = app_for(assistant)
+
+    app.run()
+    app.chat_input[0].set_value("Propone una entrada suelta").run()
+    proposal = assistant.history[0].state["pending_proposal"]
+
+    app.radio[0].set_value("Propuestas pendientes").run()
+    confirm_pending_proposal(app, proposal)
+
+    state = assistant.history[0].state
+    result = state["execution_result"]
+
+    assert not app.exception
+    assert result is not None
+    assert result.status is ProposalStatus.CONFIRMED
+    assert isinstance(result.result, MovementRecord)
+    assert state["pending_proposal"].status is ProposalStatus.CONFIRMED
+    assert len(movements.list_by_product(catalog.product.id)) == 3
+    assert len(app.button) == 0
+    assert any(
+        "Operación confirmada" in success.value for success in app.success
+    )
+
+    app.radio[0].set_value(DEFAULT_SECTION_LABEL).run()
+
+    rendered = rendered_markdown(app)
+
+    assert not app.exception
+    assert "Operación confirmada" in rendered
+    assert [button.label for button in app.button] == []
+
+
+def test_the_confirm_control_is_disabled_while_processing_in_the_section(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica la protección de reenvío de la sección de propuestas (T053).
+
+    Con una confirmación en curso en la sesión, el control de confirmación de
+    cada propuesta pendiente se deshabilita y la propuesta no se ejecuta. La
+    marca es local a la interfaz y **no** una idempotencia durable.
+    """
+    manual = proposal_for(
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=3,
+            reason="Compra manual",
+        )
+    )
+    assistant = make_assistant(connection)
+    app = app_for(assistant)
+    app.session_state[PROCESSING_KEY] = True
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    open_pending_proposals(app, [manual])
+
+    confirm_buttons = [
+        button for button in app.button if button.label == CONFIRM_LABEL
+    ]
+
+    assert not app.exception
+    assert [button.proto.disabled for button in confirm_buttons] == [True]
+    assert manual.status is ProposalStatus.PENDING
+    assert manual_proposals_of(app)[0] is manual
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_confirm_from_section_returns_early_while_a_confirmation_is_active(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Verifica la guarda de reenvío de `_confirm_from_section` (T053, C16).
+
+    Con `PROCESSING_KEY` activo, la confirmación desde la sección devuelve el
+    motivo sin invocar `proposal_service.confirm`, sin modificar la propuesta
+    ni la persistencia y sin registrar un aviso de resultado. El estado
+    controlado sustituye solo la sesión de Streamlit que lee el helper, de modo
+    que la prueba ejerce la guarda directamente sin depender del runtime.
+    """
+    manual = proposal_for(
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=3,
+            reason="Compra manual",
+        )
+    )
+    original = manual.model_copy(deep=True)
+    assistant = make_assistant(connection)
+    calls: list[Proposal] = []
+    monkeypatch.setattr(
+        assistant.session.proposal_service,
+        "confirm",
+        lambda proposal: calls.append(proposal),
+    )
+    controlled_state: dict[str, Any] = {
+        PROCESSING_KEY: True,
+        MANUAL_PROPOSALS_KEY: [manual],
+    }
+    monkeypatch.setattr(
+        main_module,
+        "st",
+        SimpleNamespace(session_state=controlled_state),
+    )
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    reason = main_module._confirm_from_section(
+        assistant,
+        assistant.session,
+        id(manual),
+        set(),
+    )
+
+    assert reason == CONFIRMATION_IN_PROGRESS_MESSAGE
+    assert calls == []
+    assert manual.status is ProposalStatus.PENDING
+    assert manual == original
+    assert controlled_state[MANUAL_PROPOSALS_KEY] == [manual]
+    assert controlled_state[MANUAL_PROPOSALS_KEY][0] is manual
+    assert controlled_state[PROCESSING_KEY] is True
+    assert CONFIRMATION_NOTICE_KEY not in controlled_state
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_the_confirmation_is_centralized_in_a_single_helper() -> None:
+    """
+    Verifica el único punto de confirmación de la interfaz (T053, C12, D-A).
+
+    En todo `app/ui/**` sigue habiendo una sola aparición de `.confirm(` y su
+    función contenedora es `_apply_confirmation`; las dos rutas de confirmación
+    —el turno del asistente y la sección de propuestas— delegan en ella.
+    """
+    source = APP_PATH.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    owners = [
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and ".confirm(" in (ast.get_source_segment(source, node) or "")
+    ]
+
+    assert owners == ["_apply_confirmation"]
+    assert (
+        sum(
+            path.read_text(encoding="utf-8").count(".confirm(")
+            for path in ui_sources()
+        )
+        == 1
+    )
+
+
 # --- Rediseño visual (T057) ---
 
 
 def test_theme_config_uses_the_approved_palette() -> None:
-    """Verifica el tema claro y el color primario aprobados (T057, D6)."""
+    """
+    Verifica el tema oscuro azul y la paleta aprobada (T064, D2).
+
+    Sustituye la paleta clara/neutra de T057 por la convención vigente: base
+    oscura, acentos turquesa y paneles azulados. La comprobación es textual
+    sobre el tema nativo declarado en `.streamlit/config.toml`.
+    """
     source = THEME_CONFIG_PATH.read_text(encoding="utf-8")
 
     assert "[theme]" in source
-    assert 'base = "light"' in source
-    assert 'primaryColor = "#2563EB"' in source
+    assert 'base = "dark"' in source
+    assert 'base = "light"' not in source
+    for declaration in (
+        'primaryColor = "#0F766E"',
+        'backgroundColor = "#061826"',
+        'secondaryBackgroundColor = "#0D2B45"',
+        'textColor = "#E8F4FF"',
+        'linkColor = "#5EEAD4"',
+        'borderColor = "#1E4E6B"',
+        'codeBackgroundColor = "#08243A"',
+        'codeTextColor = "#D8F3F0"',
+        'showWidgetBorder = true',
+        'showSidebarBorder = true',
+        'baseRadius = "medium"',
+        'buttonRadius = "medium"',
+        'font = "sans-serif"',
+    ):
+        assert declaration in source, declaration
+
+
+def test_theme_config_defines_the_sidebar_and_dataframe_palette() -> None:
+    """
+    Verifica la paleta del sidebar y de las tablas (T064, D2).
+
+    La sección `[theme.sidebar]` se declara después de `[theme]`; por eso se
+    separa el texto en la cabecera de la sección anidada: las claves de tabla
+    pertenecen al tema general y las del sidebar, a su propia sección.
+    """
+    source = THEME_CONFIG_PATH.read_text(encoding="utf-8")
+    general, separator, sidebar = source.partition("[theme.sidebar]")
+
+    assert separator == "[theme.sidebar]"
+
+    for declaration in (
+        'backgroundColor = "#04121F"',
+        'secondaryBackgroundColor = "#0A2236"',
+        'textColor = "#E8F4FF"',
+        'borderColor = "#1E4E6B"',
+        'primaryColor = "#0F766E"',
+    ):
+        assert declaration in sidebar, declaration
+
+    for declaration in (
+        'dataframeBorderColor = "#1E4E6B"',
+        'dataframeHeaderBackgroundColor = "#0B3A52"',
+        'dataframeHeaderTextColor = "#E8F4FF"',
+    ):
+        assert declaration in general, declaration
 
 
 def test_the_ui_does_not_use_custom_css() -> None:
@@ -7987,3 +9902,800 @@ def test_the_ui_does_not_use_custom_css() -> None:
         assert "<style" not in source, path.name
         assert "unsafe_allow_html" not in source, path.name
         assert "st.html" not in source, path.name
+
+
+# --- Estados de interfaz y zona horaria (T055) ---
+
+
+def test_the_data_sections_show_an_explicit_loading_state(
+    monkeypatch: pytest.MonkeyPatch,
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica el estado de carga real de cada sección que lee servicios (T055).
+
+    `st.spinner` es transitorio y no queda en el árbol de `AppTest`; por eso se
+    reemplaza por un registrador que conserva cada llamada real. Se abre cada
+    sección de lectura, se elige el formulario que consulta el catálogo y se
+    envía un mensaje al asistente: en todos esos casos la interfaz muestra el
+    mismo estado de carga compartido.
+    """
+    calls: list[str] = []
+
+    def record_spinner(message: str) -> Any:
+        """Registra el estado de carga y continúa el render sin spinner."""
+        calls.append(message)
+
+        return nullcontext()
+
+    monkeypatch.setattr(main_module.st, "spinner", record_spinner)
+    app = app_for(make_assistant(connection))
+    app.run()
+
+    for section in (
+        "Inicio",
+        "Productos",
+        "Movimientos",
+        "Historial de precios",
+        "Propuestas pendientes",
+    ):
+        before = len(calls)
+        app.radio[0].set_value(section).run()
+        assert len(calls) > before, section
+
+    before = len(calls)
+    app.radio[0].set_value("Operaciones").run()
+    choose_operation(app, "entrada_suelta")
+    assert len(calls) > before
+
+    before = len(calls)
+    app.radio[0].set_value("Asistente").run()
+    app.chat_input[0].set_value("¿Cuánto stock hay?").run()
+    assert len(calls) > before
+
+    assert not app.exception
+    assert calls
+    assert set(calls) == {LOADING_MESSAGE}
+
+
+def test_the_conversation_history_uses_local_dates_and_keeps_utc_storage(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    presentations: SqlitePresentationRepository,
+) -> None:
+    """
+    Verifica la fecha local del historial de la conversación (T055, C4, C19).
+
+    El registro se almacena en UTC; la presentación de la conversación usa el
+    mismo formato local que las secciones, sin ISO 8601 ni desplazamiento UTC.
+    La consulta y el render no modifican el almacenamiento.
+    """
+    base = base_presentation(presentations, catalog.product.id)
+    occurred_at = datetime(2026, 3, 10, 15, 30, 45, tzinfo=timezone.utc)
+    record = SqlitePriceHistoryRepository(connection).add(
+        product_id=catalog.product.id,
+        presentation_id=base.id,
+        previous_price=Decimal("100"),
+        new_price=Decimal("110"),
+        occurred_at=occurred_at,
+    )
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    rendered = describe_price_history([record])
+    stored = connection.execute(
+        "SELECT occurred_at FROM price_changes"
+    ).fetchone()[0]
+
+    assert "2026-03-10 12:30:45 -03:00" in rendered
+    assert "2026-03-10T15:30:45" not in rendered
+    assert "+00:00" not in rendered
+    assert str(stored).startswith("2026-03-10T15:30:45")
+    assert str(stored).endswith("+00:00")
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before
+
+
+def test_the_conversation_and_price_history_section_share_the_local_instant(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    presentations: SqlitePresentationRepository,
+) -> None:
+    """
+    Verifica la consistencia de fechas entre la conversación y la sección
+    (T055, C4, C19).
+
+    El mismo cambio de precio se presenta con idéntico formato local en el
+    historial del asistente y en la tabla de «Historial de precios»; ninguna de
+    las dos superficies muestra ISO 8601 ni UTC.
+    """
+    base = base_presentation(presentations, catalog.product.id)
+    occurred_at = datetime(2026, 3, 10, 15, 30, tzinfo=timezone.utc)
+    record = SqlitePriceHistoryRepository(connection).add(
+        product_id=catalog.product.id,
+        presentation_id=base.id,
+        previous_price=Decimal("100"),
+        new_price=Decimal("110"),
+        occurred_at=occurred_at,
+    )
+    app = app_for(make_assistant(connection))
+
+    app.run()
+    app.radio[0].set_value("Historial de precios").run()
+    choose_price_history_product(app, catalog.product)
+    records = detail_records(app, DETAIL_PRICE_HISTORY_COLUMNS)
+    shown = next(
+        row[DATE_LABEL] for row in records if row[PRESENTATION_LABEL] == "botella"
+    )
+    conversation = describe_price_history([record])
+
+    assert not app.exception
+    assert "2026-03-10 12:30:00 -03:00" in conversation
+    assert shown == "2026-03-10 12:30:00 -03:00"
+    assert "T" not in shown
+    assert "+00:00" not in shown
+
+
+def test_describe_result_returns_a_readable_markdown_list() -> None:
+    """
+    Verifica la composición visual del resultado de una confirmación (T024).
+
+    El resultado se compone como una lista Markdown: el encabezado en negrita,
+    una línea en blanco y un ítem `- **Etiqueta:** valor` por campo, sin
+    exponer `None`, booleanos crudos, nombres snake_case ni valores de
+    enumeraciones internas.
+    """
+    result = ConfirmationResult(
+        action=ProposalAction.LOOSE_ENTRY,
+        status=ProposalStatus.CONFIRMED,
+        proposal=proposal_for(
+            LooseEntryPayload(product_id=3, quantity=3, reason="Compra")
+        ),
+        result=MovementRecord(
+            id=7,
+            product_id=3,
+            presentation_id=1,
+            kind=MovementKind.LOOSE_ENTRY,
+            quantity=3,
+            reason="Compra",
+            occurred_at=datetime(
+                2026, 3, 10, 15, 30, 45, tzinfo=timezone.utc
+            ),
+            cost=Decimal("12.50"),
+            applied_price=Decimal("99.90"),
+        ),
+    )
+
+    described = describe_result(result)
+    lines = described.split("\n")
+
+    assert lines[0] == "**Operación confirmada:** Entrada de unidades sueltas"
+    assert lines[1] == ""
+    assert lines[2] == "- **Estado:** Confirmada"
+    for line in lines[2:]:
+        assert re.fullmatch(r"- \*\*[^*]+:\*\* .+", line), line
+    for raw in (
+        "None",
+        "True",
+        "False",
+        "MovementKind",
+        "ProposalStatus",
+        "entrada_suelta",
+        "occurred_at",
+        "applied_price",
+        "is_initial_stock",
+    ):
+        assert raw not in described
+
+
+def test_describe_result_formats_the_utc_instant_in_local_time() -> None:
+    """
+    Verifica la fecha local del resultado de una confirmación (T055, B1).
+
+    El resultado real se describe en hora local argentina, sin exponer el
+    instante UTC crudo ni su desplazamiento, y presenta el movimiento con
+    etiquetas en español: sin nombres snake_case, sin el valor interno de
+    `MovementKind`, sin `None` y sin `False`.
+    """
+    result = ConfirmationResult(
+        action=ProposalAction.LOOSE_ENTRY,
+        status=ProposalStatus.CONFIRMED,
+        proposal=proposal_for(
+            LooseEntryPayload(product_id=3, quantity=3, reason="Compra")
+        ),
+        result=MovementRecord(
+            id=7,
+            product_id=3,
+            presentation_id=1,
+            kind=MovementKind.LOOSE_ENTRY,
+            quantity=3,
+            reason="Compra",
+            occurred_at=datetime(
+                2026, 3, 10, 15, 30, 45, tzinfo=timezone.utc
+            ),
+            cost=Decimal("12.50"),
+            applied_price=Decimal("99.90"),
+        ),
+    )
+
+    described = describe_result(result)
+
+    assert "**Operación confirmada:** Entrada de unidades sueltas" in described
+    assert "- **Estado:** Confirmada" in described
+    assert "- **Tipo:** Entrada suelta" in described
+    assert "- **Cantidad:** 3" in described
+    assert "- **Motivo:** Compra" in described
+    assert "- **Fecha:** 2026-03-10 12:30:45 -03:00" in described
+    assert "- **Costo:** 12.50" in described
+    assert "- **Precio aplicado:** 99.90" in described
+    assert "- **Stock inicial:** No" in described
+    assert "- **Movimiento original:** no informado" in described
+    assert "- **Cantidad consumida:** 0" in described
+    assert "- **Cantidad compensada:** 0" in described
+    assert "2026-03-10T15:30:45" not in described
+    assert "+00:00" not in described
+    assert "MovementKind" not in described
+    assert "entrada_suelta" not in described
+    assert "occurred_at" not in described
+    assert "applied_price" not in described
+    assert "is_initial_stock" not in described
+    assert "None" not in described
+    assert "False" not in described
+
+
+def test_describe_result_presents_a_registered_product_in_spanish() -> None:
+    """
+    Verifica la presentación legible del alta de un producto (T024, T055).
+
+    El registro persistido se describe con etiquetas en español y el estado
+    real del producto como `Activo`, sin nombres snake_case ni valores
+    booleanos internos.
+    """
+    record = ProductRecord(
+        id=1,
+        sku="SKU-1",
+        name="Producto",
+        base_unit="botella",
+        minimum_stock=20,
+        loose_units=4,
+        active=True,
+    )
+    result = ConfirmationResult(
+        action=ProposalAction.PRODUCT_REGISTRATION,
+        status=ProposalStatus.CONFIRMED,
+        proposal=proposal_for(
+            ProductRegistrationPayload(
+                sku="SKU-1",
+                name="Producto",
+                base_unit="botella",
+                base_sale_price=Decimal("100"),
+                minimum_stock=20,
+                initial_loose_units=4,
+            )
+        ),
+        result=record,
+    )
+
+    described = describe_result(result)
+
+    assert "**Operación confirmada:** Alta de producto" in described
+    assert "- **Estado:** Confirmada" in described
+    assert "- **SKU:** SKU-1" in described
+    assert "- **Nombre:** Producto" in described
+    assert "- **Unidad base:** botella" in described
+    assert "- **Stock mínimo:** 20" in described
+    assert "- **Unidades sueltas:** 4" in described
+    assert "- **Estado:** Activo" in described
+    for raw in (
+        "base_unit",
+        "minimum_stock",
+        "loose_units",
+        "active",
+        "None",
+        "True",
+        "False",
+    ):
+        assert raw not in described
+
+
+def test_describe_result_presents_a_registered_presentation_in_spanish() -> None:
+    """
+    Verifica la presentación legible del alta de una presentación (T024, T055).
+
+    La presentación persistida se describe con su nombre, su equivalencia, su
+    precio de venta formateado y su stock cerrado, sin nombres snake_case ni
+    valores ausentes.
+    """
+    record = PresentationRecord(
+        id=2,
+        product_id=1,
+        name="Caja x6",
+        factor=6,
+        sale_price=Decimal("600"),
+        closed_stock=2,
+    )
+    result = ConfirmationResult(
+        action=ProposalAction.PRESENTATION_REGISTRATION,
+        status=ProposalStatus.CONFIRMED,
+        proposal=proposal_for(
+            PresentationRegistrationPayload(
+                product_id=1,
+                name="Caja x6",
+                factor=6,
+                sale_price=Decimal("600"),
+            )
+        ),
+        result=record,
+    )
+
+    described = describe_result(result)
+
+    assert "**Operación confirmada:** Alta de presentación" in described
+    assert "- **Estado:** Confirmada" in described
+    assert "- **Nombre:** Caja x6" in described
+    assert "- **Equivalencia:** 6" in described
+    assert "- **Precio de venta:** 600.00" in described
+    assert "- **Stock cerrado:** 2" in described
+    for raw in ("product_id", "sale_price", "closed_stock", "None", "False"):
+        assert raw not in described
+
+
+def test_the_assistant_turn_detail_shows_the_local_instant_and_keeps_utc_storage(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Verifica la fecha local del detalle del turno del asistente (T055, B1).
+
+    La confirmación de una propuesta del asistente mantiene el instante en UTC
+    en la persistencia y el detalle del turno lo presenta en hora local, sin
+    ISO 8601 ni desplazamiento UTC.
+    """
+    fixed_instant = datetime(2026, 3, 10, 15, 30, 45, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "app.services.movements._utc_now",
+        lambda: fixed_instant,
+    )
+    assistant = make_assistant(
+        connection,
+        tool_call(
+            "propose_loose_entry",
+            {
+                "product_id": catalog.product.id,
+                "quantity": 3,
+                "reason": "Compra",
+            },
+        ),
+    )
+    app = app_for(assistant)
+
+    app.run()
+    app.chat_input[0].set_value("Propone una entrada suelta").run()
+    app.button[0].set_value(True).run()
+
+    rendered = rendered_markdown(app)
+    stored = connection.execute(
+        "SELECT occurred_at FROM movements"
+    ).fetchone()[0]
+    result = assistant.history[0].state["execution_result"]
+
+    assert not app.exception
+    assert "- **Fecha:** 2026-03-10 12:30:45 -03:00" in rendered
+    assert "2026-03-10T15:30:45" not in rendered
+    assert "+00:00" not in rendered
+    assert "**Operación confirmada:** Entrada de unidades sueltas" in rendered
+    assert (
+        "**Operación confirmada:** Entrada de unidades sueltas\n\n"
+        "- **Estado:** Confirmada"
+    ) in rendered
+    assert "- **Tipo:** Entrada suelta" in rendered
+    assert "- **Cantidad:** 3" in rendered
+    assert "- **Motivo:** Compra" in rendered
+    assert "occurred_at" not in rendered
+    described = describe_result(result)
+    assert "entrada_suelta" not in described
+    assert "MovementKind" not in described
+    assert result.result.occurred_at == fixed_instant
+    assert str(stored).startswith("2026-03-10T15:30:45")
+    assert str(stored).endswith("+00:00")
+
+
+def test_the_proposals_confirmation_notice_shows_the_local_instant(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Verifica la fecha local del aviso de «Propuestas pendientes» (T055, B1).
+
+    El aviso de la última confirmación presenta el instante en hora local, sin
+    desplazamiento UTC, y conserva el resto del resultado real.
+    """
+    fixed_instant = datetime(2026, 3, 10, 15, 30, 45, tzinfo=timezone.utc)
+    monkeypatch.setattr(
+        "app.services.movements._utc_now",
+        lambda: fixed_instant,
+    )
+    manual = proposal_for(
+        LooseEntryPayload(
+            product_id=catalog.product.id,
+            quantity=3,
+            reason="Compra manual",
+        )
+    )
+    app = app_for(make_assistant(connection))
+
+    open_pending_proposals(app, [manual])
+    confirm_pending_proposal(app, manual)
+
+    notices = [success.value for success in app.success]
+    stored = connection.execute(
+        "SELECT occurred_at FROM movements"
+    ).fetchone()[0]
+
+    assert not app.exception
+    assert len(notices) == 1
+    assert "- **Fecha:** 2026-03-10 12:30:45 -03:00" in notices[0]
+    assert "2026-03-10T15:30:45" not in notices[0]
+    assert "+00:00" not in notices[0]
+    assert "**Operación confirmada:** Entrada de unidades sueltas" in notices[0]
+    assert (
+        "**Operación confirmada:** Entrada de unidades sueltas\n\n"
+        "- **Estado:** Confirmada"
+    ) in notices[0]
+    assert "- **Cantidad:** 3" in notices[0]
+    assert "- **Motivo:** Compra manual" in notices[0]
+    assert "occurred_at" not in notices[0]
+    assert "entrada_suelta" not in notices[0]
+    assert "None" not in notices[0]
+    assert "False" not in notices[0]
+    assert str(stored).startswith("2026-03-10T15:30:45")
+    assert str(stored).endswith("+00:00")
+    assert app.session_state.get(CONFIRMATION_NOTICE_KEY) is None
+
+
+def test_a_rejected_proposals_confirmation_is_not_marked_as_success(
+    connection: sqlite3.Connection,
+    catalog: Catalog,
+) -> None:
+    """
+    Verifica que un rechazo no se presenta como un resultado confirmado
+    (T055, B1).
+
+    El servicio rechaza la salida por falta de stock: la sección muestra el
+    motivo real, no registra un aviso de confirmación exitosa y la propuesta
+    sigue pendiente.
+    """
+    manual = proposal_for(
+        LooseExitPayload(
+            product_id=catalog.product.id,
+            quantity=9,
+            reason="Venta",
+        )
+    )
+    app = app_for(make_assistant(connection))
+
+    open_pending_proposals(app, [manual])
+    confirm_pending_proposal(app, manual)
+
+    assert not app.exception
+    assert len(app.error) == 1
+    assert CONFIRMATION_ERROR_PREFIX in app.error[0].value
+    assert "No hay unidades sueltas suficientes" in app.error[0].value
+    assert app.success == []
+    assert app.session_state.get(CONFIRMATION_NOTICE_KEY) is None
+    assert manual.status is ProposalStatus.PENDING
+
+
+# --- Costos iniciales por grupo (T058) ---
+
+
+def test_the_product_registration_form_uses_text_inputs_for_the_costs(
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica los campos de costo total del alta de producto (T058).
+
+    Los costos se informan como texto y `Decimal`, nunca con un
+    `st.number_input`, y cada campo identifica su grupo.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+
+    loose_cost = operation_text_input(app, INITIAL_LOOSE_COST_LABEL)
+    presentation_cost = operation_text_input(
+        app, INITIAL_PRESENTATION_COST_LABEL
+    )
+    number_labels = {element.label for element in app.number_input}
+
+    assert not app.exception
+    assert loose_cost.label == INITIAL_LOOSE_COST_LABEL
+    assert loose_cost.placeholder == "Ej.: 1000.00"
+    assert "no es un costo unitario" in loose_cost.help
+    assert presentation_cost.label == INITIAL_PRESENTATION_COST_LABEL
+    assert presentation_cost.placeholder == "Ej.: 7500.00"
+    assert "no se distribuye" in presentation_cost.help
+    assert INITIAL_LOOSE_COST_LABEL not in number_labels
+    assert INITIAL_PRESENTATION_COST_LABEL not in number_labels
+
+
+def test_the_product_registration_form_keeps_the_initial_costs(
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica que el alta declara ambos costos sin escribir (T058).
+
+    El costo suelto y el de la presentación viajan como importes exactos en el
+    payload de la propuesta pendiente.
+    """
+    app = app_for(make_assistant(connection))
+
+    open_operations_section(app)
+    operation_text_input(app, SKU_FIELD_LABEL).set_value("SKU-COSTOS")
+    operation_text_input(app, NAME_FIELD_LABEL).set_value(
+        "Producto con costos"
+    )
+    operation_text_input(app, BASE_UNIT_FIELD_LABEL).set_value("botella")
+    operation_text_input(app, BASE_PRICE_FIELD_LABEL).set_value("100")
+    operation_number_input(app, INITIAL_LOOSE_UNITS_LABEL).set_value(3)
+    operation_text_input(app, INITIAL_LOOSE_COST_LABEL).set_value("1000")
+    operation_text_input(app, INITIAL_PRESENTATION_NAME_LABEL).set_value(
+        "Caja x6"
+    )
+    operation_number_input(app, FACTOR_FIELD_LABEL).set_value(6)
+    operation_text_input(app, PRESENTATION_PRICE_LABEL).set_value("7500")
+    operation_number_input(app, INITIAL_CLOSED_STOCK_LABEL).set_value(1)
+    operation_text_input(app, INITIAL_PRESENTATION_COST_LABEL).set_value(
+        "7500"
+    )
+    before = snapshot(connection)
+
+    submit_operation(app)
+
+    payload = manual_proposals_of(app)[0].payload
+
+    assert not app.exception
+    assert payload.initial_loose_cost == Decimal("1000")
+    assert payload.presentations[0].cost == Decimal("7500")
+    assert snapshot(connection) == before
+
+
+def test_the_review_shows_initial_costs_and_their_unit_references() -> None:
+    """
+    Verifica el costo total y la referencia unitaria en la revisión (T058).
+
+    Las unidades sueltas muestran `1000 / 3 = 333.33` y la caja de factor 6
+    muestra `7500 / 6 = 1250.00`; la referencia es solo de presentación.
+    """
+    review = proposal_review(
+        ProductRegistrationPayload(
+            sku="SKU-COSTOS",
+            name="Producto con costos",
+            base_unit="botella",
+            base_sale_price=Decimal("100"),
+            initial_loose_units=3,
+            initial_loose_cost=Decimal("1000"),
+            presentations=(
+                InitialPresentationPayload(
+                    name="Caja x6",
+                    factor=6,
+                    sale_price=Decimal("7500"),
+                    closed_stock=1,
+                    cost=Decimal("7500"),
+                ),
+            ),
+        )
+    )
+
+    lines = describe_proposal_review(review)
+    described = "\n".join(lines)
+    references = [
+        line for line in lines
+        if line.startswith(f"{UNIT_COST_REFERENCE_FIELD_LABEL}:")
+    ]
+
+    assert f"{INITIAL_LOOSE_COST_FIELD_LABEL}: 1000.00" in described
+    assert (
+        f"{INITIAL_PRESENTATION_COST_FIELD_LABEL} «Caja x6»: 7500.00"
+        in described
+    )
+    assert references == [
+        f"{UNIT_COST_REFERENCE_FIELD_LABEL}: 333.33",
+        f"{UNIT_COST_REFERENCE_FIELD_LABEL}: 1250.00",
+    ]
+
+
+def test_the_review_omits_the_reference_without_cost_or_quantity() -> None:
+    """
+    Verifica que la referencia no se muestra sin costo o cantidad (T058).
+
+    Un costo ausente, una cantidad inicial cero y un stock cerrado cero no
+    producen una referencia unitaria; el costo total informado sí se muestra.
+    """
+    payloads = (
+        ProductRegistrationPayload(
+            sku="SKU-SIN-COSTO",
+            name="Producto sin costos",
+            base_unit="botella",
+            base_sale_price=Decimal("100"),
+        ),
+        ProductRegistrationPayload(
+            sku="SKU-SIN-CANTIDAD",
+            name="Producto sin cantidad",
+            base_unit="botella",
+            base_sale_price=Decimal("100"),
+            initial_loose_units=0,
+            initial_loose_cost=Decimal("1000"),
+        ),
+        ProductRegistrationPayload(
+            sku="SKU-CAJA-VACIA",
+            name="Producto con caja vacía",
+            base_unit="botella",
+            base_sale_price=Decimal("100"),
+            presentations=(
+                InitialPresentationPayload(
+                    name="Caja x6",
+                    factor=6,
+                    sale_price=Decimal("600"),
+                    closed_stock=0,
+                    cost=Decimal("7500"),
+                ),
+            ),
+        ),
+    )
+
+    for payload in payloads:
+        described = "\n".join(
+            describe_proposal_review(proposal_review(payload))
+        )
+        assert UNIT_COST_REFERENCE_FIELD_LABEL not in described
+
+    assert "Costo de las unidades sueltas iniciales: no informado" in (
+        "\n".join(describe_proposal_review(proposal_review(payloads[0])))
+    )
+    assert "Costo de las unidades sueltas iniciales: 1000.00" in (
+        "\n".join(describe_proposal_review(proposal_review(payloads[1])))
+    )
+    assert "Costo de la presentación adicional «Caja x6»: 7500.00" in (
+        "\n".join(describe_proposal_review(proposal_review(payloads[2])))
+    )
+
+
+def test_editing_a_registration_proposal_updates_the_initial_costs(
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica la edición de los dos costos de una propuesta (T058, D3).
+
+    La propuesta conserva su acción y sigue pendiente; editar no escribe.
+    """
+    proposal = proposal_for(
+        ProductRegistrationPayload(
+            sku="SKU-COSTOS",
+            name="Producto con costos",
+            base_unit="botella",
+            base_sale_price=Decimal("100"),
+            initial_loose_units=2,
+            initial_loose_cost=Decimal("100"),
+            presentations=(
+                InitialPresentationPayload(
+                    name="Caja x6",
+                    factor=6,
+                    sale_price=Decimal("600"),
+                    closed_stock=1,
+                    cost=Decimal("200"),
+                ),
+            ),
+        )
+    )
+    app = app_for(make_assistant(connection))
+    before = snapshot(connection)
+
+    open_pending_proposals(app, [proposal])
+    app.text_input(
+        key=proposal_edit_key(proposal, "initial_loose_cost")
+    ).set_value("1111.50")
+    app.text_input(
+        key=proposal_edit_presentation_key(proposal, 1, "cost")
+    ).set_value("2222.25")
+    proposal_edit_submit(app, proposal)
+
+    edited = manual_proposals_of(app)[0]
+
+    assert not app.exception
+    assert edited.action is ProposalAction.PRODUCT_REGISTRATION
+    assert edited.status is ProposalStatus.PENDING
+    assert edited.payload.initial_loose_cost == Decimal("1111.50")
+    assert edited.payload.presentations[0].cost == Decimal("2222.25")
+    assert snapshot(connection) == before
+
+
+def test_a_registration_without_costs_keeps_them_absent_in_the_edit_form(
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica la compatibilidad de la edición con propuestas sin costos (T058).
+
+    Los campos nuevos quedan vacíos y volver a enviarlos conserva los costos
+    ausentes, en lugar de convertirlos en cero.
+    """
+    proposal = proposal_for(
+        ProductRegistrationPayload(
+            sku="SKU-SIN-COSTO",
+            name="Producto sin costos",
+            base_unit="botella",
+            base_sale_price=Decimal("100"),
+            initial_loose_units=2,
+            presentations=(
+                InitialPresentationPayload(
+                    name="Caja x6",
+                    factor=6,
+                    sale_price=Decimal("600"),
+                    closed_stock=1,
+                ),
+            ),
+        )
+    )
+    app = app_for(make_assistant(connection))
+
+    open_pending_proposals(app, [proposal])
+    loose_cost = app.text_input(
+        key=proposal_edit_key(proposal, "initial_loose_cost")
+    )
+    presentation_cost = app.text_input(
+        key=proposal_edit_presentation_key(proposal, 1, "cost")
+    )
+
+    assert not app.exception
+    assert loose_cost.value == ""
+    assert presentation_cost.value == ""
+
+    proposal_edit_submit(app, proposal)
+
+    edited = manual_proposals_of(app)[0]
+
+    assert edited.payload.initial_loose_cost is None
+    assert edited.payload.presentations[0].cost is None
+
+
+def test_discarding_a_registration_with_costs_does_not_write(
+    connection: sqlite3.Connection,
+) -> None:
+    """
+    Verifica que el descarte no persiste movimientos ni costos (T058).
+
+    La propuesta descartada sigue en la colección de la sesión y la base no
+    cambia; no se crea el producto ni sus movimientos iniciales.
+    """
+    proposal = proposal_for(
+        ProductRegistrationPayload(
+            sku="SKU-DESCARTADO",
+            name="Producto descartado",
+            base_unit="botella",
+            base_sale_price=Decimal("100"),
+            initial_loose_units=2,
+            initial_loose_cost=Decimal("1000"),
+            presentations=(
+                InitialPresentationPayload(
+                    name="Caja x6",
+                    factor=6,
+                    sale_price=Decimal("600"),
+                    closed_stock=1,
+                    cost=Decimal("7500"),
+                ),
+            ),
+        )
+    )
+    app = app_for(make_assistant(connection))
+    before = snapshot(connection)
+    changes_before = connection.total_changes
+
+    open_pending_proposals(app, [proposal])
+    discard_pending_proposal(app, proposal)
+
+    assert not app.exception
+    assert manual_proposals_of(app) == [proposal]
+    assert snapshot(connection) == before
+    assert connection.total_changes == changes_before

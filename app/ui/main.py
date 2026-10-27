@@ -16,6 +16,29 @@ la acción— y reemplaza solo la referencia de la propuesta en su origen de
 sesión: la lista manual o el turno del asistente. Editar no escribe el
 inventario; una propuesta confirmada no se edita.
 
+Alcance de T052 (RF-09): una propuesta pendiente se puede descartar solo en
+esta sesión de la interfaz. El descarte se resuelve en `st.session_state` con
+la identidad de objeto de la propuesta y la sección deja de ofrecerla, sin
+añadir estados al dominio, al grafo ni a la persistencia. Descartar no invoca
+`create`, `edit` ni `confirm`, no modifica la propuesta original y no deja
+traza en el inventario; las demás propuestas pendientes siguen disponibles.
+
+Alcance de T053 (RF-09): la confirmación de una propuesta —manual o del
+asistente— se ejecuta por `ProposalService.confirm` desde un **único** helper
+de este módulo; la sección de propuestas solo la delega con un callback. Una
+propuesta confirmada deja de ofrecerse y no se vuelve a ejecutar, y mientras
+una confirmación está en curso se impide el reenvío con un estado de la sesión
+de la interfaz. Esa protección **no** es idempotencia durable: el servicio de
+propuestas no registra las propuestas ni detecta un reenvío desde otra sesión.
+
+Alcance de T054 (C18, D-D): la cantidad compensable que muestra el formulario
+de compensación se lee con `MovementService.get_compensation_availability`,
+que reutiliza la misma regla de `_compensation_availability` que la
+confirmación. La interfaz no la recalcula ni usa `register_compensation` para
+calcularla; si la lectura no está disponible, el formulario no afirma que
+exista una cantidad compensable. La consulta es de solo lectura y no altera el
+inventario.
+
 Alcance de T035 (RF-08): el cambio de precio se muestra con la presentación
 afectada, su precio vigente y el precio nuevo, junto con el historial de
 precios de la presentación en orden cronológico. El precio vigente y el
@@ -85,8 +108,10 @@ nuevo; si la presentación ya no existe se informa el motivo y no se inventa un
 precio vigente. Los precios se resuelven con el servicio de presentaciones de
 la sesión, como máximo una consulta por presentación en cada render, de modo
 que la sección funciona también con propuestas manuales y sin modelo. La
-revisión solo presenta: la confirmación sigue en su único punto, en
-`confirm_pending`.
+revisión solo presenta: la confirmación se ejecuta en un único punto,
+`_apply_confirmation`, que contiene la única llamada a
+`proposal_service.confirm`; `confirm_pending` y `confirm_proposal` delegan
+en él.
 
 Configuración y ejecución (desde la raíz del repositorio, con el entorno
 virtual instalado y las variables `DEEPSEEK_API_KEY` y `DEEPSEEK_MODEL`
@@ -114,8 +139,9 @@ el historial, las propuestas ni los resultados de confirmación.
 
 Lógica testeable: `build_session`, `build_assistant`, `answer`,
 `describe_proposal`, `describe_price_update`, `describe_price_history`,
-`describe_result`, `describe_turn`, `confirm_pending`, `pending_proposals`,
-`manual_proposals`, `locate_proposal`, `edit_proposal`,
+`describe_result`, `describe_turn`, `confirm_pending`, `confirm_proposal`,
+`pending_proposals`, `manual_proposals`, `discarded_proposal_keys`,
+`discard_proposal`, `locate_proposal`, `edit_proposal`,
 `home_section`,
 `products_section`, `product_detail_section`, `movements_section`,
 `price_history_section`, `operations_section` y `section_renderers` no dependen
@@ -126,8 +152,9 @@ falso y una conexión en memoria, sin red y sin DeepSeek.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass, field
+from collections.abc import Callable, Collection, Iterator, Sequence
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from decimal import Decimal
 
@@ -148,15 +175,24 @@ from app.schemas.proposals import (
 from app.services.inventory import InventoryService
 from app.services.llm import LLMConfigurationError, get_llm
 from app.services.ports import (
+    MovementRecord,
+    PresentationRecord,
     PriceChangeRecord,
     ProductRecord,
     RecordNotFoundError,
 )
+from app.services.movements import MovementService
 from app.services.presentations import PresentationService
 from app.services.price_history import PriceHistoryService
 from app.services.proposals import ProposalError, ProposalService
 from app.tools.inventory_tools import create_inventory_tools
 from app.tools.proposal_tools import create_proposal_tools
+from app.ui.formatting import (
+    format_instant,
+    format_money,
+    format_quantity,
+    single_line,
+)
 from app.ui.sections.assistant import (
     CONFIRM_LABEL,
     CONFIRMATION_ERROR_PREFIX,
@@ -179,11 +215,13 @@ from app.ui.sections.movements import (
     render_movements_header,
 )
 from app.ui.sections.operations import (
+    action_label,
     render_action_selector,
     render_aperture_form,
     render_closed_entry_form,
     render_closed_exit_form,
     render_compensation_form,
+    render_compensation_selector,
     render_created_proposal,
     render_empty_catalog as render_empty_operations_catalog,
     render_empty_presentations as render_empty_operations_presentations,
@@ -207,17 +245,37 @@ from app.ui.sections.price_history import (
     render_product_filter as render_price_history_product_filter,
 )
 from app.ui.sections.product_detail import (
+    APPLIED_PRICE_LABEL,
+    COST_LABEL,
+    DATE_LABEL,
+    FACTOR_LABEL,
+    INITIAL_STOCK_LABEL,
+    MOVEMENT_TYPE_LABEL,
+    QUANTITY_LABEL,
+    REASON_LABEL,
+    SALE_PRICE_LABEL,
+    TABLE_YES_TEXT,
+    movement_kind_label,
     render_product_detail,
     render_product_detail_error,
     render_product_selector,
 )
 from app.ui.sections.products import (
+    ACTIVE_STATUS,
     ACTIVE_STATUS_FILTER,
+    BASE_UNIT_LABEL,
+    CLOSED_STOCK_LABEL,
     EMPTY_CATALOG_MESSAGE as EMPTY_PRODUCTS_CATALOG_MESSAGE,
     EMPTY_FILTER_MESSAGE as EMPTY_PRODUCTS_FILTER_MESSAGE,
     EMPTY_SEARCH_MESSAGE as EMPTY_PRODUCTS_SEARCH_MESSAGE,
+    INACTIVE_STATUS,
     INACTIVE_STATUS_FILTER,
+    LOOSE_UNITS_LABEL,
+    MINIMUM_STOCK_LABEL,
+    NAME_LABEL,
     SKU_FIELD,
+    SKU_LABEL,
+    STATUS_LABEL,
     ProductQuery,
     ProductRow,
     render_product_controls,
@@ -239,6 +297,16 @@ MANUAL_PROPOSALS_KEY: str = "manual_proposals"
 # Clave de `st.session_state` de las propuestas preparadas con los formularios
 # de «Operaciones», en el orden en que se crearon (T049). No se persisten.
 
+DISCARDED_PROPOSALS_KEY: str = "discarded_proposals"
+# Clave de `st.session_state` de las identidades de las propuestas descartadas
+# solo en esta sesión de la interfaz (T052). No se persiste y no cambia el
+# estado de la propuesta ni el del grafo.
+
+CONFIRMATION_NOTICE_KEY: str = "confirmation_notice"
+# Clave de `st.session_state` del aviso de la última confirmación ejecutada
+# desde «Propuestas pendientes» (T053). Es local a la interfaz y se consume en
+# el siguiente render; no se persiste.
+
 # `PENDING_PROPOSAL_NOTE` se reexporta desde `app.ui.sections.proposals` (T050):
 # la conversación y la sección de propuestas comparten un único aviso de que
 # nada se ejecutó todavía (D5).
@@ -258,6 +326,27 @@ PROPOSAL_NOT_AVAILABLE_MESSAGE: str = (
     "La propuesta ya no está disponible en la sesión: no se editó nada."
 )
 # Motivo devuelto al editar una propuesta que ya no se puede localizar (T051).
+
+DISCARDED_PROPOSAL_MESSAGE: str = (
+    "La propuesta se descartó en esta sesión: no se ejecutó ninguna operación."
+)
+# Motivo devuelto al confirmar una propuesta descartada solo en la interfaz
+# (T052). No cambia el estado de la propuesta ni el contrato del servicio.
+
+CONFIRMATION_NOT_AVAILABLE_MESSAGE: str = (
+    "La propuesta ya no está disponible en la sesión: no se ejecutó ninguna "
+    "operación."
+)
+# Motivo devuelto al confirmar una propuesta que ya no se puede localizar
+# (T053): la confirmación no se reenvía.
+
+CONFIRMATION_IN_PROGRESS_MESSAGE: str = (
+    "Ya hay una confirmación en curso: espera a que termine para confirmar "
+    "otra propuesta."
+)
+# Motivo devuelto si se intenta confirmar mientras la sesión de la interfaz
+# ya tiene una confirmación en curso (T053). Es una protección de la sesión y
+# **no** una garantía de idempotencia durable.
 
 SECTION_KEY: str = "inventory_section"
 # Clave de `st.session_state` de la sección elegida en la navegación (T041).
@@ -285,6 +374,34 @@ SECTION_PENDING_MESSAGE: str = (
 )
 # Aviso de las secciones que la Fase 7 todavía no implementó (T041, C4).
 
+LOADING_MESSAGE: str = "Cargando datos del inventario…"
+# Texto del estado de carga explícito que acompaña a las lecturas de las
+# secciones (T055, C21, D-E). Es transitorio: desaparece al terminar la lectura.
+
+CONFIRMATION_STATUS_LABELS: dict[ProposalStatus, str] = {
+    ProposalStatus.PENDING: "Pendiente",
+    ProposalStatus.CONFIRMED: "Confirmada",
+}
+# Nombre legible del estado real del resultado de una confirmación (T024).
+
+ORIGINAL_MOVEMENT_LABEL: str = "Movimiento original"
+# Etiqueta del movimiento compensado, solo si el resultado lo informa (T024).
+
+CONSUMED_QUANTITY_LABEL: str = "Cantidad consumida"
+# Etiqueta del contador FIFO de una entrada cerrada (T024).
+
+COMPENSATED_QUANTITY_LABEL: str = "Cantidad compensada"
+# Etiqueta del contador de compensaciones de una entrada cerrada (T024).
+
+NO_TEXT: str = "No"
+# Valor negativo de los indicadores booleanos del resultado (T024).
+
+MAX_CONVERSATION_MESSAGES: int = 12
+# Mensajes de conversación como máximo que se envían al modelo (T063): incluye
+# el mensaje actual, así que el historial previo se recorta a los últimos once
+# mensajes (6 turnos como máximo). Es un recorte literal del historial de la
+# sesión, que no se serializa, no se persiste y no se hace configurable.
+
 
 @dataclass(frozen=True)
 class Turn:
@@ -297,12 +414,13 @@ class Turn:
 @dataclass(frozen=True)
 class ProposalSlot:
     """
-    Ubicación de una propuesta dentro de la sesión, por identidad (T051).
+    Ubicación de una propuesta dentro de la sesión, por identidad (T051, T053).
 
-    Conserva la propuesta encontrada y la operación que reemplaza solo esa
-    referencia: la entrada de la lista manual o el `pending_proposal` de un
-    turno del asistente. No usa la igualdad de Pydantic ni un índice combinado,
-    de modo que dos propuestas idénticas se distinguen por objeto.
+    Conserva la propuesta encontrada, la operación que reemplaza solo esa
+    referencia —la entrada de la lista manual o el `pending_proposal` de un
+    turno del asistente— y la que registra su confirmación en el mismo origen.
+    No usa la igualdad de Pydantic ni un índice combinado, de modo que dos
+    propuestas idénticas se distinguen por objeto.
     """
 
     proposal: Proposal
@@ -310,6 +428,9 @@ class ProposalSlot:
 
     replace: Callable[[Proposal], None]
     """Reemplaza solo la referencia encontrada por la propuesta editada."""
+
+    complete: Callable[[ConfirmationResult], None]
+    """Registra la confirmación solo en el origen localizado (T053)."""
 
 
 @dataclass
@@ -400,7 +521,12 @@ def answer(assistant: Assistant, user_message: str) -> Turn:
 
     La respuesta no ejecuta la operación propuesta: el estado que devuelve el
     grafo conserva `execution_result` en `None` y cualquier propuesta queda
-    pendiente (D5).
+    pendiente (D5). El historial previo de la sesión se reconstruye como pares
+    `("human", mensaje)` y `("ai", respuesta)` —solo si hubo respuesta— y se
+    recorta a los últimos `MAX_CONVERSATION_MESSAGES - 1` mensajes, de modo que
+    al agregar el mensaje actual el modelo no reciba más de 12 mensajes
+    (T063). El mensaje actual no forma parte del historial: el nodo del agente
+    lo envía una sola vez.
 
     Args:
         assistant: Recursos de la sesión.
@@ -409,8 +535,15 @@ def answer(assistant: Assistant, user_message: str) -> Turn:
     Returns:
         El turno con el mensaje del usuario y el estado real resultante.
     """
+    previous: list[tuple[str, str]] = []
+    for turn in assistant.history:
+        previous.append(("human", turn.user_message))
+        if turn.state["response"] is not None:
+            previous.append(("ai", turn.state["response"]))
+    conversation = tuple(previous[-(MAX_CONVERSATION_MESSAGES - 1):])
+
     state: GraphState = assistant.graph.invoke(
-        create_initial_state(user_message)
+        create_initial_state(user_message, conversation=conversation)
     )
 
     return Turn(user_message=user_message, state=state)
@@ -531,8 +664,10 @@ def describe_price_history(records: list[PriceChangeRecord]) -> str:
     Describe el historial de precios de una presentación (T035, RF-08).
 
     Los registros llegan ya consultados, en el orden cronológico que aporta el
-    repositorio del historial (T030): no se reordenan ni se recalculan precios,
-    solo se formatean con dos decimales para mostrarlos.
+    repositorio del historial (T030): no se reordenan ni se recalculan precios.
+    Los importes se formatean con dos decimales y la fecha se presenta en la
+    hora local argentina con `format_instant`, igual que en las secciones
+    (T055, C4, C19); el instante almacenado en UTC no se modifica.
 
     Args:
         records: Cambios de precio de una presentación, del más antiguo al más
@@ -549,7 +684,7 @@ def describe_price_history(records: list[PriceChangeRecord]) -> str:
     lines.extend(
         f"- {_format_price(record.previous_price)} → "
         f"{_format_price(record.new_price)} "
-        f"({record.occurred_at.isoformat()}, {record.event_type})"
+        f"({format_instant(record.occurred_at)}, {record.event_type})"
         for record in records
     )
 
@@ -585,33 +720,160 @@ def describe_result(result: ConfirmationResult) -> str:
     """
     Describe el resultado real de una confirmación (T024, RF-05).
 
+    Presenta la acción con su etiqueta legible y el estado en español; el
+    registro persistido se describe con `isinstance` y etiquetas propias de cada
+    tipo —producto, presentación o movimiento—, sin nombres de campo internos,
+    valores de enumeraciones ni `None`. Los importes usan `format_money`, las
+    cantidades `format_quantity` y los instantes `format_instant`; los valores
+    ausentes se muestran como `no informado` y los booleanos como `Sí` o `No`.
+
     Args:
         result: Resultado real devuelto por el servicio al confirmar.
 
     Returns:
-        El texto con la acción, su estado confirmado y los datos del registro
-        que el servicio persistió.
+        El texto en formato de lista Markdown —encabezado en negrita, una línea
+        en blanco y un ítem por campo— con la acción, su estado confirmado y
+        los datos del registro que el servicio persistió. Los instantes se
+        muestran en la hora local argentina; el instante almacenado en UTC no
+        se modifica.
     """
+    status_label = CONFIRMATION_STATUS_LABELS.get(
+        result.status, result.status.value
+    )
     lines = [
-        f"Operación confirmada: `{result.action.value}` "
-        f"({result.status.value})"
+        f"**Operación confirmada:** {action_label(result.action)}",
+        "",
+        f"- **Estado:** {status_label}",
     ]
-    for name, value in asdict(result.result).items():
-        lines.append(f"- {name}: {value}")
+    lines.extend(
+        f"- **{label}:** {value}"
+        for label, value in _result_fields(result.result)
+    )
 
-    return "\n\n".join(lines)
+    return "\n".join(lines)
 
 
-def confirm_pending(assistant: Assistant, turn: Turn) -> str | None:
+def _result_fields(
+    record: ProductRecord | PresentationRecord | MovementRecord,
+) -> tuple[tuple[str, str], ...]:
+    """
+    Compone los campos legibles del registro real de una confirmación (T024).
+
+    Args:
+        record: Registro persistido que devolvió el servicio de destino.
+
+    Returns:
+        Los pares de etiqueta y valor en español, en el orden de presentación.
+    """
+    if isinstance(record, MovementRecord):
+        return _movement_result_fields(record)
+    if isinstance(record, ProductRecord):
+        return (
+            (SKU_LABEL, single_line(record.sku)),
+            (NAME_LABEL, single_line(record.name)),
+            (BASE_UNIT_LABEL, single_line(record.base_unit)),
+            (MINIMUM_STOCK_LABEL, format_quantity(record.minimum_stock)),
+            (LOOSE_UNITS_LABEL, format_quantity(record.loose_units)),
+            (
+                STATUS_LABEL,
+                ACTIVE_STATUS if record.active else INACTIVE_STATUS,
+            ),
+        )
+    if isinstance(record, PresentationRecord):
+        return (
+            (NAME_LABEL, single_line(record.name)),
+            (FACTOR_LABEL, format_quantity(record.factor)),
+            (SALE_PRICE_LABEL, format_money(record.sale_price)),
+            (CLOSED_STOCK_LABEL, format_quantity(record.closed_stock)),
+        )
+
+    return ()
+
+
+def _movement_result_fields(
+    record: MovementRecord,
+) -> tuple[tuple[str, str], ...]:
+    """
+    Compone los campos legibles de un movimiento confirmado (T024).
+
+    Args:
+        record: Movimiento real persistido por el servicio.
+
+    Returns:
+        Los pares de etiqueta y valor en español, con los opcionales ausentes
+        como `no informado` y sin exponer el valor interno del tipo.
+    """
+    return (
+        (MOVEMENT_TYPE_LABEL, movement_kind_label(record.kind)),
+        (QUANTITY_LABEL, format_quantity(record.quantity)),
+        (REASON_LABEL, single_line(record.reason)),
+        (DATE_LABEL, format_instant(record.occurred_at)),
+        (COST_LABEL, format_money(record.cost)),
+        (APPLIED_PRICE_LABEL, format_money(record.applied_price)),
+        (
+            INITIAL_STOCK_LABEL,
+            TABLE_YES_TEXT if record.is_initial_stock else NO_TEXT,
+        ),
+        (
+            ORIGINAL_MOVEMENT_LABEL,
+            format_quantity(record.original_movement_id),
+        ),
+        (CONSUMED_QUANTITY_LABEL, format_quantity(record.consumed_quantity)),
+        (
+            COMPENSATED_QUANTITY_LABEL,
+            format_quantity(record.compensated_quantity),
+        ),
+    )
+
+
+def _apply_confirmation(
+    proposal_service: ProposalService,
+    proposal: Proposal,
+) -> ConfirmationResult | str:
+    """
+    Ejecuta la confirmación de una propuesta pendiente en el servicio (T053).
+
+    Es el **único** punto de `app/ui/**` que invoca `ProposalService.confirm`:
+    la confirmación del turno del asistente y la de la sección de propuestas
+    delegan aquí (D-A). La comprobación de estado evita invocar al servicio con
+    una propuesta ya confirmada; los errores de negocio y los registros
+    inexistentes se devuelven como motivo, sin dejar cambios parciales.
+
+    Args:
+        proposal_service: Servicio de propuestas de la sesión.
+        proposal: Propuesta que se intenta confirmar.
+
+    Returns:
+        El resultado real de la confirmación, o el motivo por el que no se
+        ejecutó.
+    """
+    if proposal.status is not ProposalStatus.PENDING:
+        return ALREADY_CONFIRMED_MESSAGE
+
+    try:
+        return proposal_service.confirm(proposal)
+    except (LookupError, ValueError) as error:
+        return str(error)
+
+
+def confirm_pending(
+    assistant: Assistant,
+    turn: Turn,
+    discarded: Collection[int] = (),
+) -> str | None:
     """
     Confirma la propuesta pendiente del turno en el servicio de propuestas
-    (T024, RF-05).
+    (T024, T052, T053, RF-05).
 
     La confirmación la decide el usuario en la interfaz y la ejecuta el
     servicio con el estado vigente del inventario: no interviene el LLM. Solo
     si la operación tiene éxito se reemplaza la propuesta pendiente por su
     copia confirmada y se guarda el resultado real en `execution_result`; ante
-    un error, el turno no cambia y el servicio no deja cambios parciales.
+    un error, el turno no cambia y el servicio no deja cambios parciales. Una
+    propuesta descartada solo en la interfaz se rechaza antes de invocar al
+    servicio: no se confirma, no se escribe y el turno no se modifica (T052).
+    La operación se ejecuta con `_apply_confirmation`, el único punto de
+    confirmación de la interfaz (T053).
 
     La protección contra una confirmación repetida es la transición de estado
     del turno —una propuesta confirmada ya no ofrece el control—, válida para
@@ -621,34 +883,130 @@ def confirm_pending(assistant: Assistant, turn: Turn) -> str | None:
     Args:
         assistant: Recursos de la sesión.
         turn: Turno cuya propuesta pendiente se confirma.
+        discarded: Identidades de las propuestas descartadas en la sesión; una
+            propuesta con esa identidad no se confirma (T052).
 
     Returns:
         `None` si la operación se aplicó, o el motivo por el que no se aplicó:
-        el turno no tiene propuesta pendiente, la propuesta ya estaba
-        confirmada, o el servicio la rechazó con un error tipado de negocio o
-        con un registro inexistente.
+        el turno no tiene propuesta pendiente, la propuesta se descartó en la
+        sesión, la propuesta ya estaba confirmada, o el servicio la rechazó con
+        un error tipado de negocio o con un registro inexistente.
     """
     proposal = turn.state["pending_proposal"]
     if proposal is None:
         return NO_PENDING_PROPOSAL_MESSAGE
 
-    if proposal.status is not ProposalStatus.PENDING:
-        return ALREADY_CONFIRMED_MESSAGE
+    if id(proposal) in discarded:
+        return DISCARDED_PROPOSAL_MESSAGE
 
-    try:
-        result = assistant.proposal_service.confirm(proposal)
-    except (LookupError, ValueError) as error:
-        return str(error)
+    outcome = _apply_confirmation(assistant.proposal_service, proposal)
+    if isinstance(outcome, str):
+        return outcome
 
-    turn.state["pending_proposal"] = result.proposal
-    turn.state["execution_result"] = result
+    turn.state["pending_proposal"] = outcome.proposal
+    turn.state["execution_result"] = outcome
 
     return None
 
 
-def describe_turn(assistant: Assistant, turn: Turn) -> TurnContent:
+def confirm_proposal(
+    assistant: Assistant | None,
+    session: SessionResources,
+    key: int,
+    discarded: Collection[int] = (),
+) -> ConfirmationResult | str:
     """
-    Resuelve el contenido que muestra un turno de la conversación (T024, T048).
+    Confirma por identidad una propuesta pendiente de la sesión (T053).
+
+    La propuesta puede ser manual —creada desde «Operaciones»— o del
+    asistente: se localiza en su origen y, si sigue pendiente, se confirma con
+    el mismo helper que la confirmación del turno. El resultado se registra
+    solo en el origen localizado y no se persiste. Un segundo intento sobre la
+    misma propuesta no vuelve a ejecutar la operación: una propuesta ya
+    confirmada se rechaza antes de invocar al servicio.
+
+    Args:
+        assistant: Recursos de la sesión, o `None` si el asistente no se
+            compuso.
+        session: Contenedor de lectura de la sesión, con el servicio de
+            propuestas.
+        key: Identidad de la propuesta, tal como la asignó `proposal_section`.
+        discarded: Identidades de las propuestas descartadas en la sesión; una
+            propuesta con esa identidad no se confirma (T052).
+
+    Returns:
+        El resultado real de la confirmación, o el motivo por el que no se
+        ejecutó: la propuesta se descartó en la sesión, ya no está disponible,
+        ya estaba confirmada o el servicio la rechazó.
+    """
+    if key in discarded:
+        return DISCARDED_PROPOSAL_MESSAGE
+
+    slot = locate_proposal(assistant, key)
+    if slot is None:
+        return CONFIRMATION_NOT_AVAILABLE_MESSAGE
+
+    outcome = _apply_confirmation(session.proposal_service, slot.proposal)
+    if isinstance(outcome, str):
+        return outcome
+
+    slot.complete(outcome)
+
+    return outcome
+
+
+def _confirm_from_section(
+    assistant: Assistant | None,
+    session: SessionResources,
+    key: int,
+    discarded: Collection[int],
+) -> str | None:
+    """
+    Confirma desde «Propuestas pendientes» con el estado de la sesión (T053).
+
+    Marca la confirmación en curso en `st.session_state` mientras el servicio
+    ejecuta la operación; si ya hay una confirmación en curso, devuelve el
+    motivo sin invocar al servicio. Al terminar, guarda el resultado real para
+    mostrarlo una sola vez en la sección. Esta protección pertenece a la sesión
+    de la interfaz y **no** es idempotencia durable: el servicio de propuestas
+    no registra las propuestas ni detecta un reenvío desde otra sesión.
+
+    Args:
+        assistant: Recursos de la sesión, o `None` si el asistente no se
+            compuso.
+        session: Contenedor de lectura de la sesión, con el servicio de
+            propuestas.
+        key: Identidad de la propuesta que se confirma.
+        discarded: Identidades de las propuestas descartadas en la sesión.
+
+    Returns:
+        `None` si la operación se aplicó, o el motivo por el que no se aplicó.
+    """
+    if st.session_state.get(PROCESSING_KEY, False):
+        return CONFIRMATION_IN_PROGRESS_MESSAGE
+
+    st.session_state[PROCESSING_KEY] = True
+    try:
+        outcome = confirm_proposal(assistant, session, key, discarded)
+    finally:
+        st.session_state[PROCESSING_KEY] = False
+
+    if isinstance(outcome, str):
+        return outcome
+
+    st.session_state[CONFIRMATION_NOTICE_KEY] = describe_result(outcome)
+
+    return None
+
+
+def describe_turn(
+    assistant: Assistant,
+    turn: Turn,
+    discarded: Collection[int] = (),
+) -> TurnContent:
+    """
+    Resuelve el contenido que muestra un turno de la conversación (T024, T048,
+    T052).
 
     Reproduce el contenido vigente del turno: la respuesta del asistente —o su
     aviso de reserva—, la propuesta pendiente con su detalle y el resultado
@@ -657,11 +1015,16 @@ def describe_turn(assistant: Assistant, turn: Turn) -> TurnContent:
     presentación (T035), tanto mientras la propuesta está pendiente como
     después de confirmarla: leer ese estado no ejecuta la operación ni confirma
     nada de nuevo. El control de confirmación se habilita solo mientras la
-    propuesta está pendiente.
+    propuesta está pendiente y no se descartó en la sesión (T052): una
+    propuesta descartada no muestra su detalle, informa el descarte y no se
+    puede confirmar.
 
     Args:
         assistant: Recursos de la sesión.
         turn: Turno con el mensaje del usuario y el estado real.
+        discarded: Identidades de las propuestas descartadas en la sesión; una
+            propuesta con esa identidad no se muestra ni se puede confirmar
+            (T052).
 
     Returns:
         La respuesta, los detalles ya descritos y si corresponde ofrecer el
@@ -669,7 +1032,10 @@ def describe_turn(assistant: Assistant, turn: Turn) -> TurnContent:
     """
     details: list[str] = []
     proposal = turn.state["pending_proposal"]
-    if proposal is not None and isinstance(
+    is_discarded = proposal is not None and id(proposal) in discarded
+    if is_discarded:
+        details.append(DISCARDED_PROPOSAL_MESSAGE)
+    elif proposal is not None and isinstance(
         proposal.payload, PriceUpdatePayload
     ):
         details.append(describe_price_update(assistant, proposal))
@@ -689,6 +1055,7 @@ def describe_turn(assistant: Assistant, turn: Turn) -> TurnContent:
         details=tuple(details),
         can_confirm=(
             proposal is not None
+            and not is_discarded
             and proposal.status is ProposalStatus.PENDING
         ),
     )
@@ -696,12 +1063,15 @@ def describe_turn(assistant: Assistant, turn: Turn) -> TurnContent:
 
 def _assistant_actions(assistant: Assistant) -> AssistantActions:
     """
-    Compone los callbacks de la sección del asistente (T048).
+    Compone los callbacks de la sección del asistente (T048, T052).
 
     Los callbacks delegan en la lógica de esta interfaz: `answer` responde con
     el grafo, `confirm_turn` usa el único punto de confirmación
-    (`confirm_pending`) y `describe_turn` resuelve el contenido del turno. La
-    vista de la sección solo presenta y no accede a los servicios.
+    (`confirm_pending`) y `describe_turn` resuelve el contenido del turno. Las
+    identidades descartadas se leen aquí, en `main.py`, y se pasan a ambos
+    callbacks, de modo que una propuesta descartada deje de ofrecerse también
+    en la conversación. La vista de la sección solo presenta y no accede a los
+    servicios ni al estado de la sesión.
 
     Args:
         assistant: Recursos de la sesión.
@@ -710,11 +1080,35 @@ def _assistant_actions(assistant: Assistant) -> AssistantActions:
         Los callbacks que la sección usa para responder, confirmar y describir
         un turno.
     """
+    discarded = discarded_proposal_keys()
+
     return AssistantActions(
-        answer=lambda user_message: answer(assistant, user_message),
-        confirm_turn=lambda turn: confirm_pending(assistant, turn),
-        describe_turn=lambda turn: describe_turn(assistant, turn),
+        answer=lambda user_message: _answer_with_loading(
+            assistant, user_message
+        ),
+        confirm_turn=lambda turn: confirm_pending(
+            assistant, turn, discarded
+        ),
+        describe_turn=lambda turn: describe_turn(assistant, turn, discarded),
     )
+
+
+def _answer_with_loading(assistant: Assistant, user_message: str) -> Turn:
+    """
+    Responde el turno mostrando el estado de carga de la consulta (T055).
+
+    El asistente consulta el inventario a través del grafo; el estado de carga
+    es el mismo de las secciones y no cambia el flujo ni el resultado del turno.
+
+    Args:
+        assistant: Recursos de la sesión.
+        user_message: Mensaje escrito por el usuario.
+
+    Returns:
+        El turno respondido por el asistente.
+    """
+    with loading_state():
+        return answer(assistant, user_message)
 
 
 def pending_proposals(assistant: Assistant | None) -> list[Proposal]:
@@ -766,12 +1160,48 @@ def manual_proposals() -> list[Proposal]:
     return stored
 
 
+def discarded_proposal_keys() -> set[int]:
+    """
+    Reúne las identidades de las propuestas descartadas en la sesión (T052).
+
+    El descarte es local a la interfaz y vive en `st.session_state`: no se
+    persiste, no cambia el estado de la propuesta y no modifica el dominio ni el
+    grafo. Se conserva la identidad de objeto (`id(proposal)`) ya usada por la
+    edición (T051), de modo que dos propuestas idénticas se distinguen.
+
+    Returns:
+        El conjunto de identidades descartadas, que se crea vacío la primera
+        vez y se conserva entre ejecuciones de la interfaz.
+    """
+    stored = st.session_state.get(DISCARDED_PROPOSALS_KEY)
+    if stored is None:
+        stored = set()
+        st.session_state[DISCARDED_PROPOSALS_KEY] = stored
+
+    return stored
+
+
+def discard_proposal(key: int) -> None:
+    """
+    Descarta una propuesta pendiente solo en la sesión de la interfaz (T052).
+
+    Registra la identidad de la propuesta para que «Propuestas pendientes»
+    deje de ofrecerla. No invoca `create`, `edit` ni `confirm`, no modifica la
+    propuesta original, no escribe en el inventario ni deja traza en la
+    persistencia. Las demás propuestas pendientes siguen disponibles.
+
+    Args:
+        key: Identidad de la propuesta, tal como la asignó `proposal_section`.
+    """
+    discarded_proposal_keys().add(key)
+
+
 def locate_proposal(
     assistant: Assistant | None,
     key: int,
 ) -> ProposalSlot | None:
     """
-    Localiza una propuesta de la sesión por identidad de objeto (T051).
+    Localiza una propuesta de la sesión por identidad de objeto (T051, T053).
 
     Busca primero en la colección manual —la que crean los formularios de
     «Operaciones»— y, si no está, en el historial del asistente, en el
@@ -785,8 +1215,9 @@ def locate_proposal(
         key: Identidad de la propuesta, tal como la asignó `proposal_section`.
 
     Returns:
-        La propuesta encontrada junto con la operación que reemplaza solo su
-        referencia, o `None` si ya no está en la sesión.
+        La propuesta encontrada junto con las operaciones que reemplazan solo
+        su referencia y registran su confirmación, o `None` si ya no está en la
+        sesión.
     """
     manual = manual_proposals()
     for index, proposal in enumerate(manual):
@@ -794,6 +1225,7 @@ def locate_proposal(
             return ProposalSlot(
                 proposal=proposal,
                 replace=_manual_proposal_replacer(manual, index),
+                complete=_manual_proposal_completer(manual, index),
             )
 
     if assistant is None:
@@ -805,6 +1237,7 @@ def locate_proposal(
             return ProposalSlot(
                 proposal=proposal,
                 replace=_turn_proposal_replacer(turn),
+                complete=_turn_proposal_completer(turn),
             )
 
     return None
@@ -878,6 +1311,32 @@ def _turn_proposal_replacer(
     return replace
 
 
+def _manual_proposal_completer(
+    manual: list[Proposal],
+    index: int,
+) -> Callable[[ConfirmationResult], None]:
+    """Devuelve la operación que registra la confirmación manual (T053)."""
+
+    def complete(result: ConfirmationResult) -> None:
+        """Reemplaza la propuesta manual por su copia confirmada."""
+        manual[index] = result.proposal
+
+    return complete
+
+
+def _turn_proposal_completer(
+    turn: Turn,
+) -> Callable[[ConfirmationResult], None]:
+    """Devuelve la operación de confirmación de un turno (T053)."""
+
+    def complete(result: ConfirmationResult) -> None:
+        """Guarda la copia confirmada y el resultado en el turno localizado."""
+        turn.state["pending_proposal"] = result.proposal
+        turn.state["execution_result"] = result
+
+    return complete
+
+
 def pending_section(section: str) -> Callable[[], None]:
     """
     Construye el renderer de una sección todavía no implementada (T041, C4).
@@ -899,6 +1358,26 @@ def pending_section(section: str) -> Callable[[], None]:
         st.info(f"«{section}»: {SECTION_PENDING_MESSAGE}")
 
     return render
+
+
+@contextmanager
+def loading_state(message: str = LOADING_MESSAGE) -> Iterator[None]:
+    """
+    Muestra el estado de carga mientras la interfaz lee los servicios (T055).
+
+    Las lecturas de las secciones se ejecutan en este módulo y no en las
+    vistas; por eso el estado de carga es transversal y se comparte desde aquí
+    (D-E). El indicador es transitorio y no altera los datos ni el resultado de
+    la lectura.
+
+    Args:
+        message: Texto explícito del estado de carga.
+
+    Yields:
+        El control mientras se ejecutan las lecturas que se quieren señalar.
+    """
+    with st.spinner(message):
+        yield
 
 
 def home_section(session: SessionResources) -> Callable[[], None]:
@@ -923,10 +1402,14 @@ def home_section(session: SessionResources) -> Callable[[], None]:
     def render() -> None:
         """Consulta y muestra las alertas y los conteos de inicio (T043)."""
         inventory = session.inventory_service
+        with loading_state():
+            products = inventory.list_products()
+            low_stock = inventory.get_low_stock_products()
+            replenishment = inventory.get_replenishment_products()
         render_home(
-            products=inventory.list_products(),
-            low_stock=inventory.get_low_stock_products(),
-            replenishment=inventory.get_replenishment_products(),
+            products=products,
+            low_stock=low_stock,
+            replenishment=replenishment,
         )
 
     return render
@@ -1043,13 +1526,14 @@ def products_section(session: SessionResources) -> Callable[[], None]:
         """Consulta y muestra el listado, la búsqueda o el filtro (T044)."""
         inventory = session.inventory_service
         query = render_product_controls()
-        candidates = _product_candidates(inventory, query)
-        selected = [
-            product
-            for product in candidates
-            if _matches_status(product, query.status)
-        ]
-        rows = [_product_row(inventory, product) for product in selected]
+        with loading_state():
+            candidates = _product_candidates(inventory, query)
+            selected = [
+                product
+                for product in candidates
+                if _matches_status(product, query.status)
+            ]
+            rows = [_product_row(inventory, product) for product in selected]
 
         if rows:
             render_products(rows)
@@ -1105,13 +1589,13 @@ def product_detail_section(
         product = products[selection]
         inventory = session.inventory_service
         try:
-            stock = inventory.get_product_stock(product.id)
-            movements = inventory.get_movement_history(product.id)
-            price_changes = (
-                session.price_history_service.get_price_history_by_product(
+            with loading_state():
+                stock = inventory.get_product_stock(product.id)
+                movements = inventory.get_movement_history(product.id)
+                price_history = session.price_history_service
+                price_changes = price_history.get_price_history_by_product(
                     product.id
                 )
-            )
         except RecordNotFoundError as error:
             render_product_detail_error(str(error))
             return
@@ -1150,7 +1634,8 @@ def movements_section(session: SessionResources) -> Callable[[], None]:
     def render() -> None:
         """Consulta y muestra el historial del producto elegido (T046)."""
         inventory = session.inventory_service
-        products = inventory.list_products()
+        with loading_state():
+            products = inventory.list_products()
         render_movements_header()
         if not products:
             render_empty_movements_catalog()
@@ -1183,17 +1668,18 @@ def movements_section(session: SessionResources) -> Callable[[], None]:
         )
 
         try:
-            movements = inventory.get_movement_history(
-                product.id,
-                query.kind_value,
-                period_start=period_start,
-                period_end=period_end,
-            )
-            presentation_names = (
-                _presentation_names(inventory, product.id)
-                if movements
-                else {}
-            )
+            with loading_state():
+                movements = inventory.get_movement_history(
+                    product.id,
+                    query.kind_value,
+                    period_start=period_start,
+                    period_end=period_end,
+                )
+                presentation_names = (
+                    _presentation_names(inventory, product.id)
+                    if movements
+                    else {}
+                )
         except (LookupError, ValueError) as error:
             render_movements_error(str(error))
             return
@@ -1234,7 +1720,8 @@ def price_history_section(session: SessionResources) -> Callable[[], None]:
     def render() -> None:
         """Consulta y muestra el historial del producto elegido (T047)."""
         inventory = session.inventory_service
-        products = inventory.list_products()
+        with loading_state():
+            products = inventory.list_products()
         render_price_history_header()
         if not products:
             render_empty_price_history_catalog()
@@ -1246,20 +1733,26 @@ def price_history_section(session: SessionResources) -> Callable[[], None]:
 
         product = products[product_index]
         try:
-            presentations = inventory.get_product_presentations(product.id)
+            with loading_state():
+                presentations = inventory.get_product_presentations(
+                    product.id
+                )
             presentation_index = render_presentation_filter(
                 presentations,
                 product_id=product.id,
             )
             history = session.price_history_service
-            if presentation_index is None:
-                price_changes = history.get_price_history_by_product(
-                    product.id
-                )
-            else:
-                price_changes = history.get_price_history_by_presentation(
-                    presentations[presentation_index].id
-                )
+            with loading_state():
+                if presentation_index is None:
+                    price_changes = history.get_price_history_by_product(
+                        product.id
+                    )
+                else:
+                    price_changes = (
+                        history.get_price_history_by_presentation(
+                            presentations[presentation_index].id
+                        )
+                    )
         except RecordNotFoundError as error:
             render_price_history_error(str(error))
             return
@@ -1309,15 +1802,19 @@ def operations_section(session: SessionResources) -> Callable[[], None]:
     La sección ofrece un formulario por acción admitida. Las lecturas son
     perezosas: al construir el renderer no se consulta nada y, al mostrar el
     formulario, esta interfaz —y no la vista— lee los productos, las
-    presentaciones o los movimientos que el formulario necesita. Solo cuando un
-    formulario devuelve un payload validado se crea la propuesta pendiente con
-    `ProposalService.create`, que no escribe, y se conserva en la colección
-    manual de la sesión. La vista de `app.ui.sections.operations` no consulta
-    servicios, no confirma y no escribe.
+    presentaciones o los movimientos que el formulario necesita. En la
+    compensación, además, lee la cantidad compensable con
+    `MovementService.get_compensation_availability` y la pasa ya resuelta a la
+    vista (T054, C18); si la lectura no está disponible, la vista no afirma que
+    exista. Solo cuando un formulario devuelve un payload validado se crea la
+    propuesta pendiente con `ProposalService.create`, que no escribe, y se
+    conserva en la colección manual de la sesión. La vista de
+    `app.ui.sections.operations` no consulta servicios, no confirma y no
+    escribe.
 
     Args:
         session: Contenedor de lectura de la sesión, con el servicio de
-            inventario y el servicio de propuestas.
+            inventario, el de movimientos y el de propuestas.
 
     Returns:
         El renderer sin argumentos de la sección de operaciones.
@@ -1327,7 +1824,7 @@ def operations_section(session: SessionResources) -> Callable[[], None]:
         """Muestra los formularios y crea la propuesta enviada (T049)."""
         render_operations_header()
         action = render_action_selector()
-        payload = _operation_payload(session.inventory_service, action)
+        payload = _operation_payload(session, action)
         if payload is None:
             return
 
@@ -1339,20 +1836,24 @@ def operations_section(session: SessionResources) -> Callable[[], None]:
 
 
 def _operation_payload(
-    inventory: InventoryService,
+    session: SessionResources,
     action: ProposalAction,
 ) -> ProposalPayload | None:
     """
-    Consulta los datos del formulario elegido y devuelve su payload (T049).
+    Consulta los datos del formulario elegido y devuelve su payload (T049,
+    T054).
 
     El alta de producto no requiere catálogo. Las demás acciones exigen un
     producto elegido y, cuando el formulario lo necesita, esta interfaz lee sus
-    presentaciones o su historial de movimientos. La lectura del historial de
-    la compensación no evalúa la cantidad compensable ni la disponibilidad: esa
-    revalidación queda para la confirmación.
+    presentaciones o su historial de movimientos. En la compensación, lee la
+    cantidad compensable del movimiento elegido con la lectura pública del
+    servicio de movimientos y la pasa ya resuelta a la vista; si la lectura no
+    está disponible, la vista no afirma compensabilidad (C18, D-D). La
+    revalidación definitiva queda para la confirmación.
 
     Args:
-        inventory: Servicio de consultas de la sesión.
+        session: Contenedor de lectura de la sesión, con el servicio de
+            inventario y el de movimientos.
         action: Acción cuyo formulario se muestra.
 
     Returns:
@@ -1362,7 +1863,9 @@ def _operation_payload(
     if action is ProposalAction.PRODUCT_REGISTRATION:
         return render_product_registration_form()
 
-    products = inventory.list_products()
+    inventory = session.inventory_service
+    with loading_state():
+        products = inventory.list_products()
     if not products:
         render_empty_operations_catalog(action)
         return None
@@ -1380,12 +1883,27 @@ def _operation_payload(
     if action is ProposalAction.LOOSE_EXIT:
         return render_loose_exit_form(product)
     if action is ProposalAction.COMPENSATION:
+        with loading_state():
+            history = inventory.get_movement_history(product.id)
+        movement = render_compensation_selector(product, history)
+        if movement is None:
+            return None
+
+        with loading_state():
+            compensable_quantity = _compensable_quantity(
+                session.movement_service,
+                product.id,
+                movement.id,
+            )
+
         return render_compensation_form(
             product,
-            inventory.get_movement_history(product.id),
+            movement,
+            compensable_quantity=compensable_quantity,
         )
 
-    presentations = inventory.get_product_presentations(product.id)
+    with loading_state():
+        presentations = inventory.get_product_presentations(product.id)
     if not presentations:
         render_empty_operations_presentations()
         return None
@@ -1402,13 +1920,49 @@ def _operation_payload(
     return None
 
 
+def _compensable_quantity(
+    movement_service: MovementService | None,
+    product_id: int,
+    movement_id: int,
+) -> int | None:
+    """
+    Lee la cantidad compensable pendiente de un movimiento (T054, C18).
+
+    Delega en `MovementService.get_compensation_availability`, que reutiliza la
+    regla de compensación vigente. No calcula en la interfaz, no llama a
+    `register_compensation` y no escribe. Si el servicio no está disponible o
+    la lectura falla, devuelve `None` para que la vista no afirme que exista
+    una cantidad compensable (D-D).
+
+    Args:
+        movement_service: Servicio de movimientos de la sesión, o `None` si no
+            está disponible.
+        product_id: Producto al que pertenece el movimiento.
+        movement_id: Movimiento cuya cantidad compensable se consulta.
+
+    Returns:
+        La cantidad compensable pendiente, o `None` si no se pudo leer.
+    """
+    if movement_service is None:
+        return None
+
+    try:
+        availability = movement_service.get_compensation_availability(
+            product_id, movement_id
+        )
+    except (LookupError, ValueError):
+        return None
+
+    return availability.compensable_quantity
+
+
 def proposal_section(
     assistant: Assistant | None,
     session: SessionResources,
 ) -> Callable[[], None]:
     """
     Construye el renderer de la sección «Propuestas pendientes» (T041, T050,
-    T051).
+    T051, T052, T053).
 
     La vista vive en `app.ui.sections.proposals` y solo recibe las propuestas
     pendientes de la sesión: las manuales de «Operaciones» —concatenadas con
@@ -1417,9 +1971,13 @@ def proposal_section(
     de la sesión, el precio vigente que necesita la revisión de un cambio de precio,
     de modo que la sección funciona también con propuestas manuales y sin
     asistente. El precio de cada presentación se consulta como máximo una vez
-    por render. Cada propuesta se identifica por objeto (`key=id(proposal)`) y
-    la edición se delega en `edit_proposal`, que reemplaza solo su referencia y
-    conserva el único punto de confirmación en `confirm_pending` (D-A).
+    por render. Cada propuesta se identifica por objeto (`key=id(proposal)`),
+    la edición se delega en `edit_proposal`, que reemplaza solo su referencia,
+    el descarte en `discard_proposal`, que la oculta solo en esta sesión, y la
+    confirmación en `_confirm_from_section`, que usa el único punto de
+    confirmación (D-A) y deja el control fuera de oferta en el siguiente
+    render. La confirmación no se persiste y la marca de «en curso» es local a
+    la sesión de la interfaz (T053).
 
     Args:
         assistant: Recursos de la sesión, o `None` si el asistente no se
@@ -1432,36 +1990,54 @@ def proposal_section(
     """
 
     def render() -> None:
-        """Muestra las propuestas pendientes y permite editarlas (T051)."""
+        """Muestra, edita, descarta o confirma propuestas (T053)."""
+        discarded = discarded_proposal_keys()
         proposals = [
-            *pending_proposals(assistant),
-            *(
-                proposal
-                for proposal in manual_proposals()
-                if proposal.status is ProposalStatus.PENDING
-            ),
-        ]
-        cache: dict[int, PresentationPriceView | None] = {}
-        reviews = [
-            ProposalReview(
-                proposal=proposal,
-                key=id(proposal),
-                presentation=_review_presentation(
-                    session.presentation_service,
-                    proposal,
-                    cache,
+            proposal
+            for proposal in (
+                *pending_proposals(assistant),
+                *(
+                    proposal
+                    for proposal in manual_proposals()
+                    if proposal.status is ProposalStatus.PENDING
                 ),
             )
-            for proposal in proposals
+            if id(proposal) not in discarded
         ]
+        cache: dict[int, PresentationPriceView | None] = {}
+        with loading_state():
+            reviews = [
+                ProposalReview(
+                    proposal=proposal,
+                    key=id(proposal),
+                    presentation=_review_presentation(
+                        session.presentation_service,
+                        proposal,
+                        cache,
+                    ),
+                )
+                for proposal in proposals
+            ]
+        notice = st.session_state.get(CONFIRMATION_NOTICE_KEY)
+        if notice is not None:
+            del st.session_state[CONFIRMATION_NOTICE_KEY]
         render_pending_proposals(
             reviews,
+            on_confirm=lambda key: _confirm_from_section(
+                assistant,
+                session,
+                key,
+                discarded,
+            ),
             on_edit=lambda key, payload: edit_proposal(
                 assistant,
                 session,
                 key,
                 payload,
             ),
+            on_discard=discard_proposal,
+            processing=bool(st.session_state.get(PROCESSING_KEY, False)),
+            notice=notice,
         )
 
     return render

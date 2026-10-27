@@ -18,8 +18,10 @@ creación ocurre solo al enviar un formulario (`st.form_submit_button` con
 
 Fuente de datos (C22): las lecturas públicas de la sesión
 (`InventoryService.list_products()`, `get_product_presentations()` y
-`get_movement_history()`) y el esquema de propuestas, que define los campos y
-los tipos de cada payload.
+`get_movement_history()`), la lectura pública de compensabilidad de
+`MovementService.get_compensation_availability()` —coordinada en
+`app/ui/main.py`, nunca desde esta vista— y el esquema de propuestas, que
+define los campos y los tipos de cada payload.
 
 Límites de la vista:
 
@@ -34,15 +36,16 @@ Límites de la vista:
   sin `float` y sin `st.number_input` para precios ni costos. Las cantidades
   son enteras y mayores que cero; el stock mínimo es mayor o igual que cero;
   los costos son opcionales y no negativos.
-- La compensación solo construye el payload: no calcula ni muestra la cantidad
-  compensable, no afirma que la compensación sea posible y deja la
-  revalidación al confirmar. El selector ofrece únicamente movimientos cuyo
-  tipo admiten las reglas vigentes de compensación (entrada cerrada, entrada
-  suelta y salida suelta); las aperturas, las compensaciones y las salidas
-  cerradas quedan fuera.
+- La compensación solo construye el payload y presenta la cantidad compensable
+  pendiente que `app/ui/main.py` obtuvo de una lectura pública del servicio de
+  movimientos (T054, C18). La vista no la calcula, no consulta el stock y no
+  afirma que la compensación sea posible: la revalidación queda al confirmar.
+  El selector ofrece únicamente movimientos cuyo tipo admiten las reglas
+  vigentes de compensación (entrada cerrada, entrada suelta y salida suelta);
+  las aperturas, las compensaciones y las salidas cerradas quedan fuera.
 - Los estados de catálogo vacío, producto sin presentaciones, producto sin
-  movimientos compensables y validación son explícitos y no inventan datos
-  (C4, C21).
+  movimientos compensables, lectura de compensabilidad no disponible y
+  validación son explícitos y no inventan datos (C4, C21).
 - No se duplican reglas de negocio: el stock disponible, el SKU duplicado, el
   producto inactivo y la compensabilidad se validan al confirmar.
 """
@@ -94,8 +97,11 @@ OPERATIONS_SCOPE_NOTE: str = (
 )
 # Alcance excluido por RF-09, explícito en la sección (C10).
 
-ACTION_SELECTOR_LABEL: str = "Acción"
+ACTION_SELECTOR_LABEL: str = "Acción a preparar"
 # Etiqueta del selector que elige el formulario de la acción (T049).
+
+ACTION_SELECTOR_HELP: str = "Operación que se va a preparar."
+# Ayuda del selector de acción: contexto de la operación (RF-09).
 
 ACTION_SELECTOR_KEY: str = "operations_action_selection"
 # Clave propia del selector de acción de la sección (T049).
@@ -125,11 +131,28 @@ ACTION_VALUES_BY_LABEL: dict[str, str] = {
 PRODUCT_SELECTOR_LABEL: str = "Producto"
 # Etiqueta del selector de producto de los formularios (T049).
 
+PRODUCT_SELECTOR_HELP: str = "Producto afectado por la operación."
+# Ayuda del selector de producto: contexto del producto afectado (RF-09).
+
 PRODUCT_SELECTOR_KEY: str = "operations_product_selection"
 # Clave propia del selector de producto: no comparte estado con otras vistas.
 
 PRESENTATION_SELECTOR_LABEL: str = "Presentación"
 # Etiqueta del selector de presentación de los formularios (T049).
+
+CLOSED_ENTRY_PRESENTATION_LABEL: str = "Presentación cerrada recibida"
+# Etiqueta contextual del selector de una entrada de presentaciones cerradas.
+
+CLOSED_PRESENTATION_NO_SELECTION_LABEL: str = (
+    "Elegí una presentación cerrada"
+)
+# Opción centinela propia del selector de una salida de presentaciones
+# cerradas: no hay presentación cerrada elegida (C4).
+
+PRESENTATION_SELECTOR_HELP: str = (
+    "Presentación afectada por la operación."
+)
+# Ayuda del selector de presentación: contexto de la presentación (RF-09).
 
 PRESENTATION_SELECTOR_KEY_TEMPLATE: str = (
     "operations_presentation_selection_{product_id}"
@@ -137,8 +160,11 @@ PRESENTATION_SELECTOR_KEY_TEMPLATE: str = (
 # Clave del selector de presentación, distinta por producto para no conservar
 # una presentación de otro producto (T047, D2).
 
-MOVEMENT_SELECTOR_LABEL: str = "Movimiento"
+MOVEMENT_SELECTOR_LABEL: str = "Movimiento a compensar"
 # Etiqueta del selector de movimiento de la compensación (T049).
+
+MOVEMENT_SELECTOR_HELP: str = "Movimiento que se va a compensar."
+# Ayuda del selector de movimiento: contexto del movimiento afectado (RF-09).
 
 MOVEMENT_SELECTOR_KEY_TEMPLATE: str = (
     "operations_movement_selection_{product_id}"
@@ -161,67 +187,246 @@ COMPENSABLE_MOVEMENT_KINDS: tuple[str, ...] = (
 # salida cerrada queda fuera del alcance.
 
 COMPENSATION_NOTE: str = (
-    "La cantidad compensable y la disponibilidad se revalidan al confirmar: "
-    "esta vista no las calcula ni las afirma."
+    "La cantidad compensable proviene de una lectura del servicio y se "
+    "revalida al confirmar: esta vista no la calcula."
 )
-# Aviso que evita presentar la compensación como disponible (C18, RF-09).
+# Aviso que aclara el origen de la cantidad compensable (C18, RF-09).
+
+COMPENSABLE_QUANTITY_TEMPLATE: str = (
+    "Cantidad compensable pendiente: {quantity}."
+)
+# Formato de la cantidad compensable ya leída por `app/ui/main.py` (T054).
+
+COMPENSATION_UNAVAILABLE_MESSAGE: str = (
+    "No se pudo leer la cantidad compensable pendiente: no se afirma que "
+    "exista."
+)
+# Estado de una lectura pública no disponible: no se inventa ni se afirma una
+# cantidad compensable (T054, D-D).
 
 SKU_FIELD_LABEL: str = "SKU"
 # Etiqueta del SKU del alta de producto (RF-01).
 
-NAME_FIELD_LABEL: str = "Nombre"
-# Etiqueta del nombre del producto o de la presentación (RF-01, RF-07).
+SKU_FIELD_PLACEHOLDER: str = "Ej.: COCA-500"
+# Ejemplo orientativo del SKU; no es una validación (RF-01).
+
+SKU_FIELD_HELP: str = (
+    "Código único; no se modifica después del alta."
+)
+# Ayuda del SKU: unicidad e inmutabilidad tras el alta (RF-01).
+
+NAME_FIELD_LABEL: str = "Nombre del producto"
+# Etiqueta del nombre del producto en el alta y la modificación (RF-01).
+
+NAME_FIELD_PLACEHOLDER: str = "Ej.: Coca-Cola 500 ml"
+# Ejemplo orientativo del nombre del producto; no es una validación.
+
+PRESENTATION_NAME_FIELD_LABEL: str = "Nombre de la presentación"
+# Etiqueta del nombre de una presentación nueva (RF-07).
+
+PRESENTATION_NAME_FIELD_PLACEHOLDER: str = "Ej.: Fardo x 6"
+# Ejemplo orientativo del nombre de la presentación; no es una validación.
 
 BASE_UNIT_FIELD_LABEL: str = "Unidad base"
 # Etiqueta de la unidad base del alta de producto (RF-01).
 
-BASE_PRICE_FIELD_LABEL: str = "Precio de venta base"
+BASE_UNIT_FIELD_PLACEHOLDER: str = "Ej.: botella"
+# Ejemplo orientativo de la unidad base; no es una validación.
+
+BASE_UNIT_FIELD_HELP: str = (
+    "Unidad mínima con la que se mide el stock."
+)
+# Ayuda de la unidad base: unidad mínima de medida del stock (RF-01).
+
+BASE_PRICE_FIELD_LABEL: str = "Precio de venta de la unidad base"
 # Etiqueta del precio de venta de la presentación base (RF-01).
+
+BASE_PRICE_FIELD_PLACEHOLDER: str = "Ej.: 1500.00"
+# Ejemplo orientativo del precio de la unidad base; no es una validación.
+
+BASE_PRICE_FIELD_HELP: str = (
+    "Precio de una unidad base; no es el precio de un fardo."
+)
+# Ayuda del precio base: distingue la unidad base de una presentación (RF-01).
 
 MINIMUM_STOCK_FIELD_LABEL: str = "Stock mínimo"
 # Etiqueta del stock mínimo del producto (RF-01).
 
+MINIMUM_STOCK_FIELD_HELP: str = (
+    "Umbral de alerta en unidades base. Ej.: 6."
+)
+# Ayuda del stock mínimo: umbral expresado en unidades base (RF-04).
+
 INITIAL_LOOSE_UNITS_LABEL: str = "Unidades sueltas iniciales"
 # Etiqueta del stock suelto inicial del alta de producto (RF-01).
 
-BASE_PRESENTATION_NAME_LABEL: str = "Nombre de la presentación base (opcional)"
+INITIAL_LOOSE_UNITS_HELP: str = (
+    "Stock inicial no agrupado en presentaciones cerradas. Ej.: 2."
+)
+# Ayuda de las unidades sueltas iniciales: stock fuera de presentaciones.
+
+INITIAL_LOOSE_COST_LABEL: str = (
+    "Costo total de las unidades sueltas iniciales (opcional)"
+)
+# Etiqueta del costo total opcional del grupo de unidades sueltas (T058).
+
+INITIAL_LOOSE_COST_PLACEHOLDER: str = "Ej.: 1000.00"
+# Ejemplo orientativo del costo total suelto; no es una validación.
+
+INITIAL_LOOSE_COST_HELP: str = (
+    "Importe total de esas unidades; no es un costo unitario ni se deriva "
+    "del precio de venta."
+)
+# Ayuda del costo suelto: importe total del grupo, sin prorrateo (T058).
+
+BASE_PRESENTATION_NAME_LABEL: str = (
+    "Nombre visible de la unidad base (opcional)"
+)
 # Etiqueta del nombre opcional de la presentación base (RF-07).
 
-INITIAL_PRESENTATION_CAPTION: str = (
-    "Presentación inicial (opcional): informá su nombre y su precio para "
-    "declararla en el alta; si los dejás vacíos, no se declara."
+BASE_PRESENTATION_NAME_PLACEHOLDER: str = "Ej.: Botella 500 ml"
+# Ejemplo orientativo del nombre visible de la unidad base.
+
+BASE_PRESENTATION_NAME_HELP: str = (
+    "Solo cambia el nombre de la presentación de factor 1; si se omite, "
+    "se usa la unidad base."
 )
-# Aviso del bloque opcional de presentación inicial del alta (RF-07).
+# Ayuda del nombre visible: afecta solo a la presentación base (RF-07).
 
-INITIAL_PRESENTATION_NAME_LABEL: str = "Nombre de la presentación inicial"
-# Etiqueta del nombre de la presentación inicial opcional (RF-07).
+INITIAL_PRESENTATION_CAPTION: str = (
+    "Presentación adicional (opcional): empaque opcional además de la "
+    "unidad base. Informá su nombre y su precio para declararla en el "
+    "alta; si los dejás vacíos, no se declara."
+)
+# Aviso del bloque opcional de presentación adicional del alta (RF-07).
 
-FACTOR_FIELD_LABEL: str = "Factor"
-# Etiqueta del factor de la presentación nueva (RF-07).
+INITIAL_PRESENTATION_NAME_LABEL: str = (
+    "Nombre de la presentación adicional"
+)
+# Etiqueta del nombre de la presentación adicional opcional (RF-07).
+
+INITIAL_PRESENTATION_NAME_PLACEHOLDER: str = "Ej.: Fardo x 6"
+# Ejemplo orientativo del nombre de la presentación adicional.
+
+INITIAL_PRESENTATION_HELP: str = (
+    "Empaque opcional además de la unidad base."
+)
+# Ayuda de la presentación adicional: no sustituye a la unidad base (RF-07).
+
+FACTOR_FIELD_LABEL: str = "Equivalencia (unidades base)"
+# Etiqueta de la equivalencia de la presentación nueva (RF-07).
+
+FACTOR_FIELD_HELP: str = (
+    "Cantidad de unidades base que contiene la presentación; un fardo "
+    "con equivalencia 6 contiene 6 botellas. Ej.: 6."
+)
+# Ayuda de la equivalencia: unidades base contenidas en la presentación.
 
 PRESENTATION_PRICE_LABEL: str = "Precio de venta de la presentación"
 # Etiqueta del precio de venta de la presentación nueva (RF-07).
 
-INITIAL_CLOSED_STOCK_LABEL: str = "Stock cerrado inicial"
-# Etiqueta del stock cerrado inicial de la presentación nueva (RF-07).
+PRESENTATION_PRICE_PLACEHOLDER: str = "Ej.: 7500.00"
+# Ejemplo orientativo del precio de la presentación; no es una validación.
+
+PRESENTATION_PRICE_HELP: str = (
+    "Precio de una presentación completa, no de cada unidad base."
+)
+# Ayuda del precio de la presentación: precio del empaque completo (RF-07).
+
+INITIAL_CLOSED_STOCK_LABEL: str = (
+    "Cantidad inicial de presentaciones cerradas"
+)
+# Etiqueta de las presentaciones cerradas iniciales de la presentación nueva.
+
+INITIAL_CLOSED_STOCK_HELP: str = (
+    "Presentaciones cerradas existentes al dar de alta. Ej.: 1."
+)
+# Ayuda de las presentaciones cerradas iniciales (RF-07).
+
+INITIAL_PRESENTATION_COST_LABEL: str = (
+    "Costo total de la presentación adicional (opcional)"
+)
+# Etiqueta del costo total opcional de la presentación adicional (T058).
+
+INITIAL_PRESENTATION_COST_PLACEHOLDER: str = "Ej.: 7500.00"
+# Ejemplo orientativo del costo total de la presentación; no es una validación.
+
+INITIAL_PRESENTATION_COST_HELP: str = (
+    "Importe total de las presentaciones cerradas iniciales; no se distribuye "
+    "entre unidades ni se deriva del precio de venta."
+)
+# Ayuda del costo de la presentación: importe total del grupo (T058).
 
 NEW_NAME_LABEL: str = "Nombre nuevo (opcional)"
 # Etiqueta del nombre que propone la modificación de producto (RF-01).
 
-NEW_MINIMUM_STOCK_LABEL: str = "Stock mínimo nuevo (opcional)"
+NEW_NAME_PLACEHOLDER: str = "Ej.: Coca-Cola 500 ml"
+# Ejemplo orientativo del nombre nuevo; no es una validación.
+
+NEW_MINIMUM_STOCK_LABEL: str = "Nuevo stock mínimo (opcional)"
 # Etiqueta del stock mínimo que propone la modificación (RF-01).
 
+NEW_MINIMUM_STOCK_PLACEHOLDER: str = "Ej.: 10"
+# Ejemplo orientativo del nuevo stock mínimo; no es una validación.
+
 QUANTITY_FIELD_LABEL: str = "Cantidad"
-# Etiqueta de la cantidad de un movimiento o de una apertura (RF-03).
+# Etiqueta genérica de la cantidad, conservada para las descripciones (RF-03).
+
+LOOSE_QUANTITY_LABEL: str = "Cantidad de unidades sueltas"
+# Etiqueta contextual de una entrada o salida suelta (RF-03).
+
+CLOSED_QUANTITY_LABEL: str = "Cantidad de presentaciones cerradas"
+# Etiqueta contextual de una entrada o salida cerrada (RF-03).
+
+APERTURE_QUANTITY_LABEL: str = "Cantidad de presentaciones a abrir"
+# Etiqueta contextual de una apertura de presentaciones (RF-03).
+
+COMPENSATION_QUANTITY_LABEL: str = "Cantidad a compensar"
+# Etiqueta contextual de la cantidad de una compensación (RF-03).
+
+QUANTITY_FIELD_HELP: str = "Cantidad entera de la operación. Ej.: 2."
+# Ayuda de una cantidad: ejemplo orientativo, sin cambiar la validación.
 
 REASON_FIELD_LABEL: str = "Motivo"
 # Etiqueta del motivo obligatorio de un movimiento o de una apertura (RF-03).
 
-COST_FIELD_LABEL: str = "Costo (opcional)"
+REASON_FIELD_HELP: str = "Queda registrado en el historial."
+# Ayuda del motivo: se conserva en el historial (RF-03).
+
+REASON_ENTRY_PLACEHOLDER: str = "Ej.: Compra de mercadería"
+# Ejemplo orientativo del motivo de una entrada; no es una validación.
+
+REASON_EXIT_PLACEHOLDER: str = "Ej.: Venta"
+# Ejemplo orientativo del motivo de una salida; no es una validación.
+
+REASON_APERTURE_PLACEHOLDER: str = "Ej.: Apertura para venta"
+# Ejemplo orientativo del motivo de una apertura; no es una validación.
+
+REASON_COMPENSATION_PLACEHOLDER: str = "Ej.: Corrección de inventario"
+# Ejemplo orientativo del motivo de una compensación; no es una validación.
+
+COST_FIELD_LABEL: str = "Costo de ingreso (opcional)"
 # Etiqueta del costo opcional de una entrada (RF-02, RF-03).
 
-NEW_PRICE_LABEL: str = "Precio nuevo"
+COST_FIELD_PLACEHOLDER: str = "Ej.: 1200.00"
+# Ejemplo orientativo del costo de ingreso; no es una validación.
+
+COST_FIELD_HELP: str = (
+    "Importe total informado; no se distribuye entre unidades; solo en "
+    "entradas."
+)
+# Ayuda del costo: importe total de la entrada, sin prorrateo (RF-02, RF-03).
+
+NEW_PRICE_LABEL: str = "Nuevo precio de venta"
 # Etiqueta del precio nuevo del cambio de precio (RF-08).
+
+NEW_PRICE_PLACEHOLDER: str = "Ej.: 1600.00"
+# Ejemplo orientativo del nuevo precio de venta; no es una validación.
+
+NEW_PRICE_FIELD_HELP: str = (
+    "Precio que tendrá la presentación después de confirmar."
+)
+# Ayuda del nuevo precio: precio posterior a la confirmación (RF-08).
 
 EMPTY_CATALOG_TEMPLATE: str = (
     "El catálogo no tiene productos registrados: no hay datos para preparar "
@@ -234,10 +439,29 @@ NO_SELECTION_MESSAGE: str = (
 )
 # Estado explícito mientras no hay producto seleccionado (C4).
 
+NO_MOVEMENT_SELECTION_MESSAGE: str = (
+    "Elegí un movimiento para preparar la compensación."
+)
+# Estado explícito mientras no hay movimiento elegido para compensar (C4).
+
 EMPTY_PRESENTATIONS_MESSAGE: str = (
     "El producto no tiene presentaciones registradas."
 )
 # Estado de un producto sin presentaciones, sin formulario inventado (C4).
+
+NO_CLOSED_PRESENTATIONS_MESSAGE: str = (
+    "El producto no tiene presentaciones cerradas registradas. Usá la "
+    "entrada de unidades sueltas para la unidad base."
+)
+# Estado de un producto cuyas únicas presentaciones son la base: no hay una
+# presentación cerrada que ofrecer en la entrada (C4).
+
+NO_CLOSED_EXIT_PRESENTATIONS_MESSAGE: str = (
+    "El producto no tiene presentaciones cerradas disponibles para retirar."
+)
+# Estado de una salida cerrada cuyas únicas presentaciones son la base: no hay
+# ninguna presentación cerrada que retirar, sin sugerir una entrada de unidades
+# sueltas (C4).
 
 EMPTY_MOVEMENTS_MESSAGE: str = (
     "El producto no tiene movimientos compensables registrados."
@@ -274,9 +498,10 @@ NON_POSITIVE_COUNT_TEMPLATE: str = (
 # Validación de una cantidad que no es positiva (C21).
 
 INVALID_FACTOR_MESSAGE: str = (
-    "El factor debe ser un número entero mayor o igual que 1."
+    "La equivalencia debe ser un número entero mayor o igual que 1."
 )
-# Validación formal del factor: la regla del dominio se revalida al confirmar.
+# Validación formal de la equivalencia: la regla del dominio se revalida al
+# confirmar.
 
 UPDATE_WITHOUT_CHANGE_MESSAGE: str = (
     "La modificación debe indicar el nombre, el stock mínimo o ambos."
@@ -490,6 +715,21 @@ def render_operations_header() -> None:
     st.caption(OPERATIONS_SCOPE_NOTE)
 
 
+def render_validation(message: str) -> None:
+    """
+    Muestra una validación local del formulario (T055, C21).
+
+    La validación se distingue del rechazo del servicio: no ejecutó ninguna
+    operación ni afirma que la propuesta se haya creado. Los formularios de la
+    sección y la edición de propuestas comparten este único punto de
+    presentación.
+
+    Args:
+        message: Motivo de validación, ya redactado por el formulario.
+    """
+    st.warning(message)
+
+
 def render_action_selector() -> ProposalAction:
     """
     Muestra el selector de la acción y devuelve la elegida (T049, C10).
@@ -503,6 +743,7 @@ def render_action_selector() -> ProposalAction:
         ACTION_OPTIONS,
         index=0,
         key=ACTION_SELECTOR_KEY,
+        help=ACTION_SELECTOR_HELP,
     )
 
     return ProposalAction(ACTION_VALUES_BY_LABEL[selected])
@@ -548,6 +789,7 @@ def render_product_selector(
         options,
         index=0,
         key=PRODUCT_SELECTOR_KEY,
+        help=PRODUCT_SELECTOR_HELP,
     )
     if selected == NO_SELECTION_LABEL:
         st.info(NO_SELECTION_MESSAGE)
@@ -572,39 +814,78 @@ def render_product_registration_form() -> ProductRegistrationPayload | None:
         key=_form_key(ProposalAction.PRODUCT_REGISTRATION),
         clear_on_submit=True,
     ):
-        sku = st.text_input(SKU_FIELD_LABEL)
-        name = st.text_input(NAME_FIELD_LABEL)
-        base_unit = st.text_input(BASE_UNIT_FIELD_LABEL)
-        base_price = st.text_input(BASE_PRICE_FIELD_LABEL)
+        sku = st.text_input(
+            SKU_FIELD_LABEL,
+            placeholder=SKU_FIELD_PLACEHOLDER,
+            help=SKU_FIELD_HELP,
+        )
+        name = st.text_input(
+            NAME_FIELD_LABEL,
+            placeholder=NAME_FIELD_PLACEHOLDER,
+        )
+        base_unit = st.text_input(
+            BASE_UNIT_FIELD_LABEL,
+            placeholder=BASE_UNIT_FIELD_PLACEHOLDER,
+            help=BASE_UNIT_FIELD_HELP,
+        )
+        base_price = st.text_input(
+            BASE_PRICE_FIELD_LABEL,
+            placeholder=BASE_PRICE_FIELD_PLACEHOLDER,
+            help=BASE_PRICE_FIELD_HELP,
+        )
         minimum_stock = st.number_input(
             MINIMUM_STOCK_FIELD_LABEL,
             min_value=0,
             value=0,
             step=1,
+            help=MINIMUM_STOCK_FIELD_HELP,
         )
         initial_loose_units = st.number_input(
             INITIAL_LOOSE_UNITS_LABEL,
             min_value=0,
             value=0,
             step=1,
+            help=INITIAL_LOOSE_UNITS_HELP,
+        )
+        initial_loose_cost = st.text_input(
+            INITIAL_LOOSE_COST_LABEL,
+            placeholder=INITIAL_LOOSE_COST_PLACEHOLDER,
+            help=INITIAL_LOOSE_COST_HELP,
         )
         base_presentation_name = st.text_input(
-            BASE_PRESENTATION_NAME_LABEL
+            BASE_PRESENTATION_NAME_LABEL,
+            placeholder=BASE_PRESENTATION_NAME_PLACEHOLDER,
+            help=BASE_PRESENTATION_NAME_HELP,
         )
         st.caption(INITIAL_PRESENTATION_CAPTION)
-        initial_name = st.text_input(INITIAL_PRESENTATION_NAME_LABEL)
+        initial_name = st.text_input(
+            INITIAL_PRESENTATION_NAME_LABEL,
+            placeholder=INITIAL_PRESENTATION_NAME_PLACEHOLDER,
+            help=INITIAL_PRESENTATION_HELP,
+        )
         initial_factor = st.number_input(
             FACTOR_FIELD_LABEL,
             min_value=0,
             value=1,
             step=1,
+            help=FACTOR_FIELD_HELP,
         )
-        initial_price = st.text_input(PRESENTATION_PRICE_LABEL)
+        initial_price = st.text_input(
+            PRESENTATION_PRICE_LABEL,
+            placeholder=PRESENTATION_PRICE_PLACEHOLDER,
+            help=PRESENTATION_PRICE_HELP,
+        )
         initial_closed_stock = st.number_input(
             INITIAL_CLOSED_STOCK_LABEL,
             min_value=0,
             value=0,
             step=1,
+            help=INITIAL_CLOSED_STOCK_HELP,
+        )
+        initial_cost = st.text_input(
+            INITIAL_PRESENTATION_COST_LABEL,
+            placeholder=INITIAL_PRESENTATION_COST_PLACEHOLDER,
+            help=INITIAL_PRESENTATION_COST_HELP,
         )
         submitted = st.form_submit_button(SUBMIT_LABEL)
 
@@ -618,6 +899,7 @@ def render_product_registration_form() -> ProductRegistrationPayload | None:
             price=initial_price,
             factor=initial_factor,
             closed_stock=initial_closed_stock,
+            cost=initial_cost,
         ):
             presentations = (
                 InitialPresentationPayload(
@@ -631,6 +913,10 @@ def render_product_registration_form() -> ProductRegistrationPayload | None:
                         initial_price,
                     ),
                     closed_stock=initial_closed_stock,
+                    cost=parse_optional_money(
+                        INITIAL_PRESENTATION_COST_LABEL,
+                        initial_cost,
+                    ),
                 ),
             )
 
@@ -644,13 +930,17 @@ def render_product_registration_form() -> ProductRegistrationPayload | None:
             ),
             minimum_stock=minimum_stock,
             initial_loose_units=initial_loose_units,
+            initial_loose_cost=parse_optional_money(
+                INITIAL_LOOSE_COST_LABEL,
+                initial_loose_cost,
+            ),
             presentations=presentations,
             base_presentation_name=parse_optional_text(
                 base_presentation_name
             ),
         )
     except OperationValidationError as error:
-        st.error(str(error))
+        render_validation(str(error))
         return None
 
 
@@ -676,8 +966,14 @@ def render_product_update_form(
         clear_on_submit=True,
     ):
         st.caption(f"Producto: {product_option_label(product)}")
-        new_name = st.text_input(NEW_NAME_LABEL)
-        new_minimum_stock = st.text_input(NEW_MINIMUM_STOCK_LABEL)
+        new_name = st.text_input(
+            NEW_NAME_LABEL,
+            placeholder=NEW_NAME_PLACEHOLDER,
+        )
+        new_minimum_stock = st.text_input(
+            NEW_MINIMUM_STOCK_LABEL,
+            placeholder=NEW_MINIMUM_STOCK_PLACEHOLDER,
+        )
         submitted = st.form_submit_button(SUBMIT_LABEL)
 
     if not submitted:
@@ -698,7 +994,7 @@ def render_product_update_form(
             minimum_stock=minimum_stock,
         )
     except OperationValidationError as error:
-        st.error(str(error))
+        render_validation(str(error))
         return None
 
 
@@ -722,14 +1018,22 @@ def render_presentation_registration_form(
         clear_on_submit=True,
     ):
         st.caption(f"Producto: {product_option_label(product)}")
-        name = st.text_input(NAME_FIELD_LABEL)
+        name = st.text_input(
+            PRESENTATION_NAME_FIELD_LABEL,
+            placeholder=PRESENTATION_NAME_FIELD_PLACEHOLDER,
+        )
         factor = st.number_input(
             FACTOR_FIELD_LABEL,
             min_value=0,
             value=1,
             step=1,
+            help=FACTOR_FIELD_HELP,
         )
-        sale_price = st.text_input(PRESENTATION_PRICE_LABEL)
+        sale_price = st.text_input(
+            PRESENTATION_PRICE_LABEL,
+            placeholder=PRESENTATION_PRICE_PLACEHOLDER,
+            help=PRESENTATION_PRICE_HELP,
+        )
         submitted = st.form_submit_button(SUBMIT_LABEL)
 
     if not submitted:
@@ -738,12 +1042,15 @@ def render_presentation_registration_form(
     try:
         return PresentationRegistrationPayload(
             product_id=product.id,
-            name=parse_required_text(NAME_FIELD_LABEL, name),
+            name=parse_required_text(
+                PRESENTATION_NAME_FIELD_LABEL,
+                name,
+            ),
             factor=parse_factor(factor),
             sale_price=parse_money(PRESENTATION_PRICE_LABEL, sale_price),
         )
     except OperationValidationError as error:
-        st.error(str(error))
+        render_validation(str(error))
         return None
 
 
@@ -765,13 +1072,22 @@ def render_loose_entry_form(
     ):
         st.caption(f"Producto: {product_option_label(product)}")
         quantity = st.number_input(
-            QUANTITY_FIELD_LABEL,
+            LOOSE_QUANTITY_LABEL,
             min_value=0,
             value=0,
             step=1,
+            help=QUANTITY_FIELD_HELP,
         )
-        reason = st.text_input(REASON_FIELD_LABEL)
-        cost = st.text_input(COST_FIELD_LABEL)
+        reason = st.text_input(
+            REASON_FIELD_LABEL,
+            placeholder=REASON_ENTRY_PLACEHOLDER,
+            help=REASON_FIELD_HELP,
+        )
+        cost = st.text_input(
+            COST_FIELD_LABEL,
+            placeholder=COST_FIELD_PLACEHOLDER,
+            help=COST_FIELD_HELP,
+        )
         submitted = st.form_submit_button(SUBMIT_LABEL)
 
     if not submitted:
@@ -780,12 +1096,12 @@ def render_loose_entry_form(
     try:
         return LooseEntryPayload(
             product_id=product.id,
-            quantity=parse_quantity(QUANTITY_FIELD_LABEL, quantity),
+            quantity=parse_quantity(LOOSE_QUANTITY_LABEL, quantity),
             reason=parse_required_text(REASON_FIELD_LABEL, reason),
             cost=parse_optional_money(COST_FIELD_LABEL, cost),
         )
     except OperationValidationError as error:
-        st.error(str(error))
+        render_validation(str(error))
         return None
 
 
@@ -807,12 +1123,17 @@ def render_loose_exit_form(
     ):
         st.caption(f"Producto: {product_option_label(product)}")
         quantity = st.number_input(
-            QUANTITY_FIELD_LABEL,
+            LOOSE_QUANTITY_LABEL,
             min_value=0,
             value=0,
             step=1,
+            help=QUANTITY_FIELD_HELP,
         )
-        reason = st.text_input(REASON_FIELD_LABEL)
+        reason = st.text_input(
+            REASON_FIELD_LABEL,
+            placeholder=REASON_EXIT_PLACEHOLDER,
+            help=REASON_FIELD_HELP,
+        )
         submitted = st.form_submit_button(SUBMIT_LABEL)
 
     if not submitted:
@@ -821,11 +1142,11 @@ def render_loose_exit_form(
     try:
         return LooseExitPayload(
             product_id=product.id,
-            quantity=parse_quantity(QUANTITY_FIELD_LABEL, quantity),
+            quantity=parse_quantity(LOOSE_QUANTITY_LABEL, quantity),
             reason=parse_required_text(REASON_FIELD_LABEL, reason),
         )
     except OperationValidationError as error:
-        st.error(str(error))
+        render_validation(str(error))
         return None
 
 
@@ -836,30 +1157,55 @@ def render_closed_entry_form(
     """
     Muestra el formulario de una entrada de presentaciones cerradas (T049).
 
+    El selector solo ofrece presentaciones con equivalencia mayor que 1: la
+    presentación base no representa una presentación cerrada. Si el producto
+    solo tiene la unidad base, se informa el estado y no se muestra ningún
+    formulario.
+
     Args:
         product: Producto de la entrada propuesta.
         presentations: Presentaciones del producto ya consultadas.
 
     Returns:
-        El payload validado, o `None` si no se envió o si la validación falló.
+        El payload validado, o `None` si no se envió, si la validación falló o
+        si no hay presentaciones cerradas que ofrecer.
     """
+    closed_presentations = [
+        presentation
+        for presentation in presentations
+        if presentation.factor > 1
+    ]
+    if not closed_presentations:
+        st.info(NO_CLOSED_PRESENTATIONS_MESSAGE)
+        return None
+
     with st.form(
         key=_form_key(ProposalAction.CLOSED_ENTRY),
         clear_on_submit=True,
     ):
         st.caption(f"Producto: {product_option_label(product)}")
         presentation = _render_presentation_selector(
-            presentations,
+            closed_presentations,
             product_id=product.id,
+            label=CLOSED_ENTRY_PRESENTATION_LABEL,
         )
         quantity = st.number_input(
-            QUANTITY_FIELD_LABEL,
+            CLOSED_QUANTITY_LABEL,
             min_value=0,
             value=0,
             step=1,
+            help=QUANTITY_FIELD_HELP,
         )
-        reason = st.text_input(REASON_FIELD_LABEL)
-        cost = st.text_input(COST_FIELD_LABEL)
+        reason = st.text_input(
+            REASON_FIELD_LABEL,
+            placeholder=REASON_ENTRY_PLACEHOLDER,
+            help=REASON_FIELD_HELP,
+        )
+        cost = st.text_input(
+            COST_FIELD_LABEL,
+            placeholder=COST_FIELD_PLACEHOLDER,
+            help=COST_FIELD_HELP,
+        )
         submitted = st.form_submit_button(SUBMIT_LABEL)
 
     if not submitted:
@@ -869,12 +1215,12 @@ def render_closed_entry_form(
         return ClosedEntryPayload(
             product_id=product.id,
             presentation_id=_required_presentation(presentation).id,
-            quantity=parse_quantity(QUANTITY_FIELD_LABEL, quantity),
+            quantity=parse_quantity(CLOSED_QUANTITY_LABEL, quantity),
             reason=parse_required_text(REASON_FIELD_LABEL, reason),
             cost=parse_optional_money(COST_FIELD_LABEL, cost),
         )
     except OperationValidationError as error:
-        st.error(str(error))
+        render_validation(str(error))
         return None
 
 
@@ -885,29 +1231,50 @@ def render_closed_exit_form(
     """
     Muestra el formulario de una salida de presentaciones cerradas (T049).
 
+    El selector solo ofrece presentaciones con equivalencia mayor que 1: la
+    presentación base no representa una presentación cerrada. Si el producto
+    solo tiene la unidad base, se informa el estado y no se muestra ningún
+    formulario. El centinela del selector es propio de este formulario.
+
     Args:
         product: Producto de la salida propuesta.
         presentations: Presentaciones del producto ya consultadas.
 
     Returns:
-        El payload validado, o `None` si no se envió o si la validación falló.
+        El payload validado, o `None` si no se envió, si la validación falló o
+        si no hay presentaciones cerradas que ofrecer.
     """
+    closed_presentations = [
+        presentation
+        for presentation in presentations
+        if presentation.factor > 1
+    ]
+    if not closed_presentations:
+        st.info(NO_CLOSED_EXIT_PRESENTATIONS_MESSAGE)
+        return None
+
     with st.form(
         key=_form_key(ProposalAction.CLOSED_EXIT),
         clear_on_submit=True,
     ):
         st.caption(f"Producto: {product_option_label(product)}")
         presentation = _render_presentation_selector(
-            presentations,
+            closed_presentations,
             product_id=product.id,
+            no_selection_label=CLOSED_PRESENTATION_NO_SELECTION_LABEL,
         )
         quantity = st.number_input(
-            QUANTITY_FIELD_LABEL,
+            CLOSED_QUANTITY_LABEL,
             min_value=0,
             value=0,
             step=1,
+            help=QUANTITY_FIELD_HELP,
         )
-        reason = st.text_input(REASON_FIELD_LABEL)
+        reason = st.text_input(
+            REASON_FIELD_LABEL,
+            placeholder=REASON_EXIT_PLACEHOLDER,
+            help=REASON_FIELD_HELP,
+        )
         submitted = st.form_submit_button(SUBMIT_LABEL)
 
     if not submitted:
@@ -917,11 +1284,11 @@ def render_closed_exit_form(
         return ClosedExitPayload(
             product_id=product.id,
             presentation_id=_required_presentation(presentation).id,
-            quantity=parse_quantity(QUANTITY_FIELD_LABEL, quantity),
+            quantity=parse_quantity(CLOSED_QUANTITY_LABEL, quantity),
             reason=parse_required_text(REASON_FIELD_LABEL, reason),
         )
     except OperationValidationError as error:
-        st.error(str(error))
+        render_validation(str(error))
         return None
 
 
@@ -949,12 +1316,17 @@ def render_aperture_form(
             product_id=product.id,
         )
         quantity = st.number_input(
-            QUANTITY_FIELD_LABEL,
+            APERTURE_QUANTITY_LABEL,
             min_value=0,
             value=0,
             step=1,
+            help=QUANTITY_FIELD_HELP,
         )
-        reason = st.text_input(REASON_FIELD_LABEL)
+        reason = st.text_input(
+            REASON_FIELD_LABEL,
+            placeholder=REASON_APERTURE_PLACEHOLDER,
+            help=REASON_FIELD_HELP,
+        )
         submitted = st.form_submit_button(SUBMIT_LABEL)
 
     if not submitted:
@@ -964,53 +1336,97 @@ def render_aperture_form(
         return AperturePayload(
             product_id=product.id,
             presentation_id=_required_presentation(presentation).id,
-            quantity=parse_quantity(QUANTITY_FIELD_LABEL, quantity),
+            quantity=parse_quantity(APERTURE_QUANTITY_LABEL, quantity),
             reason=parse_required_text(REASON_FIELD_LABEL, reason),
         )
     except OperationValidationError as error:
-        st.error(str(error))
+        render_validation(str(error))
         return None
 
 
-def render_compensation_form(
+def render_compensation_selector(
     product: ProductView,
     movements: Sequence[MovementOption],
-) -> CompensationPayload | None:
+) -> MovementOption | None:
     """
-    Muestra el formulario de una compensación de un movimiento (T049, RF-03).
+    Muestra el selector del movimiento que se va a compensar (T049, T054).
 
-    El formulario solo construye el payload: no calcula ni muestra la cantidad
-    compensable, no reutiliza la lectura de disponibilidad y no afirma que la
-    compensación sea posible. Solo ofrece movimientos de los tipos que admiten
-    una compensación en el MVP.
+    Los movimientos llegan ya leídos y esta vista solo filtra por tipo: no
+    calcula la cantidad compensable ni consulta la disponibilidad. El selector
+    se muestra fuera del formulario para que `app/ui/main.py` pueda leer la
+    disponibilidad del movimiento elegido y pasarla al formulario.
 
     Args:
         product: Producto al que pertenecen los movimientos.
         movements: Movimientos del producto ya consultados, en su orden.
 
     Returns:
-        El payload validado, o `None` si no se envió, si la validación falló o
-        si el producto no tiene movimientos compensables.
+        El movimiento elegido, o `None` mientras no hay selección o el producto
+        no tiene movimientos compensables.
     """
     options = compensable_movements(movements)
     if not options:
         st.info(EMPTY_MOVEMENTS_MESSAGE)
         return None
 
+    st.caption(f"Producto: {product_option_label(product)}")
+    st.caption(COMPENSATION_NOTE)
+    selected = _render_movement_selector(options, product_id=product.id)
+    if selected is None:
+        st.caption(NO_MOVEMENT_SELECTION_MESSAGE)
+
+    return selected
+
+
+def render_compensation_form(
+    product: ProductView,
+    movement: MovementOption,
+    *,
+    compensable_quantity: int | None,
+) -> CompensationPayload | None:
+    """
+    Muestra el formulario de una compensación de un movimiento (T049, T054).
+
+    La cantidad compensable y la disponibilidad no se calculan aquí: llegan ya
+    leídas por `app/ui/main.py` desde la lectura pública del servicio de
+    movimientos. Si esa lectura no está disponible, el formulario lo informa de
+    forma explícita y no afirma que exista una cantidad compensable (D-D). La
+    operación se revalida al confirmar.
+
+    Args:
+        product: Producto al que pertenece el movimiento.
+        movement: Movimiento ya elegido por el usuario.
+        compensable_quantity: Cantidad compensable pendiente ya leída, o
+            `None` si la lectura pública no está disponible.
+
+    Returns:
+        El payload validado, o `None` si no se envió o si la validación falló.
+    """
     with st.form(
         key=_form_key(ProposalAction.COMPENSATION),
         clear_on_submit=True,
     ):
-        st.caption(f"Producto: {product_option_label(product)}")
-        st.caption(COMPENSATION_NOTE)
-        movement = _render_movement_selector(options, product_id=product.id)
+        st.caption(f"Movimiento: {movement_option_label(movement)}")
+        if compensable_quantity is None:
+            st.caption(COMPENSATION_UNAVAILABLE_MESSAGE)
+        else:
+            st.caption(
+                COMPENSABLE_QUANTITY_TEMPLATE.format(
+                    quantity=compensable_quantity
+                )
+            )
         quantity = st.number_input(
-            QUANTITY_FIELD_LABEL,
+            COMPENSATION_QUANTITY_LABEL,
             min_value=0,
             value=0,
             step=1,
+            help=QUANTITY_FIELD_HELP,
         )
-        reason = st.text_input(REASON_FIELD_LABEL)
+        reason = st.text_input(
+            REASON_FIELD_LABEL,
+            placeholder=REASON_COMPENSATION_PLACEHOLDER,
+            help=REASON_FIELD_HELP,
+        )
         submitted = st.form_submit_button(SUBMIT_LABEL)
 
     if not submitted:
@@ -1019,12 +1435,12 @@ def render_compensation_form(
     try:
         return CompensationPayload(
             product_id=product.id,
-            movement_id=_required_movement(movement).id,
-            quantity=parse_quantity(QUANTITY_FIELD_LABEL, quantity),
+            movement_id=movement.id,
+            quantity=parse_quantity(COMPENSATION_QUANTITY_LABEL, quantity),
             reason=parse_required_text(REASON_FIELD_LABEL, reason),
         )
     except OperationValidationError as error:
-        st.error(str(error))
+        render_validation(str(error))
         return None
 
 
@@ -1051,7 +1467,11 @@ def render_price_update_form(
             presentations,
             product_id=product.id,
         )
-        new_price = st.text_input(NEW_PRICE_LABEL)
+        new_price = st.text_input(
+            NEW_PRICE_LABEL,
+            placeholder=NEW_PRICE_PLACEHOLDER,
+            help=NEW_PRICE_FIELD_HELP,
+        )
         submitted = st.form_submit_button(SUBMIT_LABEL)
 
     if not submitted:
@@ -1063,7 +1483,7 @@ def render_price_update_form(
             new_price=parse_money(NEW_PRICE_LABEL, new_price),
         )
     except OperationValidationError as error:
-        st.error(str(error))
+        render_validation(str(error))
         return None
 
 
@@ -1142,24 +1562,30 @@ def _requests_initial_presentation(
     price: str,
     factor: int,
     closed_stock: int,
+    cost: str,
 ) -> bool:
     """
     Indica si el alta declara una presentación inicial opcional (T049).
 
     El bloque es opcional: se considera declarado cuando se informó el nombre,
-    el precio, un factor distinto de 1 o un stock cerrado inicial.
+    el precio, un costo, un factor distinto de 1 o un stock cerrado inicial.
 
     Args:
         name: Texto del nombre de la presentación inicial.
         price: Texto del precio de venta de la presentación inicial.
         factor: Factor elegido para la presentación inicial.
         closed_stock: Stock cerrado inicial elegido.
+        cost: Texto del costo total de la presentación inicial.
 
     Returns:
         `True` si el bloque opcional se debe declarar en el payload.
     """
     return bool(
-        name.strip() or price.strip() or factor != 1 or closed_stock != 0
+        name.strip()
+        or price.strip()
+        or cost.strip()
+        or factor != 1
+        or closed_stock != 0
     )
 
 
@@ -1195,7 +1621,8 @@ def _parse_decimal(field: str, text: str) -> Decimal:
 def _presentation_option_label(presentation: PresentationView) -> str:
     """Construye la opción del selector de presentación de un formulario."""
     return (
-        f"{single_line(presentation.name)} (factor {presentation.factor})"
+        f"{single_line(presentation.name)} "
+        f"(equivalencia {presentation.factor})"
     )
 
 
@@ -1203,6 +1630,8 @@ def _render_presentation_selector(
     presentations: Sequence[PresentationView],
     *,
     product_id: int,
+    label: str = PRESENTATION_SELECTOR_LABEL,
+    no_selection_label: str = NO_SELECTION_LABEL,
 ) -> PresentationView | None:
     """
     Muestra el selector de presentación del producto elegido (T049).
@@ -1211,22 +1640,26 @@ def _render_presentation_selector(
         presentations: Presentaciones del producto ya consultadas.
         product_id: Producto cuyas presentaciones se ofrecen, para construir la
             clave del widget.
+        label: Etiqueta visible del selector; por defecto, la compartida.
+        no_selection_label: Opción centinela que representa la ausencia de
+            selección; por defecto, la compartida con los demás formularios.
 
     Returns:
         La presentación elegida, o `None` mientras se mantiene la opción
         centinela.
     """
     options = [
-        NO_SELECTION_LABEL,
+        no_selection_label,
         *(_presentation_option_label(item) for item in presentations),
     ]
     selected = st.selectbox(
-        PRESENTATION_SELECTOR_LABEL,
+        label,
         options,
         index=0,
         key=PRESENTATION_SELECTOR_KEY_TEMPLATE.format(product_id=product_id),
+        help=PRESENTATION_SELECTOR_HELP,
     )
-    if selected == NO_SELECTION_LABEL:
+    if selected == no_selection_label:
         return None
 
     return presentations[options.index(selected) - 1]
@@ -1258,6 +1691,7 @@ def _render_movement_selector(
         options,
         index=0,
         key=MOVEMENT_SELECTOR_KEY_TEMPLATE.format(product_id=product_id),
+        help=MOVEMENT_SELECTOR_HELP,
     )
     if selected == NO_SELECTION_LABEL:
         return None
@@ -1280,18 +1714,3 @@ def _required_presentation(
         )
 
     return presentation
-
-
-def _required_movement(movement: MovementOption | None) -> MovementOption:
-    """
-    Exige un movimiento elegido en el formulario (T049).
-
-    Raises:
-        OperationValidationError: Si no se eligió ningún movimiento.
-    """
-    if movement is None:
-        raise OperationValidationError(
-            MISSING_TEXT_TEMPLATE.format(field=MOVEMENT_SELECTOR_LABEL)
-        )
-
-    return movement

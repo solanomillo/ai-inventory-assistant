@@ -1,9 +1,9 @@
 """Herramientas LangChain de consulta del inventario (T019).
 
 Expone las consultas de solo lectura que el Inventory Agent ofrece al modelo
-(RF-01, RF-02, RF-03, RF-04 y RF-05): búsqueda de productos por nombre y por
-SKU, existencias, presentaciones, stock bajo, reposición e historial de
-movimientos.
+(RF-01, RF-02, RF-03, RF-04 y RF-05): búsqueda parcial de productos por nombre
+o SKU, búsqueda exacta por SKU, existencias, presentaciones, stock bajo,
+reposición e historial de movimientos.
 
 Cada herramienta es un adaptador delgado: declara su entrada con un esquema
 Pydantic (validación en el límite, D3), delega en el servicio de consultas
@@ -42,15 +42,16 @@ from app.services.ports import (
 
 
 class FindProductsByNameInput(BaseModel):
-    """Entrada de la búsqueda de productos por nombre (RF-01)."""
+    """Entrada de la búsqueda parcial por nombre o SKU (RF-01)."""
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     name: str = Field(
         min_length=1,
         description=(
-            "Nombre del producto a buscar. La coincidencia es exacta y no "
-            "distingue mayúsculas de minúsculas."
+            "Texto a buscar en el nombre o el SKU de los productos. La "
+            "búsqueda es parcial, no distingue mayúsculas de minúsculas y "
+            "considera los guiones y guiones bajos equivalentes a espacios."
         ),
     )
 
@@ -344,15 +345,17 @@ def create_inventory_tools(service: InventoryService) -> tuple[BaseTool, ...]:
 
     @tool(args_schema=FindProductsByNameInput)
     def find_products_by_name(name: str) -> list[ProductSummary]:
-        """Devuelve los productos cuyo nombre coincide exactamente.
+        """Devuelve los productos cuyo nombre o SKU contienen el texto buscado.
 
-        La comparación no distingue mayúsculas de minúsculas y conserva el
-        texto original almacenado. Devuelve todas las coincidencias, sin
-        seleccionar ninguna, y una lista vacía si no hay ninguna (RF-01).
+        La búsqueda es parcial y no distingue mayúsculas de minúsculas; los
+        guiones y guiones bajos se consideran equivalentes a espacios.
+        Devuelve todas las coincidencias sin seleccionar ninguna, con el SKU
+        exacto primero, luego el nombre exacto y después las coincidencias
+        parciales, y una lista vacía si no hay ninguna (RF-01).
         """
         return [
             ProductSummary.from_record(record)
-            for record in service.find_products_by_name(name)
+            for record in service.search_products(name)
         ]
 
     @tool(args_schema=FindProductBySkuInput)

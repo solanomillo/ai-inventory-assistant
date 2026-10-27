@@ -34,6 +34,8 @@ from app.ui.formatting import (
     format_instant,
     format_money,
     format_quantity,
+    format_unit_cost_reference,
+    unit_cost_reference,
 )
 
 FORMATTING_PATH: Path = (
@@ -241,9 +243,73 @@ def test_a_non_decimal_amount_is_rejected(value: object) -> None:
         format_money(value)  # type: ignore[arg-type]
 
 
+# --- Costo unitario de referencia (T058) ---
+
+
+def test_the_loose_reference_divides_the_total_by_the_quantity() -> None:
+    """Calcula la referencia de unidades sueltas con `Decimal` (T058)."""
+    reference = unit_cost_reference(Decimal("1000"), 3)
+
+    assert isinstance(reference, Decimal)
+    assert reference == Decimal("1000") / Decimal("3")
+    assert format_unit_cost_reference(Decimal("1000"), 3) == "333.33"
+
+
+def test_the_closed_reference_divides_by_quantity_times_factor() -> None:
+    """Calcula la referencia de presentaciones cerradas (T058)."""
+    assert (
+        format_unit_cost_reference(Decimal("7500"), 1, factor=6)
+        == "1250.00"
+    )
+    assert (
+        format_unit_cost_reference(Decimal("1000"), 1, factor=6)
+        == "166.67"
+    )
+    assert unit_cost_reference(Decimal("7500"), 1, factor=6) == Decimal(
+        "1250"
+    )
+
+
+def test_the_reference_uses_the_rounding_policy_of_the_money_format() -> None:
+    """Redondea solo la presentación con `ROUND_HALF_UP` (T058)."""
+    assert format_unit_cost_reference(Decimal("1000"), 3) == "333.33"
+    assert format_unit_cost_reference(Decimal("2000"), 3) == "666.67"
+    assert format_unit_cost_reference(Decimal("1000"), 6) == "166.67"
+
+
+@pytest.mark.parametrize(
+    ("total", "quantity", "factor"),
+    [
+        (None, 3, None),
+        (Decimal("1000"), None, None),
+        (Decimal("1000"), 0, None),
+        (Decimal("1000"), -1, None),
+        (Decimal("1000"), 1, 0),
+        (Decimal("1000"), 0, 6),
+    ],
+)
+def test_a_missing_cost_or_quantity_has_no_reference(
+    total: Decimal | None,
+    quantity: int | None,
+    factor: int | None,
+) -> None:
+    """No muestra referencia sin costo, cantidad o factor válidos (T058)."""
+    assert unit_cost_reference(total, quantity, factor=factor) is None
+    assert format_unit_cost_reference(total, quantity, factor=factor) is None
+
+
+def test_the_reference_does_not_change_the_received_total() -> None:
+    """Conserva el total recibido sin redondearlo ni mutarlo (T058)."""
+    total = Decimal("1000.000")
+    exponent_before = total.as_tuple().exponent
+
+    assert format_unit_cost_reference(total, 3) == "333.33"
+    assert total == Decimal("1000.000")
+    assert str(total) == "1000.000"
+    assert total.as_tuple().exponent == exponent_before
+
+
 # --- Fechas y horas (T042) ---
-
-
 def test_a_utc_instant_is_shown_in_the_local_argentine_time() -> None:
     """Muestra un instante UTC en la hora local argentina (T042)."""
     instant = datetime(2026, 3, 1, 12, 0, tzinfo=timezone.utc)

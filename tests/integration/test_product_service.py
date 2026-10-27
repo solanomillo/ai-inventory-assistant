@@ -124,6 +124,7 @@ def make_closed_presentation(
     factor: int = 6,
     sale_price: str = "600.00",
     closed_stock: int = 0,
+    cost: Decimal | None = None,
 ) -> InitialClosedStock:
     """Declara una presentación adicional con su stock inicial cerrado."""
     return InitialClosedStock(
@@ -131,6 +132,7 @@ def make_closed_presentation(
         factor=factor,
         sale_price=Decimal(sale_price),
         closed_stock=closed_stock,
+        cost=cost,
     )
 
 
@@ -503,6 +505,191 @@ def test_register_with_zero_closed_stock_creates_no_movement(
     registered = presentations.list_by_product(stored.id)
     assert [presentation.closed_stock for presentation in registered] == [0, 0]
     assert movements.list_by_product(stored.id) == []
+
+
+# --- Costos iniciales opcionales por grupo (T058) ---
+
+
+def test_register_records_independent_costs_for_the_initial_groups(
+    product_service: ProductService,
+    movements: SqliteMovementRepository,
+) -> None:
+    """
+    Verifica los costos independientes de las unidades y de la caja (T058).
+
+    El costo suelto se conserva en el movimiento de entrada suelta y el de la
+    presentación en el movimiento de entrada cerrada; no se derivan del
+    precio de venta ni se crea un movimiento adicional por grupo.
+    """
+    stored = product_service.register(
+        make_registration(
+            initial_loose_units=3,
+            initial_loose_cost=Decimal("1000"),
+            presentations=(
+                make_closed_presentation(
+                    closed_stock=1,
+                    cost=Decimal("7500"),
+                ),
+            ),
+        )
+    )
+
+    history = movements.list_by_product(stored.id)
+
+    assert len(history) == 2
+    assert [movement.kind for movement in history] == [
+        MovementKind.LOOSE_ENTRY,
+        MovementKind.CLOSED_ENTRY,
+    ]
+    assert [movement.quantity for movement in history] == [3, 1]
+    assert [movement.cost for movement in history] == [
+        Decimal("1000"),
+        Decimal("7500"),
+    ]
+    assert all(movement.is_initial_stock for movement in history)
+
+
+def test_register_leaves_the_initial_costs_absent_when_they_are_omitted(
+    product_service: ProductService,
+    movements: SqliteMovementRepository,
+) -> None:
+    """Verifica que un costo omitido se persiste como ausente (T058)."""
+    stored = product_service.register(
+        make_registration(
+            initial_loose_units=2,
+            presentations=(make_closed_presentation(closed_stock=1),),
+        )
+    )
+
+    history = movements.list_by_product(stored.id)
+
+    assert [movement.cost for movement in history] == [None, None]
+
+
+def test_register_accepts_a_zero_cost_with_a_positive_quantity(
+    product_service: ProductService,
+    movements: SqliteMovementRepository,
+) -> None:
+    """Verifica que el costo cero es válido con cantidad positiva (T058)."""
+    stored = product_service.register(
+        make_registration(
+            initial_loose_units=2,
+            initial_loose_cost=Decimal("0"),
+            presentations=(
+                make_closed_presentation(
+                    closed_stock=1,
+                    cost=Decimal("0"),
+                ),
+            ),
+        )
+    )
+
+    history = movements.list_by_product(stored.id)
+
+    assert [movement.cost for movement in history] == [
+        Decimal("0"),
+        Decimal("0"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("registration", "group"),
+    [
+        (
+            make_registration(initial_loose_cost=Decimal("10")),
+            "unidades sueltas iniciales",
+        ),
+        (
+            make_registration(
+                presentations=(
+                    make_closed_presentation(
+                        name="Caja x6",
+                        cost=Decimal("10"),
+                    ),
+                )
+            ),
+            "Caja x6",
+        ),
+    ],
+)
+def test_register_rejects_a_cost_for_a_group_without_quantity(
+    product_service: ProductService,
+    connection: sqlite3.Connection,
+    registration: ProductRegistration,
+    group: str,
+) -> None:
+    """
+    Verifica el rechazo de un costo para un grupo sin cantidad (T058, D1).
+
+    El mensaje identifica el grupo y no queda ningún producto, presentación ni
+    movimiento escrito: la validación ocurre antes de escribir.
+    """
+    with pytest.raises(QuantityError, match=group):
+        product_service.register(registration)
+
+    counts = connection.execute(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM products) AS products,
+            (SELECT COUNT(*) FROM presentations) AS presentations,
+            (SELECT COUNT(*) FROM movements) AS movements
+        """
+    ).fetchone()
+
+    assert counts["products"] == 0
+    assert counts["presentations"] == 0
+    assert counts["movements"] == 0
+
+
+@pytest.mark.parametrize(
+    "registration",
+    [
+        make_registration(
+            initial_loose_units=1,
+            initial_loose_cost=Decimal("-1"),
+        ),
+        make_registration(
+            initial_loose_units=1,
+            initial_loose_cost=Decimal("NaN"),
+        ),
+        make_registration(
+            initial_loose_units=1,
+            initial_loose_cost=10.5,  # type: ignore[arg-type]
+        ),
+        make_registration(
+            presentations=(
+                make_closed_presentation(
+                    closed_stock=1,
+                    cost=Decimal("-0.01"),
+                ),
+            )
+        ),
+    ],
+)
+def test_register_rejects_an_invalid_initial_cost_without_writing(
+    product_service: ProductService,
+    connection: sqlite3.Connection,
+    registration: ProductRegistration,
+) -> None:
+    """
+    Verifica el rechazo de costos negativos, no finitos o no exactos (T058).
+
+    El costo debe ser un `Decimal` finito y no negativo; el rechazo no deja
+    escrituras.
+    """
+    with pytest.raises(QuantityError):
+        product_service.register(registration)
+
+    counts = connection.execute(
+        """
+        SELECT
+            (SELECT COUNT(*) FROM products) AS products,
+            (SELECT COUNT(*) FROM movements) AS movements
+        """
+    ).fetchone()
+
+    assert counts["products"] == 0
+    assert counts["movements"] == 0
 
 
 # --- Atomicidad y validaciones previas (criterio 6) ---

@@ -58,6 +58,7 @@ parte de esta implementación (T016).
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -108,6 +109,24 @@ class BasePresentationOperationError(MovementServiceError):
 
 class InsufficientLooseUnitsError(MovementServiceError):
     """Error que indica que una salida supera las unidades sueltas (RF-02)."""
+
+
+@dataclass(frozen=True)
+class CompensationAvailability:
+    """
+    Disponibilidad compensable vigente de un movimiento (T054, C18).
+
+    `compensable_quantity` es la cantidad que todavía se puede compensar y
+    `available_stock` es el stock vigente del tipo afectado. Ambos valores los
+    deriva el servicio con la misma regla que usa la confirmación; la interfaz
+    solo los presenta.
+    """
+
+    compensable_quantity: int
+    """Cantidad compensable pendiente del movimiento original."""
+
+    available_stock: int
+    """Stock vigente del tipo afectado por la compensación."""
 
 
 class MovementService:
@@ -581,6 +600,51 @@ class MovementService:
             self._apply_compensation(original, kind, result)
 
         return movement
+
+    def get_compensation_availability(
+        self,
+        product_id: int,
+        movement_id: int,
+    ) -> CompensationAvailability:
+        """
+        Lee la cantidad compensable pendiente y el stock afectado (T054, C18).
+
+        Es una lectura pública y de solo lectura: no abre una transacción ni
+        escribe el inventario. Reutiliza `_compensation_availability`, la misma
+        regla que aplica `register_compensation` al confirmar, de modo que la
+        interfaz no recalcula la cantidad compensable. La revalidación
+        definitiva sigue ocurriendo al confirmar la propuesta.
+
+        Args:
+            product_id: Producto al que pertenece el movimiento original.
+            movement_id: Movimiento original cuya disponibilidad se consulta.
+
+        Returns:
+            La cantidad compensable pendiente y el stock vigente del tipo
+            afectado.
+
+        Raises:
+            RecordNotFoundError: Si el movimiento no existe o no pertenece al
+                producto indicado, o si falta la presentación o el producto que
+                respalda la disponibilidad.
+            ApertureNotCompensableError: Si el movimiento original es una
+                apertura, regla validada por el dominio.
+            ChainedCompensationError: Si el movimiento original es otra
+                compensación, regla validada por el dominio.
+            NotCompensableError: Si el movimiento original es una salida
+                cerrada, cuya compensación queda fuera del MVP; regla validada
+                por el dominio.
+        """
+        original = self._compensated_movement(product_id, movement_id)
+        kind = validate_compensable_kind(original.kind)
+        compensable_quantity, available_stock = (
+            self._compensation_availability(original, kind)
+        )
+
+        return CompensationAvailability(
+            compensable_quantity=compensable_quantity,
+            available_stock=available_stock,
+        )
 
     def _apply_fifo_consumption(
         self,

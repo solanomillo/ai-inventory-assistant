@@ -22,6 +22,11 @@ no se conservan: el puente es determinista y no afirma que todas se conserven.
 `execution_result` permanece `None`, porque confirmar es una acción explícita
 del usuario y ninguna ruta de este grafo la ejecuta.
 
+Contexto conversacional: el nodo del agente traduce la conversación reciente
+del estado a `HumanMessage`/`AIMessage` y la envía junto con el mensaje actual,
+una sola vez y sin duplicarlo (T063). El recorte de la ventana y la
+reconstrucción del historial son responsabilidad de la interfaz.
+
 Inyección de dependencias: el flujo recibe el modelo, las herramientas de
 consulta y las de propuesta por parámetro. No obtiene el modelo por su cuenta
 ni accede a la persistencia: las herramientas ya construidas son la única vía
@@ -51,6 +56,12 @@ from app.schemas.proposals import Proposal
 
 SUPERVISOR_NODE: str = "supervisor"
 """Nodo del Supervisor en el grafo del asistente (T022)."""
+
+_CONVERSATION_MESSAGE_TYPES: dict[str, type[BaseMessage]] = {
+    "human": HumanMessage,
+    "ai": AIMessage,
+}
+"""Tipo de mensaje del modelo para cada rol de la conversación (T063)."""
 
 
 @dataclass
@@ -194,7 +205,9 @@ def _create_agent_node(
 
         La respuesta es el contenido del último `AIMessage` del agente y la
         propuesta pendiente es la última capturada en esta invocación: el nodo
-        no confirma nada ni marca ninguna propuesta como ejecutada.
+        no confirma nada ni marca ninguna propuesta como ejecutada. El modelo
+        recibe la conversación reciente del estado —si la hay— y el mensaje
+        actual como último mensaje, una sola vez (T063).
 
         Args:
             state: Estado del grafo, con el mensaje del usuario del turno.
@@ -204,7 +217,12 @@ def _create_agent_node(
         """
         capture.clear()
         result = agent.invoke(
-            {"messages": [HumanMessage(content=state["user_message"])]}
+            {
+                "messages": [
+                    *_conversation_messages(state["conversation"]),
+                    HumanMessage(content=state["user_message"]),
+                ]
+            }
         )
 
         return {
@@ -213,6 +231,29 @@ def _create_agent_node(
         }
 
     return run_inventory_agent
+
+
+def _conversation_messages(
+    conversation: tuple[tuple[str, str], ...],
+) -> list[BaseMessage]:
+    """
+    Traduce la conversación reciente del estado a mensajes del modelo (T063).
+
+    Cada par `(rol, texto)` se convierte en un `HumanMessage` o en un
+    `AIMessage` según su rol, conservando el orden recibido. El mensaje actual
+    no forma parte de la conversación: lo agrega el nodo una sola vez.
+
+    Args:
+        conversation: Mensajes recientes como pares `(rol, texto)`, de más
+            antiguo a más reciente.
+
+    Returns:
+        Los mensajes del modelo en el mismo orden que la conversación.
+    """
+    return [
+        _CONVERSATION_MESSAGE_TYPES[role](content=text)
+        for role, text in conversation
+    ]
 
 
 def _last_response_text(messages: Sequence[BaseMessage]) -> str | None:

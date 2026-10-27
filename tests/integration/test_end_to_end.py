@@ -74,6 +74,7 @@ from app.services.products import (
     ProductService,
 )
 from app.services.proposals import ProposalService
+from app.ui.formatting import format_unit_cost_reference
 from app.ui.main import (
     ASSISTANT_KEY,
     CONFIRM_LABEL,
@@ -929,3 +930,112 @@ def test_a_failing_history_rolls_back_and_the_database_stays_usable(
             assistant.connection.close()
     finally:
         connection.close()
+
+
+def test_initial_costs_stay_on_their_movements_and_prices_remain_independent(
+    connection: sqlite3.Connection,
+    presentations: SqlitePresentationRepository,
+) -> None:
+    """
+    Verifica los costos iniciales frente a la apertura y el precio (T058).
+
+    Los costos se conservan en sus movimientos iniciales, la referencia
+    unitaria no se persiste ni altera el importe total y la apertura no crea
+    costos ni duplica movimientos. El cambio de precio de venta y su historial
+    permanecen independientes de los costos de compra.
+    """
+    products = SqliteProductRepository(connection)
+    movements = SqliteMovementRepository(connection)
+    product_service = ProductService(
+        products=products,
+        presentations=presentations,
+        movements=movements,
+        transaction=partial(transaction, connection),
+    )
+    movement_service = MovementService(
+        products=products,
+        presentations=presentations,
+        movements=movements,
+        transaction=partial(transaction, connection),
+    )
+    presentation_service = PresentationService(
+        products=products,
+        presentations=presentations,
+        movements=movements,
+        price_history=SqlitePriceHistoryRepository(connection),
+        transaction=partial(transaction, connection),
+    )
+
+    stored = product_service.register(
+        ProductRegistration(
+            sku="SKU-COSTOS",
+            name="Producto con costos",
+            base_unit="botella",
+            base_sale_price=Decimal("100"),
+            initial_loose_units=3,
+            initial_loose_cost=Decimal("1000"),
+            presentations=(
+                InitialClosedStock(
+                    name="Caja x6",
+                    factor=BOX_FACTOR,
+                    sale_price=Decimal("600"),
+                    closed_stock=1,
+                    cost=Decimal("7500"),
+                ),
+            ),
+        )
+    )
+    _, box = presentations.list_by_product(stored.id)
+    initial_movements = movements.list_by_product(stored.id)
+
+    assert [movement.cost for movement in initial_movements] == [
+        Decimal("1000"),
+        Decimal("7500"),
+    ]
+    assert format_unit_cost_reference(Decimal("1000"), 3) == "333.33"
+    assert (
+        format_unit_cost_reference(Decimal("7500"), 1, factor=BOX_FACTOR)
+        == "1250.00"
+    )
+    assert initial_movements[1].cost == Decimal("7500")
+
+    movement_service.register_aperture(
+        stored.id,
+        presentation_id=box.id,
+        quantity=1,
+        reason="Apertura",
+    )
+    after_aperture = movements.list_by_product(stored.id)
+
+    assert len(after_aperture) == 3
+    assert after_aperture[-1].kind is MovementKind.APERTURE
+    assert after_aperture[-1].cost is None
+    assert [movement.cost for movement in after_aperture] == [
+        Decimal("1000"),
+        Decimal("7500"),
+        None,
+    ]
+
+    presentation_service.change_sale_price(box.id, Decimal("700"))
+    changes = SqlitePriceHistoryRepository(connection).list_by_presentation(
+        box.id
+    )
+    updated_box = presentations.get(box.id)
+
+    assert updated_box is not None
+    assert updated_box.sale_price == Decimal("700")
+    assert [
+        (change.previous_price, change.new_price) for change in changes
+    ] == [(Decimal("600"), Decimal("700"))]
+    assert [
+        movement.cost
+        for movement in movements.list_by_product(stored.id)
+    ] == [Decimal("1000"), Decimal("7500"), None]
+
+    columns = {
+        row["name"]
+        for row in connection.execute(
+            "PRAGMA table_info(movements)"
+        ).fetchall()
+    }
+    assert "unit_cost_reference" not in columns

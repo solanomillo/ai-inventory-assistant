@@ -285,6 +285,32 @@ def prepare_product(
     return stored, base, box
 
 
+def initial_cost_registration(
+    **overrides: Any,
+) -> ProductRegistrationPayload:
+    """Construye un alta con costos iniciales independientes (T058)."""
+    values: dict[str, Any] = {
+        "sku": "SKU-COST",
+        "name": "Producto con costos",
+        "base_unit": "botella",
+        "base_sale_price": Decimal("50"),
+        "initial_loose_units": 2,
+        "initial_loose_cost": Decimal("1000"),
+        "presentations": (
+            InitialPresentationPayload(
+                name="Caja x6",
+                factor=6,
+                sale_price=Decimal("600"),
+                closed_stock=1,
+                cost=Decimal("7500"),
+            ),
+        ),
+    }
+    values.update(overrides)
+
+    return ProductRegistrationPayload(**values)
+
+
 def database_state(
     connection: sqlite3.Connection,
 ) -> tuple[list[tuple[Any, ...]], ...]:
@@ -362,6 +388,33 @@ def stored_price_changes(
 
 
 # --- Las nueve acciones crean propuestas válidas (criterio 1 y 2) ---
+
+
+def test_the_initial_cost_fields_reject_float_values() -> None:
+    """
+    Verifica que los costos iniciales exigen un `Decimal` exacto (T058).
+
+    El esquema rechaza un `float` tanto en el costo de las unidades sueltas
+    como en el de una presentación adicional, sin convertirlo silenciosamente.
+    """
+    with pytest.raises(ValidationError):
+        ProductRegistrationPayload(
+            sku="SKU-1",
+            name="Producto",
+            base_unit="botella",
+            base_sale_price=Decimal("50"),
+            initial_loose_units=1,
+            initial_loose_cost=10.5,  # type: ignore[arg-type]
+        )
+
+    with pytest.raises(ValidationError):
+        InitialPresentationPayload(
+            name="Caja x6",
+            factor=6,
+            sale_price=Decimal("600"),
+            closed_stock=1,
+            cost=10.5,  # type: ignore[arg-type]
+        )
 
 
 def test_create_records_the_nine_actions_without_touching_the_inventory(
@@ -602,6 +655,187 @@ def test_confirming_a_product_registration_creates_the_product(
     ]
     assert [presentation.closed_stock for presentation in registered] == [0, 2]
     assert len(movements.list_by_product(created.id)) == 2
+
+
+def test_a_pending_registration_with_costs_does_not_write(
+    connection: sqlite3.Connection,
+    proposal_service: ProposalService,
+) -> None:
+    """
+    Verifica que una propuesta con costos no escribe mientras está pendiente
+    (T058).
+
+    Los costos viajan en el payload y no se persisten hasta confirmar; la
+    propuesta no modifica el inventario ni crea movimientos.
+    """
+    proposal = proposal_service.create(initial_cost_registration())
+    baseline = database_state(connection)
+
+    assert proposal.status is ProposalStatus.PENDING
+    assert proposal.payload.initial_loose_cost == Decimal("1000")
+    assert proposal.payload.presentations[0].cost == Decimal("7500")
+    assert proposals_count(connection) == 0
+    assert database_state(connection) == baseline
+
+
+def test_confirming_a_registration_preserves_both_initial_costs(
+    products: SqliteProductRepository,
+    movements: SqliteMovementRepository,
+    proposal_service: ProposalService,
+) -> None:
+    """
+    Verifica que la confirmación conserva los dos costos iniciales (T058).
+
+    Cada costo queda en el movimiento inicial de su grupo, sin movimientos
+    duplicados ni derivación desde el precio de venta.
+    """
+    proposal = proposal_service.create(initial_cost_registration())
+
+    confirmation = proposal_service.confirm(proposal)
+
+    assert isinstance(confirmation.result, ProductRecord)
+    created = stored_product(products, confirmation.result.id)
+    history = movements.list_by_product(created.id)
+
+    assert len(history) == 2
+    assert [movement.kind for movement in history] == [
+        MovementKind.LOOSE_ENTRY,
+        MovementKind.CLOSED_ENTRY,
+    ]
+    assert [movement.quantity for movement in history] == [2, 1]
+    assert [movement.cost for movement in history] == [
+        Decimal("1000"),
+        Decimal("7500"),
+    ]
+
+
+def test_a_registration_without_costs_keeps_them_absent(
+    products: SqliteProductRepository,
+    movements: SqliteMovementRepository,
+    proposal_service: ProposalService,
+) -> None:
+    """Verifica la compatibilidad con un alta sin costos (T058)."""
+    payload = ProductRegistrationPayload(
+        sku="SKU-SIN-COSTO",
+        name="Producto sin costos",
+        base_unit="botella",
+        base_sale_price=Decimal("50"),
+        initial_loose_units=2,
+        presentations=(
+            InitialPresentationPayload(
+                name="Caja x6",
+                factor=6,
+                sale_price=Decimal("600"),
+                closed_stock=1,
+            ),
+        ),
+    )
+    proposal = proposal_service.create(payload)
+
+    assert payload.initial_loose_cost is None
+    assert payload.presentations[0].cost is None
+
+    confirmation = proposal_service.confirm(proposal)
+
+    assert isinstance(confirmation.result, ProductRecord)
+    history = movements.list_by_product(confirmation.result.id)
+
+    assert [movement.cost for movement in history] == [None, None]
+
+
+def test_editing_the_initial_costs_preserves_the_action_without_writing(
+    connection: sqlite3.Connection,
+    proposal_service: ProposalService,
+) -> None:
+    """
+    Verifica la edición de los costos de una propuesta pendiente (T058, D3).
+
+    La edición conserva la acción, no la confirma y no escribe en la base.
+    """
+    proposal = proposal_service.create(initial_cost_registration())
+    baseline = database_state(connection)
+    edited_payload = initial_cost_registration(
+        initial_loose_cost=Decimal("1111.50"),
+        presentations=(
+            InitialPresentationPayload(
+                name="Caja x6",
+                factor=6,
+                sale_price=Decimal("600"),
+                closed_stock=1,
+                cost=Decimal("2222.25"),
+            ),
+        ),
+    )
+
+    edited = proposal_service.edit(proposal, edited_payload)
+
+    assert edited.action is ProposalAction.PRODUCT_REGISTRATION
+    assert edited.status is ProposalStatus.PENDING
+    assert edited.payload.initial_loose_cost == Decimal("1111.50")
+    assert edited.payload.presentations[0].cost == Decimal("2222.25")
+    assert database_state(connection) == baseline
+
+
+def test_confirming_preserves_the_edited_initial_costs(
+    products: SqliteProductRepository,
+    movements: SqliteMovementRepository,
+    proposal_service: ProposalService,
+) -> None:
+    """Verifica que la confirmación conserva los costos editados (T058)."""
+    proposal = proposal_service.create(initial_cost_registration())
+    edited = proposal_service.edit(
+        proposal,
+        initial_cost_registration(
+            initial_loose_cost=Decimal("1111.50"),
+            presentations=(
+                InitialPresentationPayload(
+                    name="Caja x6",
+                    factor=6,
+                    sale_price=Decimal("600"),
+                    closed_stock=1,
+                    cost=Decimal("2222.25"),
+                ),
+            ),
+        ),
+    )
+
+    confirmation = proposal_service.confirm(edited)
+
+    assert isinstance(confirmation.result, ProductRecord)
+    history = movements.list_by_product(confirmation.result.id)
+
+    assert [movement.cost for movement in history] == [
+        Decimal("1111.50"),
+        Decimal("2222.25"),
+    ]
+
+
+def test_a_rejected_registration_with_a_cost_does_not_persist_anything(
+    connection: sqlite3.Connection,
+    proposal_service: ProposalService,
+) -> None:
+    """
+    Verifica que un rechazo no deja movimientos ni costos (T058).
+
+    Un costo informado para un grupo sin cantidad se rechaza al confirmar, como
+    en el alta directa, sin escrituras parciales y con la propuesta pendiente.
+    """
+    proposal = proposal_service.create(
+        initial_cost_registration(
+            initial_loose_units=0,
+            initial_loose_cost=Decimal("10"),
+        )
+    )
+    baseline = database_state(connection)
+    changes_before = connection.total_changes
+
+    with pytest.raises(QuantityError, match="unidades sueltas iniciales"):
+        proposal_service.confirm(proposal)
+
+    assert proposal.status is ProposalStatus.PENDING
+    assert proposals_count(connection) == 0
+    assert database_state(connection) == baseline
+    assert connection.total_changes == changes_before
 
 
 def test_confirming_a_product_update_changes_the_name_and_the_minimum_stock(

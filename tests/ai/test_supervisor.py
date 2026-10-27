@@ -5,7 +5,9 @@ real de LangGraph con un modelo falso determinista y herramientas reales sobre
 SQLite en memoria: la derivación determinista del Supervisor, la consulta con
 datos reales, el puente de estado (respuesta textual y propuesta capturada como
 objeto `Proposal`), la ausencia de escrituras y la semántica de errores
-heredada de T021.
+heredada de T021. Cubren además el contexto conversacional de T063: la
+conversación reciente se traduce a `HumanMessage`/`AIMessage` y el mensaje
+actual se envía una sola vez, sin duplicarse con el historial.
 
 Queda fuera de T022 y corresponde a T023, T024 y T025: la interfaz de
 conversación, la presentación de propuestas y su confirmación explícita desde
@@ -202,6 +204,7 @@ def run_workflow(
     user_message: str,
     inventory_tools: Sequence[BaseTool],
     proposal_tools: Sequence[BaseTool],
+    conversation: tuple[tuple[str, str], ...] = (),
 ) -> tuple[dict[str, Any], ScriptedChatModel]:
     """Compila el grafo, lo invoca con el guion y devuelve el modelo."""
     model = ScriptedChatModel(responses=list(responses))
@@ -211,7 +214,12 @@ def run_workflow(
         proposal_tools=proposal_tools,
     )
 
-    return graph.invoke(create_initial_state(user_message)), model
+    return (
+        graph.invoke(
+            create_initial_state(user_message, conversation=conversation)
+        ),
+        model,
+    )
 
 
 def tool_messages_of(model: ScriptedChatModel) -> list[ToolMessage]:
@@ -422,14 +430,76 @@ def test_create_initial_state_starts_with_the_response_in_none() -> None:
 
     assert set(state.keys()) == {
         "user_message",
+        "conversation",
         "pending_proposal",
         "execution_result",
         "response",
     }
     assert state["user_message"] == "Consulta de stock"
+    assert state["conversation"] == ()
     assert state["response"] is None
     assert state["pending_proposal"] is None
     assert state["execution_result"] is None
+
+
+# --- Contexto conversacional (T063) ---
+
+
+def test_conversation_context_avoids_duplicating_the_current_message(
+    inventory_tools: list[BaseTool],
+    proposal_tools: list[BaseTool],
+) -> None:
+    """
+    Verifica el historial previo y el mensaje actual enviados una sola vez.
+
+    Con una consulta y su aclaración en la conversación, «sí, es ese» llega al
+    modelo después de ellas y aparece una única vez en lo enviado (T063).
+    """
+    conversation = (
+        ("human", "Busca Coca"),
+        ("ai", "¿Te refieres a coca-cola-3L?"),
+    )
+    state, model = run_workflow(
+        responses=[AIMessage(content="Consulto ese producto.")],
+        user_message="sí, es ese",
+        inventory_tools=inventory_tools,
+        proposal_tools=proposal_tools,
+        conversation=conversation,
+    )
+    context = [
+        (type(message), message.content)
+        for message in model.received[-1]
+        if isinstance(message, (HumanMessage, AIMessage))
+    ]
+
+    assert context == [
+        (HumanMessage, "Busca Coca"),
+        (AIMessage, "¿Te refieres a coca-cola-3L?"),
+        (HumanMessage, "sí, es ese"),
+    ]
+    assert [content for _, content in context].count("sí, es ese") == 1
+    assert state["conversation"] == conversation
+    assert state["response"] == "Consulto ese producto."
+
+
+def test_single_turn_still_has_no_prior_conversation(
+    inventory_tools: list[BaseTool],
+    proposal_tools: list[BaseTool],
+) -> None:
+    """Verifica que un turno único envía solo el mensaje actual (T063)."""
+    _, model = run_workflow(
+        responses=[AIMessage(content="Hola.")],
+        user_message="Hola",
+        inventory_tools=inventory_tools,
+        proposal_tools=proposal_tools,
+    )
+    context = [
+        message.content
+        for message in model.received[-1]
+        if isinstance(message, (HumanMessage, AIMessage))
+    ]
+
+    assert context == ["Hola"]
 
 
 # --- Supervisor determinista (D2) ---

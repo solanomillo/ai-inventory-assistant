@@ -37,6 +37,7 @@ from app.domain.products import (
     validate_sku_unique,
     validate_sku_unchanged,
 )
+from app.domain.quantities import QuantityError, validate_cost
 from app.domain.stock import validate_closed_stock, validate_loose_units
 from app.services.ports import (
     MovementRepository,
@@ -58,6 +59,16 @@ TransactionScope = Callable[[], AbstractContextManager[None]]
 INITIAL_STOCK_REASON: str = "Stock inicial"
 """Motivo con el que se registran los movimientos de stock inicial (RF-02)."""
 
+INITIAL_LOOSE_GROUP_LABEL: str = "las unidades sueltas iniciales"
+"""Nombre del grupo de stock inicial suelto en los mensajes de validación."""
+
+ZERO_QUANTITY_COST_TEMPLATE: str = (
+    "No se puede informar un costo para {group}: el grupo no tiene cantidad "
+    "inicial. El costo es el importe total del grupo y requiere una cantidad "
+    "mayor que cero."
+)
+"""Motivo del rechazo de un costo informado sin cantidad (T058)."""
+
 
 @dataclass(frozen=True)
 class InitialClosedStock:
@@ -66,13 +77,16 @@ class InitialClosedStock:
 
     `closed_stock` es la cantidad inicial de presentaciones cerradas de esa
     presentación; cuando es cero no se registra ningún movimiento de stock
-    inicial (RF-02).
+    inicial (RF-02). `cost` es el costo total opcional de ese grupo inicial; se
+    conserva en el movimiento inicial existente y no se distribuye entre
+    unidades (T058).
     """
 
     name: str
     factor: int
     sale_price: Decimal
     closed_stock: int = 0
+    cost: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -84,7 +98,8 @@ class ProductRegistration:
     factor 1. `base_presentation_name` es opcional: cuando no se indica, la
     presentación base toma el nombre de la unidad base. `presentations` declara
     las presentaciones adicionales del producto, cada una con su stock inicial
-    cerrado.
+    cerrado. `initial_loose_cost` es el costo total opcional de las unidades
+    sueltas iniciales, independiente del costo de cada presentación (T058).
     """
 
     sku: str
@@ -93,6 +108,7 @@ class ProductRegistration:
     base_sale_price: Decimal
     minimum_stock: int = 0
     initial_loose_units: int = 0
+    initial_loose_cost: Decimal | None = None
     presentations: tuple[InitialClosedStock, ...] = ()
     base_presentation_name: str | None = None
 
@@ -135,6 +151,13 @@ class ProductService:
         saldos se escriben una sola vez, junto con sus movimientos, dentro de
         una única transacción.
 
+        El costo de cada grupo inicial es opcional e independiente: las
+        unidades sueltas tienen su propio costo total y cada presentación
+        cerrada el suyo. Un costo informado para un grupo sin cantidad se
+        rechaza antes de cualquier escritura, porque el costo es el importe
+        total del grupo; el costo omitido queda ausente y el costo cero es
+        válido cuando la cantidad es positiva (T058).
+
         El prechequeo de unicidad del SKU se ejecuta dentro de la transacción,
         de modo que la comprobación y el alta no se separen; la garantía final
         sigue siendo la restricción `UNIQUE` del esquema, que también cubre dos
@@ -148,7 +171,8 @@ class ProductService:
 
         Raises:
             QuantityError: Si el stock mínimo, las unidades sueltas, el stock
-                cerrado inicial, un factor o un precio son inválidos.
+                cerrado inicial, un factor, un precio o un costo son inválidos,
+                o si se informó un costo para un grupo sin cantidad.
             ProductError: Si el SKU, el nombre o la unidad base son inválidos.
             DuplicateSkuError: Si el SKU ya está registrado, sin distinguir
                 mayúsculas de minúsculas.
@@ -168,6 +192,11 @@ class ProductService:
             registration, product.base_unit
         )
         loose_units = validate_loose_units(registration.initial_loose_units)
+        loose_cost = _validated_initial_cost(
+            registration.initial_loose_cost,
+            quantity=loose_units,
+            group=INITIAL_LOOSE_GROUP_LABEL,
+        )
         occurred_at = _utc_now()
 
         with self._transaction():
@@ -193,9 +222,10 @@ class ProductService:
                 presentation_id=base_record.id,
                 kind=MovementKind.LOOSE_ENTRY,
                 quantity=loose_units,
+                cost=loose_cost,
                 occurred_at=occurred_at,
             )
-            for presentation, closed_stock in extra_presentations:
+            for presentation, closed_stock, cost in extra_presentations:
                 record = self._presentations.add(
                     product_id=stored.id,
                     name=presentation.name,
@@ -208,6 +238,7 @@ class ProductService:
                     presentation_id=record.id,
                     kind=MovementKind.CLOSED_ENTRY,
                     quantity=closed_stock,
+                    cost=cost,
                     occurred_at=occurred_at,
                 )
 
@@ -301,7 +332,10 @@ class ProductService:
         self,
         registration: ProductRegistration,
         base_unit: str,
-    ) -> tuple[Presentation, tuple[tuple[Presentation, int], ...]]:
+    ) -> tuple[
+        Presentation,
+        tuple[tuple[Presentation, int, Decimal | None], ...],
+    ]:
         """
         Valida la presentación base y las presentaciones declaradas (RF-07).
 
@@ -311,14 +345,15 @@ class ProductService:
 
         Returns:
             La presentación base y las presentaciones adicionales junto con su
-            stock cerrado inicial.
+            stock cerrado inicial y su costo total opcional.
 
         Raises:
             ProductError: Si el nombre de la presentación base es inválido.
             PresentationError: Si un nombre de presentación se repite dentro
                 del producto o si no queda exactamente una presentación base.
-            QuantityError: Si un factor, un precio o un stock cerrado inicial
-                son inválidos.
+            QuantityError: Si un factor, un precio, un stock cerrado inicial o
+                un costo son inválidos, o si se informó un costo para una
+                presentación sin stock inicial.
         """
         base_name = (
             base_unit
@@ -331,12 +366,18 @@ class ProductService:
         )
 
         declared_names = [base.name]
-        planned: list[tuple[Presentation, int]] = []
+        planned: list[tuple[Presentation, int, Decimal | None]] = []
         for declared in registration.presentations:
             name = validate_presentation_name_unique(
                 declared.name, declared_names
             )
             declared_names.append(name)
+            closed_stock = validate_closed_stock(declared.closed_stock)
+            cost = _validated_initial_cost(
+                declared.cost,
+                quantity=closed_stock,
+                group=f"la presentación adicional '{name}'",
+            )
             planned.append(
                 (
                     Presentation(
@@ -345,12 +386,13 @@ class ProductService:
                         sale_price=declared.sale_price,
                         has_history=False,
                     ),
-                    validate_closed_stock(declared.closed_stock),
+                    closed_stock,
+                    cost,
                 )
             )
 
         validate_single_base_presentation(
-            [base, *(presentation for presentation, _ in planned)]
+            [base, *(presentation for presentation, _, _ in planned)]
         )
 
         return base, tuple(planned)
@@ -363,15 +405,31 @@ class ProductService:
         kind: MovementKind,
         quantity: int,
         occurred_at: datetime,
+        cost: Decimal | None = None,
     ) -> None:
         """
         Registra el movimiento de una porción positiva de stock inicial
         (RF-02).
 
-        Una porción igual a cero no genera ningún movimiento.
+        Una porción igual a cero no genera ningún movimiento. El costo es el
+        importe total opcional del grupo: se conserva en el mismo movimiento
+        inicial, sin crear movimientos adicionales ni distribuirlo entre las
+        unidades (T058).
+
+        Raises:
+            QuantityError: Si se informó un costo para un grupo sin cantidad o
+                si el costo no es un `Decimal` finito y no negativo.
         """
         if quantity == 0:
+            if cost is not None:
+                raise QuantityError(
+                    "No se puede informar un costo para un grupo de stock "
+                    "inicial sin cantidad."
+                )
             return
+
+        if cost is not None:
+            validate_cost(cost)
 
         self._movements.add(
             product_id=product_id,
@@ -380,6 +438,7 @@ class ProductService:
             quantity=quantity,
             reason=INITIAL_STOCK_REASON,
             occurred_at=occurred_at,
+            cost=cost,
             is_initial_stock=True,
         )
 
@@ -411,6 +470,40 @@ class ProductService:
                 f"El producto '{product.sku}' está desactivado y no admite "
                 "modificaciones."
             )
+
+
+def _validated_initial_cost(
+    cost: Decimal | None,
+    *,
+    quantity: int,
+    group: str,
+) -> Decimal | None:
+    """
+    Valida el costo total opcional de un grupo de stock inicial (T058).
+
+    Un costo omitido queda ausente. Un costo informado exige una cantidad
+    inicial positiva, porque es el importe total del grupo y no un costo
+    unitario; además debe ser un `Decimal` finito y no negativo.
+
+    Args:
+        cost: Costo total informado, o `None` si se omitió.
+        quantity: Cantidad inicial del grupo.
+        group: Nombre del grupo para el mensaje de rechazo.
+
+    Returns:
+        El costo validado, o `None` si se omitió.
+
+    Raises:
+        QuantityError: Si el grupo no tiene cantidad y se informó un costo, o
+            si el costo no es un `Decimal` finito y no negativo.
+    """
+    if cost is None:
+        return None
+
+    if quantity == 0:
+        raise QuantityError(ZERO_QUANTITY_COST_TEMPLATE.format(group=group))
+
+    return validate_cost(cost)
 
 
 def _utc_now() -> datetime:

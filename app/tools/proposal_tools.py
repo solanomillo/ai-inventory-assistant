@@ -110,6 +110,7 @@ def create_proposal_tools(service: ProposalService) -> tuple[BaseTool, ...]:
         base_sale_price: Decimal,
         minimum_stock: int = 0,
         initial_loose_units: int = 0,
+        initial_loose_cost: Decimal | None = None,
         presentations: tuple[InitialPresentationPayload, ...] = (),
         base_presentation_name: str | None = None,
         action: Literal["alta_producto"] = "alta_producto",
@@ -118,9 +119,9 @@ def create_proposal_tools(service: ProposalService) -> tuple[BaseTool, ...]:
 
         Declara el SKU, el nombre, la unidad base, el precio de la presentación
         base y, de forma opcional, el stock mínimo, las unidades sueltas
-        iniciales y las presentaciones adicionales con su stock inicial. No
-        registra nada: el alta se ejecuta solo cuando el usuario la confirma
-        (RF-01, RF-02, RF-07).
+        iniciales y las presentaciones adicionales con su stock inicial. Los
+        costos totales de cada grupo inicial viajan en el payload y no se
+        registran hasta la confirmación (RF-01, RF-02, RF-07, T058).
         """
         return service.create(
             ProductRegistrationPayload(
@@ -130,6 +131,7 @@ def create_proposal_tools(service: ProposalService) -> tuple[BaseTool, ...]:
                 base_sale_price=base_sale_price,
                 minimum_stock=minimum_stock,
                 initial_loose_units=initial_loose_units,
+                initial_loose_cost=initial_loose_cost,
                 presentations=presentations,
                 base_presentation_name=base_presentation_name,
             )

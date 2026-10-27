@@ -1,8 +1,8 @@
 """Pruebas de las herramientas de consulta del inventario (T019).
 
 Cubren los contratos de las siete herramientas de solo lectura sobre RF-01,
-RF-02, RF-03, RF-04 y RF-05: búsqueda por nombre sin distinguir mayúsculas,
-búsqueda por SKU, existencias con el total equivalente derivado,
+RF-02, RF-03, RF-04 y RF-05: búsqueda parcial por nombre o SKU sin distinguir
+mayúsculas, búsqueda por SKU, existencias con el total equivalente derivado,
 presentaciones, stock bajo, reposición e historial con filtros combinados.
 
 Las pruebas usan la base SQLite en memoria con el esquema real, los
@@ -310,7 +310,7 @@ def snapshot(
     }
 
 
-# --- Búsqueda por nombre (RF-01) ---
+# --- Búsqueda parcial por nombre o SKU (RF-01) ---
 
 
 @pytest.mark.parametrize("query", ["Coca Cola", "coca cola", "COCA COLA"])
@@ -319,7 +319,7 @@ def test_find_products_by_name_matches_without_case(
     catalog: Catalog,
     query: str,
 ) -> None:
-    """Verifica la coincidencia exacta sin distinguir mayúsculas."""
+    """Verifica la coincidencia sin distinguir mayúsculas."""
     found = tools["find_products_by_name"].invoke({"name": query})
 
     assert [product.id for product in found] == [
@@ -367,6 +367,115 @@ def test_find_products_by_name_validates_its_input_schema(
 
     with pytest.raises(ValidationError):
         tools["find_products_by_name"].invoke({"nombre": "Coca Cola"})
+
+
+@pytest.mark.parametrize("query", ["Coca", "Coca-Cola", "coca_cola"])
+def test_find_products_by_name_matches_a_partial_name(
+    tools: dict[str, BaseTool],
+    catalog: Catalog,
+    query: str,
+) -> None:
+    """Verifica la coincidencia parcial por nombre normalizado."""
+    found = tools["find_products_by_name"].invoke({"name": query})
+
+    assert [product.id for product in found] == [
+        catalog.cola.id,
+        catalog.duplicate.id,
+    ]
+    assert all(isinstance(product, ProductSummary) for product in found)
+
+
+@pytest.mark.parametrize("query", ["KU-2", "sku_2", "Sku 2"])
+def test_find_products_by_name_matches_a_partial_sku(
+    tools: dict[str, BaseTool],
+    catalog: Catalog,
+    query: str,
+) -> None:
+    """Verifica la coincidencia parcial por SKU normalizado."""
+    found = tools["find_products_by_name"].invoke({"name": query})
+
+    assert [product.id for product in found] == [catalog.duplicate.id]
+    assert found[0].sku == "SKU-2"
+
+
+def test_find_products_by_name_returns_all_the_matches_without_selecting(
+    tools: dict[str, BaseTool],
+    catalog: Catalog,
+) -> None:
+    """Verifica que varias coincidencias se devuelven todas, sin elegir una."""
+    found = tools["find_products_by_name"].invoke({"name": "sku"})
+
+    assert isinstance(found, list)
+    assert {product.id for product in found} == {
+        catalog.cola.id,
+        catalog.duplicate.id,
+        catalog.empty.id,
+        catalog.inactive.id,
+        catalog.enough.id,
+    }
+    assert len(found) == 5
+
+
+def test_find_products_by_name_prioritizes_an_exact_sku(
+    tools: dict[str, BaseTool],
+    products: SqliteProductRepository,
+) -> None:
+    """Verifica que el SKU exacto precede al nombre exacto."""
+    name_exact = products.add(
+        sku="SKU-10",
+        name="Agua 2L",
+        base_unit="botella",
+    )
+    sku_exact = products.add(
+        sku="Agua-2L",
+        name="Agua dos",
+        base_unit="botella",
+    )
+
+    found = tools["find_products_by_name"].invoke({"name": "Agua 2L"})
+
+    assert [product.id for product in found] == [
+        sku_exact.id,
+        name_exact.id,
+    ]
+    assert found[0].sku == "Agua-2L"
+    assert found[1].name == "Agua 2L"
+
+
+def test_find_products_by_name_includes_inactive_products(
+    tools: dict[str, BaseTool],
+    catalog: Catalog,
+) -> None:
+    """Verifica que los productos desactivados también son coincidencias."""
+    found = tools["find_products_by_name"].invoke({"name": "SKU-4"})
+
+    assert [product.id for product in found] == [catalog.inactive.id]
+    assert found[0].active is False
+
+
+def test_find_products_by_name_keeps_the_exact_name_match(
+    tools: dict[str, BaseTool],
+    catalog: Catalog,
+) -> None:
+    """Verifica la regresión de la coincidencia exacta por nombre."""
+    found = tools["find_products_by_name"].invoke({"name": "Coca Cola"})
+
+    assert [product.id for product in found] == [
+        catalog.cola.id,
+        catalog.duplicate.id,
+    ]
+    assert [product.name for product in found] == ["Coca Cola", "coca cola"]
+
+
+def test_find_products_by_name_description_announces_the_partial_search(
+    tools: dict[str, BaseTool],
+) -> None:
+    """Verifica que la descripción ya no anuncia una coincidencia exacta."""
+    description = (tools["find_products_by_name"].description or "").lower()
+
+    assert "parcial" in description
+    assert "sku" in description
+    assert "coincide exactamente" not in description
 
 
 # --- Búsqueda por SKU (RF-01) ---

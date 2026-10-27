@@ -1,12 +1,12 @@
 """Servicio de consultas de inventario de solo lectura (T019).
 
 Expone las consultas que consumen las herramientas del asistente (RF-01,
-RF-04 y RF-05): búsqueda de productos por nombre y por SKU, existencias
-(unidades sueltas, presentaciones cerradas y total equivalente),
-presentaciones, stock bajo, reposición e historial de movimientos. Además
-expone el listado público de productos con su estado (RF-09), que consume la
-interfaz de gestión sin usar como API pública la lectura interna del
-repositorio.
+RF-04 y RF-05): búsqueda de productos por nombre y por SKU, búsqueda parcial
+por nombre o SKU, existencias (unidades sueltas, presentaciones cerradas y
+total equivalente), presentaciones, stock bajo, reposición e historial de
+movimientos. Además expone el listado público de productos con su estado
+(RF-09), que consume la interfaz de gestión sin usar como API pública la
+lectura interna del repositorio.
 
 El servicio es de solo lectura: no abre transacciones de escritura, no invoca
 operaciones de alta, actualización ni baja y no modifica el inventario.
@@ -21,6 +21,12 @@ Contratos de las consultas:
   mayúsculas de minúsculas y conserva el texto original almacenado; devuelve
   todas las coincidencias, sin seleccionar ninguna, y una lista vacía si no
   hay ninguna (RF-01).
+- La búsqueda parcial del asistente compara el texto normalizado como
+  subcadena del nombre o del SKU normalizados: ignora mayúsculas y
+  minúsculas, considera los guiones y guiones bajos equivalentes a espacios y
+  colapsa los espacios repetidos. Devuelve todas las coincidencias —primero
+  las de SKU exacto, luego las de nombre exacto y después las parciales—
+  ordenadas por nombre normalizado e `id`, sin seleccionar ninguna (RF-01).
 - La búsqueda por SKU devuelve el producto o `None` si no existe (RF-01).
 - El listado público de productos incluye los activos y los inactivos, sin
   filtros ni paginación, y hereda el orden de registro del repositorio; el
@@ -50,7 +56,11 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from app.domain.movements import MovementKind, validate_movement_kind
-from app.domain.products import validate_product_name, validate_sku
+from app.domain.products import (
+    ProductError,
+    validate_product_name,
+    validate_sku,
+)
 from app.domain.stock import (
     ClosedStock,
     calculate_shortage,
@@ -190,6 +200,62 @@ class InventoryService:
             ProductError: Si el nombre no es texto o queda vacío al recortarlo.
         """
         return list(self._products.find_by_name(validate_product_name(name)))
+
+    def search_products(self, query: str) -> list[ProductRecord]:
+        """
+        Devuelve los productos cuyo nombre o SKU contienen el texto buscado
+        (RF-01).
+
+        La búsqueda es parcial: la consulta y los valores almacenados se
+        normalizan con `casefold`, se consideran los guiones y guiones bajos
+        equivalentes a espacios y se colapsan los espacios repetidos. Se
+        devuelven todas las coincidencias, sin seleccionar ninguna, con el
+        SKU normalizado exactamente igual a la consulta primero, luego las de
+        nombre normalizado exactamente igual y después las parciales,
+        ordenadas por nombre normalizado e `id`. La búsqueda incluye los
+        productos activos e inactivos y no escribe en el inventario.
+
+        Args:
+            query: Texto buscado; se recorta antes de normalizarlo.
+
+        Returns:
+            Las coincidencias ordenadas, o una lista vacía si no hay ninguna.
+
+        Raises:
+            ProductError: Si la consulta no es texto, queda vacía al
+                recortarla o no conserva ningún carácter significativo tras
+                normalizarla.
+        """
+        normalized_query = self._normalize_search_text(
+            validate_product_name(query)
+        )
+        if not normalized_query:
+            raise ProductError(
+                "La consulta de búsqueda no puede estar vacía."
+            )
+
+        matches: list[tuple[ProductRecord, str, str]] = []
+        for product in self.list_products():
+            normalized_name = self._normalize_search_text(product.name)
+            normalized_sku = self._normalize_search_text(product.sku)
+            if (
+                normalized_query in normalized_name
+                or normalized_query in normalized_sku
+            ):
+                matches.append((product, normalized_name, normalized_sku))
+
+        return [
+            product
+            for product, _, _ in sorted(
+                matches,
+                key=lambda match: (
+                    match[2] != normalized_query,
+                    match[1] != normalized_query,
+                    match[1],
+                    match[0].id,
+                ),
+            )
+        ]
 
     def find_product_by_sku(self, sku: str) -> ProductRecord | None:
         """
@@ -366,6 +432,19 @@ class InventoryService:
             period_start=period_start,
             period_end=period_end,
         )
+
+    @staticmethod
+    def _normalize_search_text(value: str) -> str:
+        """
+        Normaliza un texto para la búsqueda parcial del asistente (RF-01).
+
+        Convierte a minúsculas sin distinguir mayúsculas (`casefold`), trata
+        los guiones y guiones bajos como espacios, colapsa los espacios
+        repetidos y recorta los extremos.
+        """
+        normalized = value.casefold().replace("-", " ").replace("_", " ")
+
+        return " ".join(normalized.split())
 
     def _alert_items(self) -> list[_AlertItem]:
         """

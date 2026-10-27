@@ -1,11 +1,12 @@
 """Vista del detalle de un producto (T045, RF-09).
 
-Presenta el detalle de un producto seleccionado con sus presentaciones —factor
-y stock cerrado—, sus unidades sueltas y su total equivalente, sus movimientos
-y su historial de precios (C9). Los datos llegan ya consultados por
-`app/ui/main.py`, que es el único punto que lee los servicios de la sesión con
-`InventoryService.get_product_stock()`, `get_movement_history()` y
-`PriceHistoryService.get_price_history_by_product()` (RF-02, RF-03, RF-08).
+Presenta el detalle de un producto seleccionado con sus presentaciones
+—equivalencia, precio de venta y stock cerrado—, sus unidades sueltas y su
+total equivalente, sus movimientos y su historial de precios (C9). Los datos
+llegan ya consultados por `app/ui/main.py`, que es el único punto que lee los
+servicios de la sesión con `InventoryService.get_product_stock()`,
+`get_movement_history()` y `PriceHistoryService.get_price_history_by_product()`
+(RF-02, RF-03, RF-08).
 Este módulo no consulta el inventario, no importa los servicios, el dominio ni
 la persistencia, no abre conexiones ni transacciones y no escribe.
 
@@ -132,8 +133,16 @@ TOTAL_EQUIVALENT_LABEL: str = "Total equivalente"
 PRESENTATION_LABEL: str = "Presentación"
 # Etiqueta de la presentación afectada o de la fila presentada (T045).
 
-FACTOR_LABEL: str = "Factor"
-# Etiqueta del factor de conversión de una presentación (T045, D3).
+FACTOR_LABEL: str = "Equivalencia"
+# Etiqueta de la equivalencia de conversión de una presentación (T045, D3).
+
+FACTOR_HELP_CAPTION: str = (
+    "Equivalencia: unidades base que contiene cada presentación."
+)
+# Ayuda de la columna de equivalencia en la tabla del detalle (RF-09).
+
+SALE_PRICE_LABEL: str = "Precio de venta"
+# Etiqueta del precio de venta vigente de una presentación (T045, D3).
 
 BASE_COLUMN_LABEL: str = "Base"
 # Columna que marca la presentación base en la tabla del detalle (T057).
@@ -209,6 +218,7 @@ class PresentationView(Protocol):
     id: int
     name: str
     factor: int
+    sale_price: Decimal
     closed_stock: int
 
 
@@ -420,11 +430,13 @@ def presentation_row(presentation: PresentationView) -> dict[str, str]:
         presentation: Presentación ya consultada.
 
     Returns:
-        El registro con presentación, factor, stock cerrado y marca de base.
+        El registro con presentación, factor, precio de venta, stock cerrado y
+        marca de base.
     """
     return {
         PRESENTATION_LABEL: single_line(presentation.name),
         FACTOR_LABEL: format_quantity(presentation.factor),
+        SALE_PRICE_LABEL: format_money(presentation.sale_price),
         CLOSED_STOCK_LABEL: format_quantity(presentation.closed_stock),
         BASE_COLUMN_LABEL: (
             TABLE_YES_TEXT if presentation.factor == 1 else ""
@@ -525,6 +537,7 @@ def _render_presentations(
             hide_index=True,
             width="stretch",
         )
+        st.caption(FACTOR_HELP_CAPTION)
 
 
 def _render_movements(
