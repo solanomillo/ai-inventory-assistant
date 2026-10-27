@@ -35,6 +35,7 @@
 - [Ejecución](#ejecución)
 - [Pruebas](#pruebas)
 - [Limitaciones conocidas](#limitaciones-conocidas)
+- [Autor](#autor)
 - [Licencia](#licencia)
 
 ---
@@ -285,24 +286,40 @@ La interfaz muestra:
 
 ## Arquitectura
 
+El siguiente diagrama muestra el recorrido principal de las consultas y de las operaciones. El asistente interpreta solicitudes y prepara propuestas; los servicios aplican las reglas de negocio y la interfaz solicita la confirmación explícita antes de ejecutar una escritura.
+
+
 ```mermaid
 flowchart TD
-    U[Usuario] --> UI[Streamlit]
-    UI --> S[Sesión de lectura]
-    S --> SV[Servicios de aplicación]
-    SV --> DOM[Dominio]
-    SV --> REP[Repositorios SQLite]
-    REP --> DB[(SQLite)]
+    USER["Usuario"] --> UI["Interfaz Streamlit"]
 
-    UI --> G[Grafo LangGraph]
-    G --> SUP[Supervisor determinista]
-    SUP --> AG[Inventory Agent]
-    AG --> TOOLS[Herramientas LangChain]
-    TOOLS --> SV
+    subgraph READ["Consultas de inventario"]
+        UI --> SESSION["Sesion de lectura"]
+        SESSION --> SERVICES["Servicios de aplicacion"]
+        SERVICES --> DOMAIN["Reglas de dominio"]
+        SERVICES --> REPOS["Repositorios SQLite"]
+        REPOS --> DB[("Base de datos SQLite")]
+    end
 
-    UI --> CONF[Confirmación explícita]
-    CONF --> SV
+    subgraph AI["Asistente conversacional opcional"]
+        UI --> GRAPH["Grafo LangGraph"]
+        GRAPH --> SUP["Supervisor determinista"]
+        SUP --> AGENT["Inventory Agent - LangChain"]
+        AGENT --> TOOLS["Herramientas de consulta y propuestas"]
+        TOOLS --> SERVICES
+        AGENT -.-> DEEPSEEK["API de DeepSeek"]
+    end
+
+    subgraph WRITE["Operaciones con confirmacion humana"]
+        UI --> REVIEW["Revisar propuesta"]
+        REVIEW --> CONFIRM["Confirmacion explicita"]
+        CONFIRM --> PROPOSAL["ProposalService"]
+        PROPOSAL --> SERVICES
+    end
 ```
+
+
+**Flujo resumido:** Usuario → Streamlit → (consultas a servicios y SQLite / asistente LangGraph con DeepSeek) → propuesta pendiente → revisión y confirmación humana → servicios y transacción SQLite.
 
 La arquitectura separa deliberadamente:
 
@@ -396,7 +413,7 @@ El agente no accede a la base de datos. La única ruta de escritura del inventar
 | pytest | Pruebas unitarias, de integración, concurrencia, agentes e interfaz. |
 | python-dotenv | Carga de variables de entorno. |
 
-> **Proveedor de IA:** la integración implementada es **DeepSeek** (`langchain-deepseek` y `ChatDeepSeek`). El proyecto no contiene una integración con Google Gemini.
+> **Proveedor de IA:** la aplicación está integrada con el servicio real de **DeepSeek** mediante `langchain-deepseek` y `ChatDeepSeek`. Para utilizarlo, cada persona debe configurar su propia `DEEPSEEK_API_KEY` y un `DEEPSEEK_MODEL` habilitado en su cuenta. La aplicación no incluye una clave API compartida ni activa el asistente sin esa configuración. El proyecto no contiene una integración con Google Gemini.
 
 ### Decisiones arquitectónicas relevantes
 
@@ -541,7 +558,7 @@ La suite incluye pruebas:
 - de herramientas y agentes con modelos falsos;
 - de interfaz con `AppTest`.
 
-Las pruebas de agentes no invocan DeepSeek real: usan modelos falsos deterministas. La integración con el proveedor real requiere configurar credenciales y no forma parte de la suite automatizada.
+Las pruebas automatizadas de agentes usan modelos falsos deterministas para que sean reproducibles y no consuman cuota de API. Esto **no significa que la aplicación carezca de integración real**: el asistente de la aplicación utiliza DeepSeek cuando se configuran credenciales y un identificador de modelo válido. No se afirma que la suite automatizada valide llamadas en vivo al proveedor.
 
 ---
 
@@ -555,7 +572,7 @@ Las pruebas de agentes no invocan DeepSeek real: usan modelos falsos determinist
 - **Aperturas y salidas cerradas no compensables.** Es una restricción del MVP.
 - **Sin desactivación de productos ni cambio de factor desde la interfaz.** Son operaciones fuera del alcance de la UI actual.
 - **Tablas en viewports angostos.** En 768 px pueden usar scroll horizontal interno; es una limitación conocida de la validación visual.
-- **Integración real con DeepSeek no cubierta por pruebas automatizadas.** La suite valida el flujo con modelos falsos.
+- **Las llamadas en vivo a DeepSeek no forman parte de la suite automatizada.** Las pruebas de agentes usan modelos falsos; el uso real requiere una API key y un modelo habilitado.
 - **Dependencias sin versiones fijadas.** `requirements.txt` no fija versiones; para reproducibilidad conviene congelar un entorno validado.
 
 ### Mejoras futuras posibles
@@ -570,11 +587,21 @@ Estas mejoras no están implementadas en la versión actual.
 
 ---
 
+## Autor
+
+**Julio Solano** — Backend Developer
+
+- GitHub: [github.com/solanomillo](https://github.com/solanomillo)
+- LinkedIn: [linkedin.com/in/julio-cesar-solano](https://www.linkedin.com/in/julio-cesar-solano)
+- Email: [solanomillo144@gmail.com](mailto:solanomillo144@gmail.com)
+
+---
+
 ## Licencia
 
-Este proyecto se distribuye bajo la licencia **MIT**. Consulta [LICENSE](LICENSE) para el texto completo.
+Este proyecto se distribuye bajo la **Licencia MIT**. Consulta el archivo [`LICENSE`](https://github.com/solanomillo/ai-inventory-assistant/blob/main/LICENSE) para ver el texto completo.
 
-Copyright (c) 2026 Julio Cesar Solano.
+Copyright © 2026 [Julio Cesar Solano](https://github.com/solanomillo/) — Backend Developer.
 
 ---
 
