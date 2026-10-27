@@ -1,12 +1,26 @@
 
 [theme]
-base = "light"
-primaryColor = "#2563EB"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F6F8FA"
-textColor = "#1F2328"
-linkColor = "#0969DA"
-borderColor = "#D0D7DE"
-codeBackgroundColor = "#F6F8FA"
-codeTextColor = "#1F2328"
+base = "dark"
+primaryColor = "#0F766E"
+backgroundColor = "#061826"
+secondaryBackgroundColor = "#0D2B45"
+textColor = "#E8F4FF"
+linkColor = "#5EEAD4"
+borderColor = "#1E4E6B"
+codeBackgroundColor = "#08243A"
+codeTextColor = "#D8F3F0"
+dataframeBorderColor = "#1E4E6B"
+dataframeHeaderBackgroundColor = "#0B3A52"
+dataframeHeaderTextColor = "#E8F4FF"
+showWidgetBorder = true
+showSidebarBorder = true
+baseRadius = "medium"
+buttonRadius = "medium"
 font = "sans-serif"
+
+[theme.sidebar]
+backgroundColor = "#04121F"
+secondaryBackgroundColor = "#0A2236"
+textColor = "#E8F4FF"
+borderColor = "#1E4E6B"
+primaryColor = "#0F766E"
