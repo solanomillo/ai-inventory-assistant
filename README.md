@@ -535,7 +535,7 @@ La base se abre al iniciar la aplicación:
 Desde la raíz del proyecto y con el entorno virtual activo:
 
 ```powershell
-python -m streamlit run app/ui/main.py
+python -m streamlit run streamlit_app.py
 ```
 
 Streamlit mostrará la URL local en la terminal. La sección **Asistente** requiere `DEEPSEEK_API_KEY` y `DEEPSEEK_MODEL`; las secciones de consulta funcionan sin ellas.
