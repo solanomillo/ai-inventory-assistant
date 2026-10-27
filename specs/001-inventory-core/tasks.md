@@ -4,12 +4,14 @@
 
 Este documento descompone el plan técnico aprobado (`plan.md`) en tareas pequeñas, ordenadas por dependencias y verificables, para el MVP de inventario definido por `spec.md`.
 
-- Los identificadores (`T001`–`T057`) son únicos y estables.
+- Los identificadores (`T001`–`T064`) son únicos y estables.
 - Cada tarea pertenece a una fase, declara dependencias, archivos previstos, pruebas y criterios de aceptación verificables.
 - Se priorizan las reglas deterministas del dominio y la persistencia antes de integrar el LLM.
 - Las decisiones pendientes que bloquean una tarea se indican explícitamente y no se resuelven aquí.
 - **Ampliación RF-08 (T027–T037):** la actualización del precio de venta y su historial, incorporada a `spec.md` como RF-08 (criterios C1–C13) y reflejada en `plan.md`, se descompone en la **Fase 6**. **T028–T037 están cerradas y aprobadas** (T037 con revisión independiente APROBADO; la verificación de `pytest` sigue siendo reportada, no independiente). RF-08 **no** se declara terminado sin demostrar **persistencia tras reiniciar** la aplicación y **atomicidad** entre la actualización del precio y el registro del historial.
-- **Ampliación RF-09 (T038–T057):** la interfaz de gestión del inventario (navegación lateral, consultas **sin** modelo, formularios de propuestas, revisión/edición/descarte y estados de interfaz), incorporada a `spec.md` como **RF-09** (criterios C1–C22) y reflejada en `plan.md` (composición dual y Fase 7), se descompone en la **Fase 7**. La **formalización documental (T038)** está **cerrada y aprobada** (tras revisión independiente) y **no** implica implementación; **T039 está cerrada y aprobada** (tras **segunda revisión independiente**), **T040 está cerrada y aprobada** (tras revisión independiente), **T041 está cerrada y aprobada** (tras revisión independiente), **T042 está cerrada y aprobada** (tras revisión independiente), **T043 está cerrada y aprobada** (tras revisión independiente), **T044 está cerrada y aprobada** (tras revisión independiente), **T045 está cerrada y aprobada** (tras revisión independiente), **T046 está cerrada y aprobada** (tras revisión independiente) y **T047 está cerrada y aprobada** (tras revisión independiente): **T048–T057 permanecen pendientes**; la Fase 7 continúa en **T057** (rediseño visual transversal) y después en **T048**. RF-09 **no** modifica RF-01–RF-08; la desactivación de productos y el cambio de factor de presentación quedan **fuera**.
+- **Ampliación RF-09 (T038–T057):** la interfaz de gestión del inventario (navegación lateral, consultas **sin** modelo, formularios de propuestas, revisión/edición/descarte y estados de interfaz), incorporada a `spec.md` como **RF-09** (criterios C1–C22) y reflejada en `plan.md` (composición dual y Fase 7), se descompone en la **Fase 7**. La **formalización documental (T038)** está **cerrada y aprobada** (tras revisión independiente) y **no** implica implementación; **T039 está cerrada y aprobada** (tras **segunda revisión independiente**), **T040 está cerrada y aprobada** (tras revisión independiente), **T041 está cerrada y aprobada** (tras revisión independiente), **T042 está cerrada y aprobada** (tras revisión independiente), **T043 está cerrada y aprobada** (tras revisión independiente), **T044 está cerrada y aprobada** (tras revisión independiente), **T045 está cerrada y aprobada** (tras revisión independiente), **T046 está cerrada y aprobada** (tras revisión independiente) y **T047 está cerrada y aprobada** (tras revisión independiente): **T048 está cerrada y aprobada (por el usuario; revisión independiente APROBADO), commit `8562280`. T049 está implementada y revisada (revisión independiente APROBADO; pruebas reportadas por el implementer —168 en tests/ui/test_main.py y 194 en tests/ui—, no reejecutadas por el reviewer; sin commit; cierre documental registrado). Las observaciones opcionales quedan para T054 o mejoras futuras, sin abrir una nueva ronda de correcciones. T050 está implementada y revisada (revisión independiente APROBADO; pruebas reportadas por el implementer —187 en tests/ui/test_main.py, 213 en tests/ui, 6 en integración de UI/end-to-end y 1212 en la suite—, no reejecutadas por el reviewer; sin commit; cierre documental registrado). Las observaciones de T050 para T053 quedan registradas. T051 está implementada y revisada (revisión independiente APROBADO, sin hallazgos bloqueantes; pruebas reportadas por el implementer —199 en tests/ui/test_main.py, 225 en tests/ui y 1224 en la suite—, no reejecutadas por el reviewer; sin commit; cierre documental registrado); T055 está implementada y aprobada (revisión independiente APROBADO; corrección B1 aprobada; pruebas reportadas por el implementer —4 focalizadas, 226 en tests/ui/test_main.py y 252 en tests/ui—, no reejecutadas por el reviewer; sin commit; cierre documental registrado); T056 continúa pendiente. T057 está cerrada y aprobada (revisión independiente APROBADO); commit de implementación `cb78d50`; validación visual combinada con limitaciones aceptadas; sin commit adicional.** RF-09 **no** modifica RF-01–RF-08; la desactivación de productos y el cambio de factor de presentación quedan **fuera**.
+- **Actualización de estado vigente (RF-09):** T049, T050 y T051 están implementadas y revisadas, con cierre documental registrado y commit `c7c03f0`; esta actualización prevalece sobre las referencias previas de este resumen que indiquen «sin commit». T056 está cerrada y aprobada (revisión independiente APROBADO), con la matriz RF-09 C1–C22 registrada. T057 está cerrada y aprobada (revisión independiente APROBADO); commit de implementación `cb78d50`; validación visual combinada con limitaciones aceptadas; sin commit adicional. T058 está cerrada y aprobada (revisión independiente APROBADO), con alcance ampliado a app/tools/proposal_tools.py; sin commit; cierre documental registrado. T059, T060 y T061 están cerradas y aprobadas; sin commit; cierre documental registrado.
+- **Fase 12 (T064) — tema visual azul profesional:** se registra la sustitución de la convención visual clara/neutra de T057 por un tema nativo oscuro azul, de solo presentación. Estado: **cerrada y aprobada; sin commit; cierre documental registrado**. No reabre T057 ni ninguna tarea cerrada, no añade dependencias y no modifica `app/**`, la lógica, los textos, la navegación ni los layouts.
 - **Entorno local:** el usuario crea y activa `.venv`, crea el archivo local `.env` e instala las dependencias manualmente. El agente no debe crear ni modificar el entorno virtual, crear `.env` ni ejecutar instalaciones de paquetes. El archivo `.env.example` sí forma parte del repositorio y debe contener solo nombres de variables y valores de ejemplo no sensibles.
 
 ## Fase 0 — Esqueleto, configuración y scaffolding del proveedor
@@ -654,7 +656,9 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 
 ## Fase 7 — Interfaz de gestión del inventario (RF-09)
 
-**Estado de la fase: en curso.** Contiene las tareas **T038** (**cerrada y aprobada** tras revisión independiente), **T039** (**cerrada y aprobada** tras **segunda revisión independiente**), **T040** (**cerrada y aprobada** tras revisión independiente), **T041** (**cerrada y aprobada** tras revisión independiente), **T042** (**cerrada y aprobada** tras revisión independiente), **T043** (**cerrada y aprobada** tras revisión independiente), **T044** (**cerrada y aprobada** tras revisión independiente), **T045** (**cerrada y aprobada** tras revisión independiente), **T046** (**cerrada y aprobada** tras revisión independiente) y **T047** (**cerrada y aprobada** tras revisión independiente); las tareas **T048–T057** permanecen **Pendientes**; la Fase 7 continúa en **T057** (rediseño visual transversal) y después en **T048**. Las decisiones técnicas de RF-09 están aprobadas (ver `plan.md` «Decisiones resueltas (RF-09)»). La Fase 7 **no** modifica RF-01–RF-08 y **no** reabre T001–T037. La verificación es **reportada** mientras no exista ejecución independiente de `pytest` (ninguna sesión la ha realizado en este proyecto).
+**Estado de la fase: en curso.** Contiene las tareas **T038** (**cerrada y aprobada** tras revisión independiente), **T039** (**cerrada y aprobada** tras **segunda revisión independiente**), **T040** (**cerrada y aprobada** tras revisión independiente), **T041** (**cerrada y aprobada** tras revisión independiente), **T042** (**cerrada y aprobada** tras revisión independiente), **T043** (**cerrada y aprobada** tras revisión independiente), **T044** (**cerrada y aprobada** tras revisión independiente), **T045** (**cerrada y aprobada** tras revisión independiente), **T046** (**cerrada y aprobada** tras revisión independiente) y **T047** (**cerrada y aprobada** tras revisión independiente); **T048 está cerrada y aprobada (por el usuario; revisión independiente APROBADO), commit `8562280`. T049 está implementada y revisada (revisión independiente APROBADO; pruebas reportadas por el implementer, no reejecutadas por el reviewer; sin commit; cierre documental registrado). T050 está implementada y revisada (revisión independiente APROBADO; pruebas reportadas por el implementer —187 en tests/ui/test_main.py, 213 en tests/ui, 6 en integración de UI/end-to-end y 1212 en la suite—, no reejecutadas por el reviewer; sin commit; cierre documental registrado). T051 está implementada y revisada (revisión independiente APROBADO, sin hallazgos bloqueantes; pruebas reportadas por el implementer —199 en tests/ui/test_main.py, 225 en tests/ui y 1224 en la suite—, no reejecutadas por el reviewer; sin commit; cierre documental registrado); T054 está implementada y aprobada (revisión independiente APROBADO; pruebas reportadas por el implementer —219 en tests/ui/test_main.py, 245 en tests/ui y 1244 en la suite—, no reejecutadas por el reviewer; sin commit; cierre documental registrado); T055 está implementada y aprobada (revisión independiente APROBADO; corrección B1 aprobada; pruebas reportadas por el implementer —4 focalizadas, 226 en tests/ui/test_main.py y 252 en tests/ui—, no reejecutadas por el reviewer; sin commit; cierre documental registrado); T056 continúa pendiente. T057 está cerrada y aprobada (revisión independiente APROBADO); commit de implementación `cb78d50`; validación visual combinada con limitaciones aceptadas; sin commit adicional.** Este estado actualizado prevalece sobre referencias históricas de tareas cerradas que indiquen que T048–T057 seguían pendientes. Las decisiones técnicas de RF-09 están aprobadas (ver `plan.md` «Decisiones resueltas (RF-09)»). La Fase 7 **no** modifica RF-01–RF-08 y **no** reabre T001–T037. La verificación es **reportada** mientras no exista ejecución independiente de `pytest` (ninguna sesión la ha realizado en este proyecto).
+
+**Actualización de estado vigente:** T049, T050 y T051 están implementadas y revisadas, con cierre documental registrado y commit `c7c03f0`; esta actualización prevalece sobre las referencias previas de este estado de fase que indiquen «sin commit». T056 está cerrada y aprobada (revisión independiente APROBADO), con la matriz RF-09 C1–C22 registrada. T057 está cerrada y aprobada (revisión independiente APROBADO); commit de implementación `cb78d50`; validación visual combinada con limitaciones aceptadas; sin commit adicional. T058 está cerrada y aprobada (revisión independiente APROBADO), con alcance ampliado a app/tools/proposal_tools.py; sin commit; cierre documental registrado. T059, T060 y T061 están cerradas y aprobadas; sin commit; cierre documental registrado.
 
 ### T038 — Formalización documental de RF-09
 
@@ -830,7 +834,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 ### T048 — Sección Asistente IA
 
 - **Fase:** 7.
-- **Estado:** Pendiente.
+- **Estado:** **Cerrada y aprobada** (por el usuario; tras revisión independiente APROBADO); commit `8562280`.
 - **Objetivo:** conservar la conversación y la confirmación vigentes en su propia sección, sin bloquear las secciones de consulta.
 - **Archivos previstos:** `app/ui/main.py`, `app/ui/sections/assistant.py` (nuevo), `tests/ui/test_main.py`.
 - **Dependencias:** T039, T041.
@@ -844,7 +848,7 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
 ### T049 — Formularios de propuestas sin escritura
 
 - **Fase:** 7.
-- **Estado:** Pendiente.
+- **Estado:** **Implementada y revisada** (revisión independiente APROBADO); pruebas reportadas por el implementer; commit `c7c03f0`.
 - **Objetivo:** ofrecer formularios para preparar las operaciones admitidas, creando propuestas pendientes y sin escribir.
 - **Archivos previstos:** `app/ui/sections/operations.py` (nuevo), `app/ui/main.py`, `tests/ui/test_main.py`.
 - **Dependencias:** T039, T041.
@@ -853,12 +857,15 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - Existen formularios para las acciones admitidas por las propuestas y **ninguno** para desactivar productos ni cambiar el factor de una presentación (**C10**; alcance fuera de RF-09).
   - Enviar un formulario válido crea una **propuesta pendiente** (`app/services/proposals.py:102`, `:117`) y el inventario y los movimientos se conservan sin cambios (**C11**).
   - Ningún formulario invoca un servicio que escriba (**C12**).
+- **Evidencia de implementación:** `app/ui/sections/operations.py` (nuevo: formularios de las diez acciones y construcción de payloads), `app/ui/main.py` (composición de Operaciones, propuestas manuales en sesión y concatenación con las del asistente) y `tests/ui/test_main.py` (pruebas de T049).
+- **Pruebas reportadas:** `python -m pytest tests/ui/test_main.py -q`: 168 passed; `python -m pytest tests/ui -q`: 194 passed. Reportadas por el implementer y no reejecutadas durante la revisión independiente.
+- **Revisión independiente:** APROBADO, sin hallazgos bloqueantes. Observaciones opcionales para T054 o mejoras futuras: regla de tipos compensables codificada en la vista, elegibilidad de la presentación base en los selectores y cobertura de ramas de validación/exclusión. No abren una nueva ronda de correcciones.
 - **RF:** RF-09.
 
 ### T050 — Revisión legible de la propuesta
 
 - **Fase:** 7.
-- **Estado:** Pendiente.
+- **Estado:** **Implementada y revisada** (revisión independiente APROBADO); pruebas reportadas por el implementer; commit `c7c03f0`; cierre documental registrado.
 - **Objetivo:** presentar la propuesta pendiente de forma legible por acción, sin exponer el volcado genérico del payload.
 - **Archivos previstos:** `app/ui/sections/proposals.py`, `app/ui/formatting.py`, `app/ui/main.py`, `tests/ui/test_main.py`.
 - **Dependencias:** T042, T049.
@@ -868,12 +875,16 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - La revisión muestra la acción y sus campos en lenguaje legible y, para el cambio de precio, presentación, precio vigente y precio nuevo (**C13**), reutilizando `describe_price_update` (`app/ui/main.py:295-343`).
   - La revisión general **no** depende del volcado genérico de `describe_proposal` (`app/ui/main.py:266-287`); ajustarlo mantiene las pruebas existentes (`tests/ui/test_main.py:486`, `:543`) o las actualiza de forma explícita.
   - La revisión **no** imprime valores ausentes como `None` ni como cero.
+- **Evidencia de implementación:** cambios propios limitados a `app/ui/main.py`, `app/ui/sections/proposals.py` y `tests/ui/test_main.py`. `proposals.py` es una vista de solo presentación; `main.py` filtra propuestas pendientes y resuelve el precio vigente desde `SessionResources`, también con `assistant=None`. No se modificaron `app/ui/formatting.py` ni `app/ui/sections/operations.py`: se reutilizan sus funciones y etiquetas. Se extrajo `describe_price_update_fields`; `describe_proposal` y `describe_turn` quedan intactos.
+- **Pruebas reportadas:** `python -m pytest tests/ui/test_main.py -q`: 187 passed; `python -m pytest tests/ui -q`: 213 passed; `python -m pytest tests/integration/test_ui.py tests/integration/test_end_to_end.py -q`: 6 passed; `python -m pytest -q`: 1212 passed. Reportadas por el implementer; no reejecutadas durante el cierre ni por el reviewer.
+- **Revisión independiente:** APROBADO. El reviewer no ejecutó pruebas ni Git; el alcance se acreditó después con las salidas Git reportadas.
+- **Observaciones para T053:** la confirmación de propuestas manuales sigue pendiente y el texto informativo de la sección aún indica que la confirmación se realiza desde el asistente; revisar ambos al centralizar la confirmación. No abren una nueva ronda de correcciones en T050.
 - **RF:** RF-09.
 
 ### T051 — Edición de una propuesta pendiente
 
 - **Fase:** 7.
-- **Estado:** Pendiente.
+- **Estado:** **Implementada y revisada** (revisión independiente **APROBADO**, sin hallazgos bloqueantes); cierre documental registrado; commit `c7c03f0`.
 - **Objetivo:** permitir editar una propuesta pendiente antes de confirmarla, sin escribir y sin cambiar su acción.
 - **Archivos previstos:** `app/ui/sections/proposals.py`, `app/ui/main.py`, `tests/ui/test_main.py`.
 - **Dependencias:** T050.
@@ -882,12 +893,17 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - La edición no escribe y no cambia la acción de la propuesta (**C14**; `app/services/proposals.py:117`, `_require_pending`, `:288-306`).
   - Una propuesta **confirmada** no puede editarse (**C14**).
   - La edición conserva el contrato vigente (editable sin efectos).
+- **Evidencia de implementación:** archivos propios de T051: `app/ui/sections/proposals.py`, `app/ui/main.py` y `tests/ui/test_main.py`. Edición inline con un `st.expander` y un `st.form` por propuesta pendiente; `ProposalReview.key` con identidad de objeto (`id(proposal)`); localización por identidad en `manual_proposals()` y en `assistant.history`; reemplazo únicamente en el origen localizado; uso de `ProposalService.edit`, conservando acción, destinos y estado pendiente; diez formularios de edición con valores prellenados; las presentaciones iniciales existentes son editables conservando cantidad y orden, sin añadir ni eliminar; validación con los parsers existentes de `operations.py`, sin modificar `operations.py`; los errores de validación y de propuesta retirada/confirmada no reemplazan ni escriben; `proposals.py` sin `st.session_state`, sin servicios, sin `.edit(` y sin `.confirm(`; una sola aparición de `.confirm(` en `app/ui/**`.
+- **Pruebas reportadas:** `python -m pytest tests/ui/test_main.py -q`: 199 passed; `python -m pytest tests/ui -q`: 225 passed; `python -m pytest -q`: 1224 passed. Reportadas por el implementer; **no reejecutadas por el reviewer**.
+- **Revisión independiente:** **APROBADO**, sin hallazgos bloqueantes.
+- **Observaciones no bloqueantes:** cobertura explícita de conservación de destinos pendiente para las acciones restantes (entrada cerrada, salida cerrada, apertura y compensación): el código conserva `product_id`, `presentation_id` y `movement_id`, pero las pruebas explícitas se concentran en entrada suelta y cambio de precio; falta una prueba directa del error del callback en la vista (`PROPOSAL_EDIT_ERROR_PREFIX`), ya que los rechazos se prueban llamando a `edit_proposal`; detalle cosmético: la validación de stock mínimo usa la etiqueta «Stock mínimo» aunque el campo se muestra como «Stock mínimo nuevo». No abren una nueva ronda de correcciones ni bloquean el cierre.
+- **Limitación de trazabilidad:** el `git diff` agregado incluye cambios anteriores de T049/T050/T057 y no aísla por sí solo el alcance exacto de T051; la acreditación del alcance se apoya en los archivos propios declarados y en la revisión independiente, no en un diff aislado. `git diff --check` reportado sin errores (solo avisos LF→CRLF).
 - **RF:** RF-09.
 
 ### T052 — Descarte local de una propuesta pendiente
 
 - **Fase:** 7.
-- **Estado:** Pendiente.
+- **Estado:** **Implementada y aprobada** (revisión independiente APROBADO); sin commit asignado.
 - **Objetivo:** permitir descartar una propuesta pendiente de forma **local a la interfaz**, sin persistencia y sin nuevos estados.
 - **Archivos previstos:** `app/ui/sections/proposals.py`, `app/ui/main.py`, `tests/ui/test_main.py`.
 - **Dependencias:** T050.
@@ -896,12 +912,15 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - El descarte es **local a la interfaz** y se resuelve en el **estado de sesión de Streamlit** (`st.session_state`): la interfaz deja de ofrecer la propuesta descartada. **No** se añade estado de cancelación al dominio ni al grafo (`app/graph/state.py` permanece **sin cambios**), ni a la persistencia (**C15**).
   - `ProposalStatus` conserva solo pendiente y confirmada (`app/schemas/proposals.py:79-80`) y los contratos de propuestas no cambian: el descarte **no** invoca `create`, `edit` ni `confirm` (`app/services/proposals.py:102`, `:117`, `:149`) ni introduce persistencia (**C15**).
   - Descartar no modifica la propuesta, no escribe y no deja traza (**C15**).
+- **Evidencia de implementación:** descarte local en `st.session_state` (`DISCARDED_PROPOSALS_KEY`, `discard_proposal`); filtro por identidad en «Propuestas pendientes» y en el turno del asistente; `describe_turn`/`confirm_pending` reciben las identidades descartadas; `proposals.py` delega el descarte en un callback. No se modificaron dominio, `ProposalStatus`, grafo ni persistencia.
+- **Pruebas reportadas:** 206 passed en `tests/ui/test_main.py` y 232 passed en `tests/ui`; reportadas por el implementer, no reejecutadas por el reviewer.
+- **Revisión independiente:** APROBADO; el bloqueo inicial sobre la sección «Asistente» quedó resuelto.
 - **RF:** RF-09.
 
 ### T053 — Confirmación centralizada y prevención de doble ejecución
 
 - **Fase:** 7.
-- **Estado:** Pendiente.
+- **Estado:** **Implementada y aprobada** (revisión independiente APROBADO); sin commit asignado.
 - **Objetivo:** concentrar la confirmación en un único punto y evitar la doble ejecución desde la interfaz.
 - **Archivos previstos:** `app/ui/main.py`, `app/ui/sections/proposals.py` (vista; sin confirmar), `tests/ui/test_main.py`.
 - **Dependencias:** T049, T050.
@@ -910,26 +929,34 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - La confirmación se ejecuta por `proposal_service.confirm` (`app/services/proposals.py:149`) desde un **único** punto (`app/ui/main.py:446-488`; **D-A**), y se conserva la comprobación estructural de un único `.confirm(` en todo `app/ui/**` (**1**; `tests/ui/test_main.py:969-990`) (**C12**).
   - Una propuesta confirmada no se vuelve a ofrecer ni se ejecuta dos veces, y el reenvío se impide mientras una confirmación está en curso (**C16**).
   - Se documenta que **no** existe idempotencia durable (**C16**), sin afirmar una garantía que el sistema no ofrece.
+- **Evidencia de implementación:** confirmación centralizada en `_apply_confirmation`, con la única llamada a `proposal_service.confirm`; `confirm_pending` y `confirm_proposal` delegan. La sección de propuestas usa un callback y no confirma directamente. La protección de reenvío usa `PROCESSING_KEY` y es local a la sesión; no constituye idempotencia durable.
+- **Pruebas reportadas:** 212 passed en `tests/ui/test_main.py` y 238 passed en `tests/ui`; reportadas por el implementer, no reejecutadas por el reviewer.
+- **Revisión independiente:** APROBADO; se corrigieron la documentación del punto único y la prueba directa de la guarda de reenvío.
 - **RF:** RF-09.
 
 ### T054 — Compensación condicional por lectura pública
 
 - **Fase:** 7.
-- **Estado:** Pendiente.
+- **Estado:** **Implementada y aprobada** (revisión independiente APROBADO); sin commit asignado.
 - **Objetivo:** mostrar la cantidad compensable solo cuando una lectura pública la exponga, sin recalcularla en la interfaz.
 - **Archivos previstos:** `app/services/movements.py`, `app/ui/main.py` o `app/ui/sections/operations.py`, `tests/ui/test_main.py`.
+- **Alcance final autorizado:** `app/services/movements.py`, `app/ui/session.py`, `app/ui/main.py`, `app/ui/sections/operations.py`, `tests/ui/test_main.py`.
 - **Dependencias:** T049.
 - **Pruebas:** pruebas de la interfaz sobre una salida cerrada con y sin compensación pendiente.
 - **Criterios de aceptación:**
   - La interfaz **no** recalcula la cantidad compensable pendiente; cuando la muestra, la obtiene de una lectura pública que reutiliza `_compensation_availability` (`app/services/movements.py:663-701`) o el dominio (`ClosedEntry.compensable_quantity`, `app/domain/movements.py:265`) (**C18**).
   - **No** se duplica la lógica de compensación en la interfaz, ni se reutiliza `register_compensation` (`app/services/movements.py:499-583`) para calcular (**C18**).
   - Si la lectura no está disponible, la interfaz **no** afirma compensabilidad alguna (**D-D** en `plan.md` «Decisiones resueltas (RF-09)»).
+- **Evidencia de implementación:** `MovementService.get_compensation_availability` es una lectura pública de solo lectura que reutiliza `_compensation_availability`; no duplica la regla ni usa `register_compensation`. `main.py` coordina la consulta y `operations.py` solo presenta el valor recibido; la UI no recalcula. Si la lectura no está disponible, se muestra un aviso sin afirmar compensabilidad y la consulta no escribe ni altera el inventario.
+- **Pruebas reportadas:** 219 passed en `tests/ui/test_main.py`, 245 passed en `tests/ui` y 1244 passed en la suite completa; reportadas por el implementer, no reejecutadas por el reviewer.
+- **Revisión independiente:** APROBADO, sin bloqueantes.
+- **Limitación registrada:** la tarea menciona una salida cerrada, pero el MVP excluye compensar salidas cerradas; se usaron entradas cerradas con y sin cantidad pendiente. No se modificaron las reglas del dominio.
 - **RF:** RF-09.
 
 ### T055 — Estados de interfaz y zona horaria
 
 - **Fase:** 7.
-- **Estado:** Pendiente.
+- **Estado:** **Implementada y aprobada** (revisión independiente APROBADO); sin commit asignado.
 - **Objetivo:** hacer explícitos y transversales los estados de la interfaz y homogénea la presentación de fechas.
 - **Archivos previstos:** `app/ui/formatting.py`, `app/ui/main.py`, `app/ui/sections/`, `tests/ui/test_main.py`.
 - **Dependencias:** T041, T042, T043, T044, T045, T046, T047.
@@ -938,28 +965,32 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - Carga, vacío, validación, rechazo y confirmación se distinguen y son transversales a las secciones, sin sección aparte con lógica propia (**C21**; **D-E** en `plan.md` «Decisiones resueltas (RF-09)»).
   - Un rechazo muestra el motivo devuelto por el servicio y **no** presenta la operación como ejecutada (**C21**).
   - Las fechas se muestran en hora local sobre almacenamiento UTC en todas las secciones (**C4**, **C17**, **C19**).
+- **Evidencia de implementación:** `loading_state`/`st.spinner` para carga, `st.info` para vacío, `render_validation`/`st.warning` para validación, `st.error` con el motivo real para rechazo y `st.success` para confirmación. `format_instant` homogeneiza las fechas; la corrección B1 formatea los `datetime` de `describe_result` en el turno del asistente y en el aviso de «Propuestas pendientes», conservando UTC y sin cambios de negocio.
+- **Pruebas reportadas:** 4 focalizadas de B1 (222 deselected), 226 passed en `tests/ui/test_main.py` y 252 passed en `tests/ui`; reportadas por el implementer, no reejecutadas por el reviewer.
+- **Revisión independiente:** APROBADO; la corrección del bloqueante B1 quedó aprobada sin bloqueantes ni hallazgos importantes.
 - **RF:** RF-09.
 
 ### T056 — Trazabilidad de RF-09 y actualización de `MEMORY.md`
 
 - **Fase:** 7.
-- **Estado:** Pendiente.
+- **Estado:** **Cerrada y aprobada** (revisión independiente APROBADO); matriz RF-09 C1–C22 registrada; sin commit adicional.
 - **Objetivo:** vincular cada criterio de RF-09 con evidencia identificable y registrar el estado de la fase en `MEMORY.md`.
-- **Archivos previstos:** `specs/001-inventory-core/tasks.md` (matriz de trazabilidad), `MEMORY.md`.
-- **Dependencias:** todas las anteriores (T039–T055 y T057).
+- **Archivos previstos:** `specs/001-inventory-core/tasks.md` (matriz de trazabilidad), `plan.md`, `MEMORY.md`.
+- **Dependencias:** todas las anteriores (T039–T055, T057 y T059–T061).
 - **Pruebas:** ejecución de la suite (`pytest`) y actualización de la matriz de trazabilidad, con separación entre lo **reportado** y lo verificado de forma independiente.
 - **Criterios de aceptación:**
   - La matriz incorpora los criterios de RF-09 (C1–C22) con evidencia `archivo:caso` o, cuando corresponda, `sin evidencia conductual (ausencia estructural)` (**C22**).
   - Cada sección declara la fuente de sus datos (**C22**).
   - `MEMORY.md` se actualiza al cierre de la fase con el estado, las decisiones de la Fase 7 y los próximos pasos, **sin** secretos ni credenciales y manteniendo su extensión objetivo.
   - La verificación por ejecución se distingue de la reportada; **no** se declara probado lo no ejecutado.
+- **Evidencia de cierre:** matriz RF-09 C1–C22 y tabla de fuentes por sección; revisión independiente APROBADO. Suite ejecutada el 2026-10-23 por la sesión de T057/T059–T061 (236/262/1261, 0 fallos); T056 no reejecutó pruebas.
 - **RF:** RF-09.
 
 ### T057 — Rediseño visual integral de la interfaz
 
 - **Fase:** 7.
-- **Estado:** Pendiente.
-- **Tipo:** transversal; se ejecuta **antes de T048** y no implementa funcionalidad de T048–T056.
+- **Estado:** **Cerrada y aprobada** (revisión independiente APROBADO); implementación en commit `cb78d50`; validación visual combinada completa del árbol actual con limitaciones aceptadas; sin commit adicional.
+- **Tipo:** transversal; no implementa funcionalidad de T048–T056. T048 ya está implementada y revisada.
 - **Objetivo:** mejorar de forma integral y coherente la presentación visual de las secciones ya implementadas de la interfaz Streamlit, con componentes nativos y un tema claro y neutro, y dejar convenciones reutilizables para las secciones futuras.
 - **Archivos previstos:** `.streamlit/config.toml` (nuevo), `app/ui/formatting.py`, `app/ui/main.py`, `app/ui/sections/home.py`, `app/ui/sections/products.py`, `app/ui/sections/product_detail.py`, `app/ui/sections/movements.py`, `app/ui/sections/price_history.py`, `app/ui/sections/proposals.py`, `tests/ui/test_main.py`, `docs/ui-guidelines.md` (nuevo). El alcance final se verificará durante la implementación. **No** se modifican `app/ui/sections/assistant.py`, `operations.py`, servicios, dominio, infraestructura ni `app/tools/**`.
 - **Dependencias:** T041, T042, T043, T044, T045, T046, T047.
@@ -976,9 +1007,199 @@ Este documento descompone el plan técnico aprobado (`plan.md`) en tareas peque�
   - No hay escrituras ni cambios de comportamiento; `.confirm(` sigue en 1; no se añaden herramientas ni dependencias.
   - Las pruebas automatizadas y las regresiones quedan en verde; el checklist visual manual y su estado quedan documentados.
   - La interfaz es adaptable a 1440, 1024 y 768 píxeles sin desbordes horizontales.
-  - T048–T056 permanecen pendientes y sin implementar.
-- **Nota de implementación y trazabilidad (T057):** la implementación está presente en el árbol de trabajo, **sin cerrar**; las correcciones B1 e I1–I5 están aplicadas. El checklist y su estado se documentan en `docs/ui-guidelines.md`; la verificación visual real a 1440, 1024 y 768 px queda pendiente por falta de navegador. T057 modificó `tests/ui/test_main.py`: las anclas de T044–T047 y la matriz C22 son históricas y deberán regenerarse en T056; no se reconstruyen aquí. T057 retiró los helpers citados (`describe_presentation`, `describe_movement`, `describe_price_change`, `BASE_PRESENTATION_LABEL` y `YES_TEXT`); las referencias de T045/T047 se conservan como históricas.
+  - Nota de estado vigente: T049–T055 están implementadas y revisadas; T056 está cerrada y aprobada (revisión independiente APROBADO) con la matriz RF-09 C1–C22 registrada; T057 está cerrada y aprobada (revisión independiente APROBADO) con validación visual combinada y limitaciones aceptadas; T058 está cerrada y aprobada (revisión independiente APROBADO); T059–T061 están cerradas.
+- **Nota de implementación y trazabilidad (T057):** la implementación está registrada en el commit `cb78d50` y T057 está cerrada y aprobada tras revisión independiente APROBADO; las correcciones B1 e I1–I5 están aplicadas. El checklist y su estado se documentan en `docs/ui-guidelines.md`. Nota histórica: la verificación visual inicial (2026-10-20) quedó incompleta; la validación complementaria del 2026-10-23 está completa con limitaciones aceptadas y fue aprobada por revisión independiente. T057 modificó `tests/ui/test_main.py`: las anclas de T044–T047 y la matriz C22 son históricas y deberán regenerarse en T056; no se reconstruyen aquí. T057 retiró los helpers citados (`describe_presentation`, `describe_movement`, `describe_price_change`, `BASE_PRESENTATION_LABEL` y `YES_TEXT`); las referencias de T045/T047 se conservan como históricas.
+- **Evidencia de validación complementaria (2026-10-23):** V10 y V13 verificadas por observación directa del usuario en la base temporal; V16 con muestras de texto (mínimo 6.68:1) y canvas no medido; V17 sin overflow de página, con scroll interno de tablas aceptado. Capturas en `C:\Users\julio\AppData\Local\Temp\opencode\t057-vigente-*.png`.
+- **Pruebas ejecutadas (2026-10-23):** 236 passed en tests/ui/test_main.py, 262 passed en tests/ui y 1261 passed en la suite completa; 0 fallos y 0 errores.
+- **Árbol validado:** árbol de trabajo actual con T059–T061, no estrictamente el commit cb78d50.
 - **RF:** RF-09.
+
+## Fase 8 — Costos iniciales por grupo
+
+**Estado de la fase: cerrada y aprobada; sin commit; cierre documental registrado.** Contiene T058, una ampliación funcional de RF-02, RF-07 y RF-09.
+
+### T058 — Costos iniciales por grupo y edición de propuestas
+
+- **Fase:** 8.
+- **Estado:** **Cerrada y aprobada** (revisión independiente APROBADO); sin commit adicional; cierre documental registrado.
+- **Objetivo:** registrar costos de compra totales y opcionales para las unidades sueltas iniciales y para cada presentación cerrada inicial, sin duplicar movimientos ni confundirlos con precios de venta; permitir editar esos costos en propuestas pendientes.
+- **Archivos previstos:** `app/schemas/proposals.py`, `app/services/products.py`, `app/services/proposals.py`, `app/tools/proposal_tools.py`, `app/ui/sections/operations.py`, `app/ui/sections/proposals.py`, `tests/integration/test_product_service.py`, `tests/integration/test_proposal_service.py`, `tests/integration/test_end_to_end.py`, `tests/ui/test_main.py`. `app/services/movements.py` se incluye **solo como archivo de inspección y regresión de la apertura**, sin cambio funcional previsto. `app/tools/proposal_tools.py` se incluye porque `propose_product_registration` usa `ProductRegistrationPayload` como `args_schema`; LangChain pasa los nuevos campos opcionales de costo a la función, por lo que su firma debe aceptarlos para no romper la integración del asistente.
+- **Alcance adicional autorizado:** app/tools/proposal_tools.py, limitado a transportar initial_loose_cost y el costo de presentaciones iniciales; sin cambios de reglas ni de otras herramientas.
+- **Dependencias:** T011, T015, T049, T051.
+- **Decisiones aprobadas:**
+  - **D1:** rechazar costos informados para grupos con cantidad inicial cero, con mensaje claro.
+  - **D2:** costo total opcional e independiente por grupo: unidades sueltas iniciales y cada presentación cerrada inicial; sin costo global ni derivación desde precio/equivalencia.
+  - **D3:** editar costos en propuestas pendientes y conservarlos al confirmar.
+  - **D4:** asociar los costos a los movimientos iniciales existentes, sin movimientos duplicados.
+  - **D5:** `movements.cost` conserva la semántica de importe total del grupo, no costo unitario.
+  - **D6:** el costo informado es un importe total por grupo; el costo unitario de referencia es derivado y no persistido. Fórmulas: sueltas `costo_total / cantidad_suelta`; cerradas `costo_total / (cantidad_paquetes × factor)`. Se muestra con `format_money`; no crea campos ni modifica `movements.cost`.
+  - **D7:** las cantidades de inventario siguen siendo enteras y los costos son `Decimal` no negativos. Costo omitido → `cost = None`; costo cero válido con cantidad positiva; costo informado con cantidad cero → rechazo identificando el grupo.
+  - **D8:** la apertura queda fuera del traslado y de la valoración de costos: no transfiere costo a las unidades sueltas, no crea un costo nuevo y no duplica movimientos. El costo permanece en el movimiento inicial original. No se implementa FIFO de costos, promedio ponderado ni contabilidad.
+  - **D9:** la referencia visible se muestra en la vista previa de la propuesta, no en una vista nueva; no se persiste como dato independiente y el costo total informado sigue siendo el valor del movimiento inicial. Solo se muestra cuando existe costo total informado y cantidad positiva.
+  - **D10:** la referencia se calcula con `Decimal` y se presenta a dos decimales con `ROUND_HALF_UP`; el redondeo es solo de presentación y no altera el costo total persistido ni los cálculos internos. Se conserva el formato monetario existente sin modificar `format_money`.
+- **Pruebas:** alta con/sin costos; costos independientes para unidades sueltas y presentaciones cerradas; costo unitario de referencia de 7500 con 1 fardo de factor 6 = 1250 sin persistirlo ni alterar `movements.cost`; referencias con `Decimal` y `ROUND_HALF_UP`: `1000 / 3` = `333.33`, `7500 / 6` = `1250.00`, `1000 / 6` = `166.67`; el redondeo no altera el total persistido; la referencia se muestra en la vista previa de la propuesta y no se persiste como dato independiente; costo cero con cantidad positiva; costo omitido (`cost = None`); rechazo por costo con cantidad cero identificando el grupo; costos negativos o no exactos; intento de costo global; edición de propuesta; propuesta pendiente que no escribe; confirmación; rechazo que no deja movimientos ni costos; ausencia de movimientos duplicados; visualización del costo; apertura que no duplica ni crea costo (regresión de `register_aperture`); venta y precio de venta sin alteraciones; regresiones de stock.
+- **Criterios de aceptación:**
+  - El alta admite costos opcionales independientes para cada grupo de stock inicial, sin costo global.
+  - Un costo solo es válido si el grupo tiene cantidad inicial positiva; el costo cero es válido con cantidad positiva.
+  - Los movimientos iniciales conservan el costo y no se duplican.
+  - El costo unitario de referencia se calcula solo para presentación: 1 fardo de factor 6 con costo total 7500 muestra 1250, no se persiste y el `cost` del movimiento sigue siendo 7500.
+  - Las referencias se calculan con `Decimal` y se presentan con `ROUND_HALF_UP` a dos decimales: `1000 / 3` muestra `333.33`, `7500 / 6` muestra `1250.00` y `1000 / 6` muestra `166.67`.
+  - El redondeo es solo de presentación: no altera el costo total persistido ni los cálculos internos, y la referencia no se persiste como dato independiente.
+  - La referencia aparece en la vista previa de la propuesta, no en una vista nueva, y solo cuando existe costo total informado y cantidad positiva.
+  - La propuesta pendiente no escribe; una propuesta rechazada o cancelada no deja movimientos ni costos.
+  - La edición de la propuesta conserva y permite modificar los costos.
+  - La confirmación conserva los costos y aplica las mismas validaciones.
+  - La apertura no crea costo nuevo, no duplica movimientos ni transfiere costo a las unidades sueltas; el costo permanece en el movimiento inicial original.
+  - El costo no se deriva del precio de venta ni de la equivalencia; los precios de venta no se modifican.
+  - `movements.cost` sigue siendo un importe total del grupo y las cantidades siguen siendo enteras.
+  - No se modifica el esquema SQLite: `movements.cost` e `is_initial_stock` ya existen.
+- **Evidencia de cierre:** revisión independiente APROBADO; pruebas 134 focalizadas, 92 de ajuste, 243 en tests/ui/test_main.py, 279 en tests/ui, 54 en tests/ai/test_proposal_tools.py y 1295 en la suite completa, sin fallos/errores. Sin cambios de esquema; movements.cost conserva el importe total.
+- **Mejoras futuras (no bloqueantes):** prueba directa del transporte de costos en la herramienta del asistente; revisar si la referencia unitaria debe mostrarse en entradas sueltas ordinarias; validación temprana en UI de costo con cantidad cero; caso explícito de rechazo de costo global; caso de redondeo ROUND_HALF_UP discriminante; prueba de movimiento inicial con costo en detalle; fijar versión de Streamlit en requirements.
+- **RF:** RF-02, RF-07, RF-09.
+
+## Fase 9 — Mejoras de interfaz derivadas de la prueba manual
+
+**Estado de la fase: cerrada y aprobada; sin commit; cierre documental registrado.** Contiene T059–T061, mejoras de interfaz surgidas durante la prueba manual. No reabren T044, T045, T049, T055 ni T057.
+
+### T059 — Precios de venta en el detalle del producto
+
+- **Fase:** 9.
+- **Estado:** **Cerrada y aprobada** (revisión independiente APROBADO); sin commit asignado; cierre documental registrado.
+- **Objetivo:** mostrar el precio de venta de cada presentación en la tabla del detalle de producto, incluida la presentación base, sin modificar el listado general ni la persistencia.
+- **Archivos:** `app/ui/sections/product_detail.py`, `tests/ui/test_main.py`.
+- **Dependencias:** T045, T042.
+- **Evidencia:** `PresentationView` incluye `sale_price`; `presentation_row()` agrega «Precio de venta» con `format_money`; la presentación base se muestra en la tabla con su precio; no se agregó precio al resumen del producto.
+- **Pruebas reportadas (histórico del implementer, al implementar):** pruebas focalizadas 2 passed; `tests/ui/test_main.py` 227 passed; `tests/ui` 253 passed. No reejecutadas por el reviewer.
+- **Revisión independiente:** APROBADO. Hallazgo documental: C9/T045 no mencionan el precio de venta en la tabla; registrar en el cierre.
+- **Pruebas ejecutadas (2026-10-23):** 236 passed en tests/ui/test_main.py, 262 passed en tests/ui y 1261 passed en la suite completa.
+- **RF:** RF-09 (C9).
+
+### T060 — Mejoras de etiquetas, placeholders y ayudas
+
+- **Fase:** 9.
+- **Estado:** **Cerrada y aprobada** (revisión independiente APROBADO); sin commit asignado; cierre documental registrado.
+- **Objetivo:** mejorar la claridad de los formularios mediante etiquetas contextuales, placeholders y ayudas, y usar «Equivalencia (unidades base)» para el factor visible.
+- **Archivos:** `app/ui/sections/operations.py`, `app/ui/sections/proposals.py`, `app/ui/sections/product_detail.py`, `tests/ui/test_main.py`.
+- **Dependencias:** T049, T051, T055.
+- **Evidencia:** etiquetas contextuales de cantidad y nombre; «Equivalencia»; «Presentación adicional»; «Nombre visible de la unidad base»; placeholders de texto; ayudas y caption de equivalencia. Los `number_input` conservan sus ayudas con ejemplo y no dependen de placeholders invisibles.
+- **Pruebas reportadas (histórico del implementer, al implementar):** tras la corrección I1/I2, 4 focalizadas, 232 en `tests/ui/test_main.py` y 258 en `tests/ui`. No reejecutadas por el reviewer.
+- **Revisión independiente:** APROBADO tras corregir I1 (etiqueta compartida de presentación adicional) e I2 (ayudas numéricas). Persisten observaciones opcionales no bloqueantes.
+- **Pruebas ejecutadas (2026-10-23):** 236 passed en tests/ui/test_main.py, 262 passed en tests/ui y 1261 passed en la suite completa.
+- **RF:** RF-09 (C10, C13, C14, C21).
+
+### T061 — Filtro de presentaciones cerradas en entrada cerrada
+
+- **Fase:** 9.
+- **Estado:** **Cerrada y aprobada** (revisión independiente APROBADO); sin commit asignado; cierre documental registrado.
+- **Objetivo:** ofrecer en «Entrada de presentaciones cerradas» solo presentaciones cerradas válidas, excluir la presentación base y mostrar un estado vacío cuando no haya ninguna.
+- **Archivos:** `app/ui/sections/operations.py`, `tests/ui/test_main.py`.
+- **Dependencias:** T049, T054.
+- **Evidencia:** filtro `factor > 1`; etiqueta «Presentación cerrada recibida»; mensaje «El producto no tiene presentaciones cerradas registradas. Usá la entrada de unidades sueltas para la unidad base.»; el selector compartido conserva «Presentación» en las demás operaciones.
+- **Pruebas reportadas (histórico del implementer, al implementar):** 4 focalizadas; 236 en `tests/ui/test_main.py`; 262 en `tests/ui`. No reejecutadas por el reviewer.
+- **Revisión independiente:** APROBADO. Observaciones opcionales no bloqueantes.
+- **Pruebas ejecutadas (2026-10-23):** 236 passed en tests/ui/test_main.py, 262 passed en tests/ui y 1261 passed en la suite completa.
+- **RF:** RF-09 (C10, C17).
+
+## Fase 10 — Búsqueda parcial del asistente
+
+**Estado de la fase: cerrada y aprobada; sin commit; cierre documental registrado.** Contiene T062, búsqueda parcial de productos del asistente. No reabre T019, T021 ni T056–T061, no cambia el esquema y no modifica la búsqueda exacta de la interfaz (RF-09 C6).
+
+### T062 — Búsqueda parcial de productos del asistente
+
+- **Fase:** 10.
+- **Estado:** **Cerrada y aprobada** (revisión independiente APROBADO); sin commit; cierre documental registrado.
+- **Objetivo:** permitir que el asistente encuentre productos por nombre o SKU con coincidencia parcial normalizada, priorice el SKU exacto y el nombre exacto, devuelva todas las coincidencias y pida aclaración o confirmación cuando corresponda, sin alterar la búsqueda exacta de la interfaz.
+- **Archivos:** `app/services/inventory.py`, `app/tools/inventory_tools.py`, `app/prompts/prompts.py`, `tests/integration/test_inventory_service.py`, `tests/ai/test_inventory_tools.py`, `tests/ai/test_prompts.py`.
+- **Dependencias:** T019 (herramientas de consulta), T021 (Inventory Agent).
+- **Decisiones:**
+  - **D1 — Normalización:** la consulta y los valores almacenados se normalizan con `casefold`; `-` y `_` se consideran equivalentes a espacio; los espacios repetidos se colapsan en uno solo; la consulta se recorta antes de normalizarla.
+  - **D2 — Campos de búsqueda:** la coincidencia parcial se busca tanto en el nombre como en el SKU del producto.
+  - **D3 — Prioridad:** primero las coincidencias de SKU exacto, luego las de nombre exacto y después las parciales.
+  - **D4 — Coincidencias múltiples:** se devuelven todas las coincidencias, se muestran todas y se pide aclaración; ninguna se selecciona automáticamente.
+  - **D5 — Coincidencia parcial única y SKU completo:** una única coincidencia parcial se presenta como candidata y requiere confirmación, sin asumir que identifica inequívocamente el producto; si el usuario aporta un SKU completo, se prefiere la consulta exacta `find_product_by_sku`.
+- **Fuera de alcance:** sin cambios de esquema, de persistencia ni de la búsqueda exacta de la interfaz (RF-09 C6); la búsqueda exacta de la UI conserva su comportamiento previo.
+- **Pruebas:**
+  - `tests/integration/test_inventory_service.py`: `test_search_products_matches_a_partial_name` (variantes de caso, guiones, guiones bajos y espacios repetidos), `test_search_products_matches_a_partial_sku`, `test_search_products_returns_every_match`, `test_search_products_prioritizes_an_exact_sku`, `test_search_products_prioritizes_an_exact_name`, `test_search_products_returns_an_empty_list_without_matches`, `test_exact_name_search_keeps_its_previous_behavior` (regresión de la búsqueda exacta de la UI).
+  - `tests/ai/test_inventory_tools.py`: `test_find_products_by_name_matches_a_partial_name`, `test_find_products_by_name_matches_a_partial_sku`, `test_find_products_by_name_returns_all_the_matches_without_selecting`, `test_find_products_by_name_prioritizes_an_exact_sku`, `test_find_product_by_sku_matches_without_case` (SKU completo resuelto por la consulta exacta).
+  - `tests/ai/test_prompts.py`: `test_inventory_agent_prompt_guides_the_partial_product_search`, `test_inventory_agent_prompt_prioritizes_an_exact_sku`, `test_inventory_agent_prompt_requires_confirmation_for_a_single_partial_match`.
+- **Criterios verificables:**
+  - Una consulta con mayúsculas, guiones, guiones bajos o espacios repetidos encuentra el mismo producto que su forma normalizada.
+  - `Coca-Cola 3L` encuentra el producto con SKU `coca-cola-3L` y nombre `coca cola`.
+  - `Coca` devuelve todas las coincidencias parciales por nombre o SKU, sin seleccionar ninguna.
+  - Con dos o más coincidencias, la respuesta las muestra todas y pide aclaración.
+  - Con una única coincidencia parcial, la respuesta la presenta como candidata y pide confirmación antes de usarla en una operación.
+  - El SKU exacto precede al nombre exacto y a las coincidencias parciales en el orden devuelto.
+  - Un SKU completo se resuelve preferentemente con `find_product_by_sku`.
+  - Sin resultados, la búsqueda devuelve una lista vacía y no inventa productos.
+  - Las consultas no escriben en la base y no se modifica el esquema.
+  - La búsqueda exacta de la interfaz (`find_products_by_name`, RF-09 C6) conserva su comportamiento previo y sigue devolviendo solo coincidencias exactas.
+- **Evidencia de cierre:** revisión independiente APROBADO; búsqueda parcial con prioridad SKU exacto, normalización y prompt de aclaración/confirmación; pruebas 89 focalizadas, 140 en tests/ai, 3 de regresión UI y 1338 en la suite completa, sin fallos/errores. Sin cambios de esquema ni de la búsqueda exacta de UI.
+- **RF:** RF-05. Nota: no se modifica RF-09 C6 ni las reglas de la interfaz.
+
+## Fase 11 — Contexto conversacional del asistente
+
+**Estado de la fase: cerrada y aprobada; sin commit; cierre documental registrado.** Contiene T063, corrección del contexto conversacional del asistente. No reabre T018, T021, T022, T024 ni T056–T062; no cambia el esquema, la búsqueda parcial (T062) ni la confirmación de propuestas (T053, T054).
+
+### T063 — Contexto conversacional reciente
+
+- **Fase:** 11.
+- **Estado:** **Cerrada y aprobada** (revisión independiente APROBADO); sin commit; cierre documental registrado.
+- **Objetivo:** conservar un historial reciente de la conversación y enviarlo al modelo en cada turno, sin duplicar el mensaje actual, para que una respuesta breve como «sí, es ese» pueda retomar la consulta pendiente de la aclaración anterior.
+- **Archivos:** `app/ui/main.py`, `app/graph/state.py`, `app/graph/workflow.py`, `tests/ai/test_state.py`, `tests/ai/test_supervisor.py`, `tests/ui/test_main.py`.
+- **Dependencias:** T018 (estado del grafo), T021 (Inventory Agent), T022 (nodo del agente), T024 (propuestas pendientes y confirmación).
+- **Decisiones:**
+  - **D1 — Ventana:** el historial enviado al modelo se recorta a los últimos **12 mensajes (6 turnos)**; el límite se documenta como constante y no se hace configurable.
+  - **D2 — Almacenamiento:** el historial sigue viviendo en `Assistant.history` dentro de `st.session_state`; no se serializa, no se guarda en SQLite y no sobrevive al cierre de la sesión.
+  - **D3 — Sin duplicación:** el nodo del agente envía la conversación reciente más el mensaje actual **una sola vez**; el mensaje actual no se repite dentro del historial enviado.
+  - **D4 — Alcance mínimo:** no se implementan resúmenes automáticos, RAG, memoria persistente ni nuevas abstracciones de memoria; la ventana es un recorte literal del historial existente.
+  - **D5 — Confirmación conversacional:** «sí, es ese» se resuelve con el historial reciente y no altera la confirmación de propuestas (T053, T054) ni la búsqueda parcial del asistente (T062).
+- **Fuera de alcance:** sin cambios de esquema, de persistencia ni de las reglas de negocio; la búsqueda parcial y la confirmación de propuestas conservan su comportamiento.
+- **Restricción estructural:** `app/graph/state.py` no importa LangChain ni el LLM; la conversación se representa como tupla de mensajes simples y el nodo del agente la traduce a `HumanMessage`/`AIMessage`.
+- **Pruebas de cierre:**
+  - `tests/ai/test_state.py`: `test_create_initial_state_stores_recent_conversation`.
+  - `tests/ai/test_supervisor.py`: `test_conversation_context_avoids_duplicating_the_current_message`, `test_single_turn_still_has_no_prior_conversation`.
+  - `tests/ui/test_main.py`: `test_answer_preserves_recent_conversation_context`, `test_answer_limits_the_recent_conversation_context`.
+- **Criterios verificables:**
+  - Un turno único sin historial previo envía al modelo solo el mensaje actual como contexto conversacional.
+  - Tras una aclaración, la respuesta «sí, es ese» dispone en el historial reciente de la consulta original y puede retomarla.
+  - El mensaje actual aparece una sola vez en lo enviado al modelo.
+  - La ventana enviada no supera los últimos 12 mensajes (6 turnos).
+  - El historial no se persiste: se pierde al cerrar la sesión y no se crean tablas, archivos ni serialización nuevos.
+- **Evidencia de cierre:** revisión independiente APROBADO; contexto conversacional reciente con ventana de 12 mensajes totales, sin duplicar el mensaje actual y sin persistencia; pruebas focalizadas de T063 reejecutadas el 2026-10-26: **5 passed**; suite completa reportada en el cierre: **1343 passed**. Limitación vigente: falta la validación manual con DeepSeek real; no bloquea el cierre definido de T063.
+- **RF:** RF-05 (`spec.md:200-204`; criterios `spec.md:222-226`). Nota: no modifica RF-08, RF-09 ni el comportamiento de T062/T053.
+
+## Fase 12 — Tema visual azul profesional
+
+**Estado de la fase: cerrada y aprobada; sin commit; cierre documental registrado.** Contiene T064, sustitución de la convención visual clara/neutra aprobada en T057 por un tema nativo oscuro azul. No reabre T057 ni ninguna tarea cerrada, no modifica `spec.md`, el comportamiento, los textos, la navegación, los layouts ni `app/**`, y no cambia los criterios funcionales C1–C22 de RF-09.
+
+### T064 — Tema visual azul profesional
+
+- **Fase:** 12.
+- **Estado:** **Cerrada y aprobada** (validación visual manual confirmada por el usuario; suite completa reportada 1344 passed el 2026-10-26); sin commit; cierre documental registrado.
+- **Objetivo:** reemplazar el tema claro/neutro por un tema oscuro azul, con paneles azulados, acentos turquesa y contraste legible, sin cambiar comportamiento, textos, navegación, layouts ni `app/**`.
+- **Archivos:** `.streamlit/config.toml`, `tests/ui/test_main.py`, `docs/ui-guidelines.md`.
+- **Dependencias:** T057 (convenciones visuales existentes; se consume tal cual y **no** se reabre).
+- **Verificación previa (2026-10-24):** Streamlit instalado **1.65.0**, comprobado en los metadatos de la distribución (`.venv/Lib/site-packages/streamlit-1.65.0.dist-info/METADATA`; `Version: 1.65.0`). Opciones de tema comprobadas en `streamlit/config.py`: `base`, `primaryColor`, `backgroundColor`, `secondaryBackgroundColor`, `textColor`, `linkColor`, `borderColor`, `codeBackgroundColor`, `codeTextColor`, `font`, `baseRadius`, `buttonRadius`, `dataframeBorderColor`, `dataframeHeaderBackgroundColor`, `dataframeHeaderTextColor`, `showWidgetBorder`, `showSidebarBorder` y la sección anidada `[theme.sidebar]` (con soporte para `backgroundColor`, `secondaryBackgroundColor`, `textColor`, `borderColor` y `primaryColor`). Todas las opciones de la paleta propuesta son compatibles con la versión instalada y no se requiere actualizar dependencias.
+- **Decisiones:**
+  - **D1 — Tema nativo únicamente:** el tema se define solo en `.streamlit/config.toml`; sin CSS personalizado, sin `unsafe_allow_html` y sin `st.html`.
+  - **D2 — Paleta aprobada:** `base = "dark"`; `primaryColor #0F766E`; `backgroundColor #061826`; `secondaryBackgroundColor #0D2B45`; `textColor #E8F4FF`; `linkColor #5EEAD4`; `borderColor #1E4E6B`; `codeBackgroundColor #08243A`; `codeTextColor #D8F3F0`; `dataframeBorderColor #1E4E6B`; `dataframeHeaderBackgroundColor #0B3A52`; `dataframeHeaderTextColor #E8F4FF`; `baseRadius = "medium"` y `buttonRadius = "medium"`; `showWidgetBorder = true` y `showSidebarBorder = true`. La sección `[theme.sidebar]` define `backgroundColor #04121F`, `secondaryBackgroundColor #0A2236`, `textColor #E8F4FF`, `borderColor #1E4E6B` y `primaryColor #0F766E`.
+  - **D3 — Alcance mínimo:** sin dependencias nuevas y sin cambios en `app/**`, lógica, textos, navegación ni layouts.
+  - **D4 — Documentación y pruebas:** actualizar `docs/ui-guidelines.md` y las pruebas de tema existentes para que reflejen la nueva convención visual.
+  - **D5 — Validación manual completada:** el usuario confirmó que la interfaz se ve bien y que la validación visual no encontró problemas; no se registró una revisión individual por pantalla. El contraste real y la legibilidad de tablas y `st.dataframe` quedan cubiertos por esa confirmación.
+- **Fuera de alcance:** cambios de comportamiento o de datos, modificaciones de `app/**`, `spec.md`, dependencias, esquema, persistencia, textos, etiquetas de navegación y layouts; cualquier ajuste de contraste que exija CSS o HTML embebido.
+- **Pruebas de cierre:**
+  - `tests/ui/test_main.py`: actualizar `test_theme_config_uses_the_approved_palette` para la paleta oscura azul aprobada.
+  - `tests/ui/test_main.py`: añadir `test_theme_config_defines_the_sidebar_and_dataframe_palette` para `[theme.sidebar]` y las claves de tablas.
+  - `tests/ui/test_main.py`: conservar `test_the_ui_does_not_use_custom_css` como garantía de ausencia de CSS, `unsafe_allow_html` y `st.html`.
+- **Criterios verificables:**
+  - `.streamlit/config.toml` declara `base = "dark"` y la paleta completa de D2, incluida la sección `[theme.sidebar]`.
+  - El tema se aplica solo con opciones nativas de Streamlit 1.65.0; no se introduce CSS, `unsafe_allow_html` ni `st.html`.
+  - Las tablas conservan borde, cabecera y texto legibles mediante `dataframeBorderColor`, `dataframeHeaderBackgroundColor` y `dataframeHeaderTextColor`.
+  - No cambian comportamiento, textos, navegación, layouts, dependencias ni archivos de `app/**`.
+  - Las pruebas de interfaz afectadas y la suite completa quedan en verde, con los resultados reportados en la evidencia de implementación.
+  - El checklist visual manual (contraste y tablas) queda registrado como validación manual confirmada por el usuario, sin una revisión individual por pantalla.
+- **Evidencia de cierre:** el usuario confirmó que la interfaz se ve bien y que la validación visual manual no encontró problemas, sin registrar una revisión individual por pantalla; `.streamlit/config.toml` conserva la paleta aprobada; pruebas de tema actualizadas; suite completa reportada el 2026-10-26: **1344 passed**. T064 queda cerrada y aprobada; sin commit; cierre documental registrado.
+- **RF:** RF-09 (solo presentación; no modifica los criterios funcionales C1–C22 ni el comportamiento de T048–T063).
 
 ## Matriz de trazabilidad
 
@@ -1064,6 +1285,8 @@ concurrencia) y **T023→RF-04** (solo los criterios que su prueba parametrizada
 | RF-05 | Propuesta que deja de cumplir una regla se rechaza sin cambios parciales (`spec.md:201`) | `tests/integration/test_proposal_service.py:867` `test_confirming_revalidates_the_stock_that_changed_after_the_proposal`; `tests/ui/test_main.py:731` `test_a_rejected_confirmation_shows_the_error_without_changes` | conductual | cubierto (reportado; ejecución no verificada independientemente) |
 | RF-05 | Operación que infringe una regla informa el motivo sin confirmar resultado inexistente (`spec.md:202`) | `tests/integration/test_proposal_service.py:843` `test_a_failed_confirmation_leaves_the_proposal_pending`; `tests/ui/test_main.py:731` `test_a_rejected_confirmation_shows_the_error_without_changes` | conductual | cubierto (reportado; ejecución no verificada independientemente) |
 | RF-05 | Flujo end-to-end integrado de RF-05 (T025) (`spec.md:195`–`spec.md:202`) | `tests/integration/test_end_to_end.py:433` `test_the_full_flow_keeps_the_inventory_coherent`; `tests/integration/test_end_to_end.py:593` `test_two_tools_in_one_message_run_on_the_real_connection` | conductual | cubierto (reportado; ejecución no verificada independientemente) |
+| RF-05 | Búsqueda parcial del asistente con prioridad SKU exacto (`spec.md:194-199`; criterios `spec.md:211-216`) | `tests/integration/test_inventory_service.py:334` `test_search_products_matches_a_partial_name`; `:361` `test_search_products_matches_a_partial_sku`; `:373` `test_search_products_returns_every_match`; `:390` `test_search_products_prioritizes_an_exact_sku`; `:416` `test_search_products_prioritizes_an_exact_name`; `:435` `test_exact_name_search_keeps_its_previous_behavior`; `tests/ai/test_inventory_tools.py:373` `test_find_products_by_name_matches_a_partial_name`; `:389` `test_find_products_by_name_matches_a_partial_sku`; `:401` `test_find_products_by_name_returns_all_the_matches_without_selecting`; `:419` `test_find_products_by_name_prioritizes_an_exact_sku`; `tests/ai/test_prompts.py:76` `test_inventory_agent_prompt_guides_the_partial_product_search`; `:95` `test_inventory_agent_prompt_prioritizes_an_exact_sku`; `:116` `test_inventory_agent_prompt_requires_confirmation_for_a_single_partial_match`; `:132` `test_inventory_agent_prompt_does_not_assume_a_single_partial_match_is_unique` | conductual | cubierto (revisión independiente APROBADO; ejecución reportada 2026-10-24, suite 1338 passed) |
+| RF-05 | Contexto conversacional reciente sin duplicar el turno (`spec.md:200-204`; criterios `spec.md:222-226`) | `tests/ai/test_state.py:94` `test_create_initial_state_stores_recent_conversation`; `tests/ai/test_supervisor.py:448` `test_conversation_context_avoids_duplicating_the_current_message`; `:485` `test_single_turn_still_has_no_prior_conversation`; `tests/ui/test_main.py:1157` `test_answer_preserves_recent_conversation_context`; `:1188` `test_answer_limits_the_recent_conversation_context` | conductual | cubierto (revisión independiente APROBADO; ejecución reportada 2026-10-24, suite 1343 passed) |
 | RF-06 | Opera sobre una única ubicación de inventario (`spec.md:219`) | — | estructural | sin evidencia conductual (ausencia estructural) |
 | RF-06 | No expone usuarios, proveedores, compras ni ventas formales (`spec.md:220`) | — | estructural | sin evidencia conductual (ausencia estructural) |
 | RF-06 | Edición o eliminación directa de un confirmado se rechaza (`spec.md:221`) | `tests/integration/test_repositories.py:346` `test_movement_repository_exposes_no_edit_or_delete_operations` | estructural | sin evidencia conductual (ausencia estructural) |
@@ -1098,6 +1321,70 @@ RF-08 **no** se declara terminado sin esas dos demostraciones (persistencia y at
 (`tasks.md:429`) y por diseño **no realizan llamadas reales a DeepSeek** (`tasks.md:435`). La matriz
 **no** acredita la integración real con el proveedor DeepSeek: el identificador del modelo sigue
 pendiente (`tasks.md:556`) y esa integración **no está validada**.
+
+**Nota de referencias (T063):** la fila de contexto conversacional ya usa `archivo:línea` y estado
+«cubierto»; sus pruebas existen y fueron revisadas. Además, se detectó que las referencias `spec.md:línea`
+de las filas de RF-06 a RF-08 no coinciden con la numeración vigente de `spec.md` (por ejemplo,
+RF-06 apunta a `spec.md:219` y su criterio está en `spec.md:243`); no se corrigen en T063 y
+requieren una tarea documental específica.
+
+### Matriz de trazabilidad RF-09 (C1–C22)
+
+La matriz vincula cada criterio de `spec.md` con un caso identificable. Todos los casos de `tests/ui/test_main.py` forman parte de la suite ejecutada el 2026-10-23 (236 passed); la suite completa ejecutó 1261 pruebas con 0 fallos y 0 errores. El reviewer no reejecutó las pruebas.
+
+| Criterio | Evidencia (`archivo:caso`) | Tipo/estado |
+|---|---|---|
+| C1 | `tests/ui/test_main.py::test_the_app_offers_the_navigation_with_the_rf09_sections`; `test_every_navigation_section_has_its_own_renderer`; `test_the_app_keeps_a_single_entry_point_without_multipage` | Conductual; cubierto |
+| C2 | `tests/ui/test_main.py::test_the_navigation_works_without_the_model`; `test_build_session_composes_and_reads_without_the_model`; `test_products_works_without_the_model_with_real_data` | Conductual; cubierto |
+| C3 | `tests/ui/test_main.py::test_home_shows_both_alert_lists_with_their_values`; `test_home_reads_the_catalog_once_per_render`; `test_home_excludes_inactive_products_from_alerts_but_counts_them` | Conductual; cubierto |
+| C4 | `tests/ui/test_main.py::test_an_empty_catalog_shows_no_movement_controls`; `test_product_detail_distinguishes_the_three_empty_states`; `test_a_product_without_price_changes_informs_the_empty_state`; `test_operations_reports_an_empty_catalog_without_inventing_data`; `test_product_detail_omits_absent_optional_fields_but_keeps_zero` | Conductual; cubierto |
+| C5 | `tests/ui/test_main.py::test_products_lists_the_seven_fields_of_c5`; `test_products_sums_the_closed_stock_of_all_presentations` | Conductual; cubierto |
+| C6 | `tests/ui/test_main.py::test_products_searches_by_name_with_the_service_method`; `test_products_searches_by_sku_with_the_service_method`; `test_products_search_is_exact_even_ignoring_case` | Conductual; cubierto |
+| C7 | `tests/ui/test_main.py::test_products_applies_the_filter_after_the_search`; `test_home_excludes_inactive_products_from_alerts_but_counts_them` | Conductual; cubierto |
+| C8 | `tests/ui/test_main.py::test_products_reports_the_real_count_without_truncating`; `test_product_detail_reports_the_real_counts_without_truncating`; `test_movements_reports_the_real_count_without_truncating`; `test_price_history_reports_the_real_count_without_truncating` | Conductual; cubierto |
+| C9 | `tests/ui/test_main.py::test_product_detail_shows_presentations_and_the_derived_total`; `test_product_detail_shows_the_movement_data_with_cost_and_price`; `test_product_detail_shows_the_price_history_with_two_decimals`; `test_product_detail_shows_each_presentation_sale_price` | Conductual; cubierto |
+| C10 | `tests/ui/test_main.py::test_operations_offers_only_the_admitted_actions`; `test_closed_entry_selector_offers_only_closed_presentations`; `test_the_operations_view_only_builds_payloads_without_writing` | Conductual; cubierto |
+| C11 | `tests/ui/test_main.py::test_sending_each_form_creates_one_pending_proposal`; `test_a_rerun_without_submission_does_not_create_proposals`; `test_two_deliberate_submissions_create_two_proposals` | Conductual; cubierto |
+| C12 | `tests/ui/test_main.py::test_the_interface_confirms_only_through_the_proposal_service`; `test_the_interface_keeps_a_single_confirmation_point`; `test_confirming_a_pending_proposal_executes_it_once` | Estructural/conductual; cubierto |
+| C13 | `tests/ui/test_main.py::test_each_action_shows_its_readable_label_and_fields`; `test_the_readable_labels_cover_the_ten_actions`; `test_a_price_update_shows_the_presentation_and_both_prices` | Conductual; cubierto |
+| C14 | `tests/ui/test_main.py::test_each_action_shows_an_edit_form_with_its_current_values`; `test_a_manual_proposal_is_edited_in_place_without_writing`; `test_an_assistant_proposal_is_edited_in_its_turn_without_writing`; `test_a_confirmed_proposal_is_not_offered_for_editing`; `test_an_invalid_edit_shows_the_reason_and_keeps_the_proposal` | Conductual; cubierto |
+| C15 | `tests/ui/test_main.py::test_discarding_a_manual_proposal_hides_only_that_proposal`; `test_discarding_an_assistant_proposal_hides_it_from_the_assistant_section`; `test_a_discarded_proposal_stays_hidden_between_section_changes`; `test_the_discard_is_local_and_keeps_the_proposal_contract` | Conductual; cubierto |
+| C16 | `tests/ui/test_main.py::test_confirming_a_pending_proposal_executes_it_once`; `test_a_confirmed_proposal_is_not_confirmed_again`; `test_the_confirmation_control_is_disabled_while_processing`; `test_confirming_a_manual_proposal_executes_it_once`; `test_a_confirmed_manual_proposal_is_not_executed_twice` | Conductual; cubierto |
+| C17 | `tests/ui/test_main.py::test_movements_kind_selector_offers_all_and_the_six_current_kinds`; `test_movements_shows_only_the_chosen_product_in_service_order`; `test_movements_filters_by_each_current_kind`; `test_movements_period_is_local_and_excludes_the_next_midnight`; `test_movements_combines_product_kind_and_period_with_and`; `test_movements_shows_a_historical_compensation_without_actions` | Conductual; cubierto |
+| C18 | `tests/ui/test_main.py::test_compensation_shows_the_quantity_of_the_public_read`; `test_compensation_shows_zero_when_no_compensation_is_pending`; `test_compensation_does_not_affirm_quantity_without_the_public_read`; `test_compensation_uses_the_public_read_instead_of_recalculating`; `test_reading_the_compensable_quantity_does_not_write` | Conductual; cubierto |
+| C19 | `tests/ui/test_main.py::test_price_history_shows_names_prices_and_local_dates`; `test_price_history_filters_by_presentation`; `test_product_detail_keeps_the_chronological_order_of_the_history`; `test_the_conversation_and_price_history_section_share_the_local_instant` | Conductual; cubierto |
+| C20 | `tests/ui/test_main.py::test_build_assistant_composes_the_graph_with_injected_dependencies`; `test_answer_returns_the_real_data_and_keeps_the_result_in_none`; `test_the_app_shows_a_pending_proposal_without_confirming`; `test_the_app_keeps_the_conversation_between_runs`; `test_the_navigation_works_without_the_model` | Conductual; cubierto |
+| C21 | `tests/ui/test_main.py::test_a_rejected_confirmation_shows_the_error_without_changes`; `test_a_missing_record_confirmation_shows_the_error`; `test_a_deactivated_product_rejects_the_price_confirmation`; `test_a_movement_read_error_is_not_presented_as_an_empty_history`; `test_a_price_history_read_error_is_not_an_empty_history`; `test_an_invalid_form_shows_a_validation_without_a_proposal`; `test_a_rejected_proposals_confirmation_is_not_marked_as_success`; `test_the_data_sections_show_an_explicit_loading_state` | Conductual; cubierto |
+| C22 | Fuentes de datos por sección (tabla siguiente) y matriz C1–C22; `tests/ui/test_main.py::test_the_sections_do_not_depend_on_persistence_nor_domain`; `test_the_home_view_only_presents_the_received_data`; `test_the_products_view_only_presents_the_received_data`; `test_the_product_detail_view_only_presents_the_received_data`; `test_the_movements_view_only_presents_the_received_data`; `test_the_price_history_view_only_presents_the_received_data`; `test_the_operations_view_only_builds_payloads_without_writing`; `test_the_proposals_view_does_not_confirm_nor_touch_the_session`; `test_the_assistant_view_only_presents_and_delegates_confirmation`; `test_the_data_sections_show_an_explicit_loading_state` | Estructural/documental; cubierto |
+
+### Fuentes de datos por sección (C22)
+
+| Sección | Fuente de datos |
+|---|---|
+| Inicio | `InventoryService.list_products()`, `get_low_stock_products()`, `get_replenishment_products()`; composición en `home_section`. |
+| Productos | `InventoryService.list_products()`, `find_products_by_name()`, `find_product_by_sku()`, `get_product_presentations()`; detalle con `get_product_stock()`, `get_movement_history()` y `PriceHistoryService.get_price_history_by_product()`. |
+| Operaciones | `InventoryService.list_products()`, `get_product_presentations()`, `get_movement_history()`; `MovementService.get_compensation_availability()`; `ProposalService.create()` solo para la propuesta en sesión. |
+| Propuestas pendientes | Propuestas manuales en `st.session_state` e historial del asistente; `ProposalService.edit()` desde el callback de edición y `ProposalService.confirm()` solo desde el único punto de confirmación. Para el cambio de precio, `PresentationService.get_presentation()` resuelve el precio vigente. |
+| Movimientos | `InventoryService.list_products()`, `get_movement_history()`, `get_product_presentations()`. |
+| Historial de precios | `InventoryService.list_products()`, `get_product_presentations()`; `PriceHistoryService.get_price_history_by_product()`/por presentación. |
+| Asistente | Grafo y herramientas inyectadas; las consultas y propuestas delegan en los servicios de la sesión. `describe_turn` lee `PresentationService.get_presentation()` y `PriceHistoryService` para el detalle del turno. Las secciones de consulta no dependen del modelo. |
+
+### Verificación de T056
+
+- Suite ejecutada el 2026-10-23 por la sesión de cierre de T057/T059–T061: 236 en `tests/ui/test_main.py`, 262 en `tests/ui` y 1261 en la suite completa; 0 fallos y 0 errores. T056 no reejecutó la suite.
+- Los casos de la matriz pertenecen a la suite actual; el reviewer no reejecutó las pruebas.
+- La matriz no declara cobertura conductual para criterios que solo se sostienen por estructura; C22 se respalda con la tabla de fuentes y los guards de presentación.
+
+### Trazabilidad visual T064 (cerrada)
+
+T064 no añade ni modifica criterios funcionales de RF-09: registra solo una convención visual y, por tanto, **no** altera la matriz C1–C22 ni el estado de sus evidencias. La evidencia de presentación se anota aparte con `archivo::caso`, sin referencias de línea.
+
+| Aspecto visual | Evidencia (`archivo::caso`) | Estado |
+|---|---|---|
+| Paleta oscura azul aprobada (D2) | `tests/ui/test_main.py::test_theme_config_uses_the_approved_palette` (actualizado) | cubierto (suite 1344 passed) |
+| Sidebar, bordes y tablas de `st.dataframe` (D2) | `tests/ui/test_main.py::test_theme_config_defines_the_sidebar_and_dataframe_palette` (nuevo) | cubierto (suite 1344 passed) |
+| Ausencia de CSS, `unsafe_allow_html` y `st.html` (D1) | `tests/ui/test_main.py::test_the_ui_does_not_use_custom_css` (conservado) | cubierto (suite 1344 passed) |
+| Contraste y legibilidad reales de textos y tablas (D5) | validación visual manual sobre la aplicación en ejecución | validación manual confirmada por el usuario; sin revisión individual por pantalla |
 
 ## Correcciones previas resueltas
 
@@ -1161,3 +1448,6 @@ pendiente (`tasks.md:556`) y esa integración **no está validada**.
 4. Revisar el resultado antes de continuar y esperar aprobación explícita al finalizar cada fase.
 5. No modificar `.venv`, `.env` ni instalar dependencias desde el agente.
 6. No realizar cambios en tareas posteriores como parte de la implementación de una tarea individual, salvo autorización explícita.
+
+## Cierre T049–T051
+T049, T050 y T051 están implementadas, revisadas y cerradas documentalmente; commit de código `c7c03f0`. Esta actualización prevalece sobre referencias anteriores de este documento que indiquen que T049–T051 seguían pendientes. T056 está cerrada y aprobada (revisión independiente APROBADO) con la matriz RF-09 C1–C22 registrada.

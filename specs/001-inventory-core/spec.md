@@ -4,6 +4,7 @@
 
 Aprobada. Ampliada con RF-08 (actualización del precio de venta e historial).
 RF-09 (interfaz de gestión del inventario) está **aprobada** y formalizada en este documento: no modifica RF-01 a RF-08 ni las reglas de negocio transversales.
+T058 (costos iniciales por grupo) está implementada y aprobada (revisión independiente APROBADO); sin commit.
 
 ## Propósito
 
@@ -190,6 +191,17 @@ El asistente debe permitir consultar el inventario y proponer operaciones median
 - Si una regla aplicable falla al confirmar, el asistente debe rechazar la operación, explicar el motivo y no guardar cambios parciales.
 - Cuando una solicitud no identifique inequívocamente un producto u operación, el asistente debe solicitar una aclaración y, si hay coincidencias, mostrarlas; para las coincidencias múltiples por nombre aplica la regla general de RF-01.
 - El asistente no debe inventar productos, presentaciones, stock, movimientos, resultados ni operaciones realizadas.
+- El asistente debe buscar productos por nombre o por SKU con coincidencia parcial; la consulta y los valores almacenados se normalizan con `casefold`, los guiones y guiones bajos se consideran equivalentes a espacios y los espacios repetidos se colapsan en uno solo.
+- La búsqueda del asistente debe devolver todas las coincidencias y ordenarlas por prioridad: primero el SKU exacto, luego el nombre exacto y después las coincidencias parciales.
+- Cuando la búsqueda del asistente devuelva varias coincidencias, debe mostrarlas todas y pedir una aclaración, sin seleccionar ninguna.
+- Cuando la búsqueda parcial devuelva una única coincidencia, el asistente debe presentarla como candidata y pedir confirmación, sin asumir que identifica inequívocamente el producto.
+- Cuando el usuario aporte un SKU completo, el asistente debe preferir la consulta exacta por SKU.
+- La búsqueda de productos de la interfaz descrita en RF-09 (C6) sigue siendo exacta y no se modifica por esta búsqueda parcial del asistente.
+- El asistente debe conservar un historial reciente de la conversación y enviarlo al modelo en cada turno, para que una respuesta breve pueda apoyarse en el contexto inmediato anterior.
+- En cada turno, el mensaje actual debe enviarse al modelo una sola vez, sin duplicarse con el historial.
+- El historial reciente debe limitarse a una ventana de los últimos 12 mensajes (6 turnos) y vivir solo en la sesión de la interfaz (`st.session_state`); no se persiste.
+- Cuando el asistente haya pedido una aclaración, una confirmación conversacional breve como «sí, es ese» debe poder retomar la consulta pendiente usando el historial reciente.
+- No se implementan resúmenes automáticos del historial, recuperación aumentada (RAG), memoria persistente ni nuevas abstracciones de memoria.
 
 ### Criterios de aceptación
 
@@ -201,6 +213,17 @@ El asistente debe permitir consultar el inventario y proponer operaciones median
 - Dada una propuesta confirmada y válida, el sistema debe ejecutar la operación e informar el resultado.
 - Dada una propuesta que deje de cumplir una regla antes de confirmarse, el asistente debe rechazarla al confirmar y no guardar cambios parciales.
 - Cuando una operación infrinja una regla de negocio, el asistente debe informar el motivo y no debe confirmar un resultado inexistente.
+- Dada la consulta `Coca-Cola 3L`, cuando exista un producto con SKU `coca-cola-3L` y nombre `coca cola`, el asistente debe encontrarlo por la coincidencia con el SKU normalizado.
+- Dada la consulta `Coca`, el asistente debe devolver todas las coincidencias parciales por nombre o por SKU, sin seleccionar ninguna.
+- Dadas dos o más coincidencias para una búsqueda parcial, el asistente debe mostrarlas todas y pedir una aclaración.
+- Dada una única coincidencia parcial, el asistente debe presentarla como candidata y pedir confirmación antes de usarla para una operación.
+- Dado un SKU que coincida exactamente con un producto y también con coincidencias parciales de otros productos, el asistente debe priorizar el producto del SKU exacto.
+- Dado un nombre o un SKU buscado desde la interfaz (RF-09 C6), el sistema debe seguir devolviendo solo coincidencias exactas, sin aplicar la búsqueda parcial del asistente.
+- Dado un primer turno sin historial previo, el asistente debe responder con el mensaje actual como único contexto conversacional.
+- Dada una aclaración del asistente y la respuesta «sí, es ese», el asistente debe disponer en el historial de la consulta original y poder retomarla.
+- En cada turno, el mensaje actual debe aparecer una sola vez en lo enviado al modelo.
+- El historial enviado al modelo no debe superar los últimos 12 mensajes (6 turnos).
+- El historial conversacional no debe persistirse: al cerrar la sesión se pierde.
 
 ## RF-06. Límites del MVP
 
@@ -406,3 +429,76 @@ El sistema debe permitir gestionar el inventario desde la aplicación Streamlit 
 - Intento de editar o eliminar un movimiento confirmado.
 - Solicitud de modificación sin confirmación.
 - Regla de negocio que deja de cumplirse entre la propuesta y su confirmación.
+
+## T058 — Costos iniciales por grupo (implementada)
+
+> Estado: definición funcional implementada y aprobada (revisión independiente APROBADO); sin commit.
+
+Esta ampliación no crea un RF nuevo: precisa RF-02, RF-07 y RF-09.
+
+### Hechos del código que la propuesta respeta
+
+- `movements.cost` existe solo para entradas y representa un **importe total**, no unitario (`app/infrastructure/sqlite/schema.py:131-138`; `app/services/movements.py:169-174`). La propuesta no altera esa semántica ni el esquema.
+- El alta crea los movimientos iniciales sin costo (`ProductService._record_initial_stock`, `app/services/products.py:358-384`): hoy registra producto, presentación, tipo, cantidad, motivo e `is_initial_stock`, y omite `cost`.
+- La apertura ya existe (`register_aperture`, `app/services/movements.py:429-513`) y **no registra costo ni precio aplicado**. La propuesta no la modifica.
+- Las cantidades de inventario son **enteras** y los costos son **`Decimal` exacto**, según `plan.md` §«Representación de cantidades, stock, precio y costo». Esta regla no cambia.
+- Los precios de venta son independientes del costo de compra y no se modifican en esta ampliación.
+
+### Reglas propuestas
+
+- **Unidad y tipo de dato:** las cantidades iniciales siguen siendo enteras; los costos son `Decimal` no negativos, exactos y almacenables en la columna `TEXT` vigente. No se admiten negativos, valores no finitos ni representaciones no exactas.
+- **Costo total opcional por grupo:** el alta puede incluir un costo total opcional e independiente para:
+  - las unidades sueltas iniciales;
+  - cada presentación cerrada inicial declarada.
+- **Sin costo global:** no existe un costo único del alta que se reparta entre grupos. Cada grupo tiene su propio costo, o ninguno.
+- **Importe del grupo:** el costo informado es el **importe total**, no el costo unitario. No se distribuye entre unidades ni se deriva del precio de venta o de la equivalencia. `movements.cost` conserva la semántica actual de importe total del grupo.
+- **Costo unitario de referencia (derivado, no persistido):** para mostrar información comprensible, la interfaz puede calcular y mostrar un costo unitario de referencia:
+  - unidades sueltas: `costo_total / cantidad_suelta`;
+  - presentaciones cerradas: `costo_total / (cantidad_paquetes × factor)`.
+  Este valor es **solo de presentación**: no se persiste, no crea un campo nuevo en la base, no modifica `movements.cost` y no se usa para valorar inventario. Se muestra con el formato monetario existente (`format_money`).
+  - **Ubicación (D9):** se muestra en la **vista previa de la propuesta**, no en una vista nueva. No se persiste la referencia como dato independiente: el costo total informado sigue siendo el valor del movimiento inicial.
+  - **Condición de presentación (D9):** solo se calcula y muestra cuando existe un costo total informado y la cantidad del grupo es positiva. Sin costo total informado o con cantidad cero no hay referencia.
+  - **Cálculo y redondeo (D10):** se calcula con `Decimal` y se presenta con dos decimales usando `ROUND_HALF_UP`. El redondeo es **solo de presentación**: no altera el costo total persistido ni los cálculos internos previos.
+  - **Formato:** se conserva el formato monetario existente de la interfaz; no se cambia el separador decimal ni se modifica `format_money`.
+- **Costo omitido:** si un grupo no informa costo, su movimiento inicial conserva `cost = None`.
+- **Costo cero:** un costo igual a cero es válido cuando el grupo tiene cantidad positiva y se persiste como costo cero.
+- **Costo con cantidad cero:** si un grupo tiene cantidad inicial cero y se informa un costo (incluido cero), la propuesta se rechaza con un mensaje que identifique el grupo y el motivo. Un grupo con cantidad cero no genera movimiento inicial.
+- **Persistencia solo al confirmar:** la propuesta pendiente no escribe. Los costos se persisten únicamente al confirmar el alta, junto con los movimientos iniciales. Una propuesta rechazada o cancelada no deja movimientos ni costos.
+- **Asociación sin duplicación:** los costos se asocian a los movimientos iniciales existentes (`is_initial_stock = 1`); no se crean movimientos adicionales ni se duplica el stock inicial.
+- **Independencia del precio de venta:** el costo de compra y el precio de venta de una presentación son independientes. Confirmar un alta con costos no modifica precios de venta ni registra historial de precios.
+- **Apertura fuera del traslado de costos:** la apertura de paquetes existe, pero T058 **no transfiere costos a las unidades sueltas**. El costo permanece en el movimiento inicial original y la apertura no crea un costo nuevo. Esta limitación es deliberada: transferir costos exigiría valoración de inventario (asignación de costo por unidad, FIFO de costos o promedio ponderado), que queda fuera del MVP.
+- **Sin valoración contable:** no se implementa FIFO de costos, promedio ponderado, costo de ventas ni contabilidad.
+- **Movimientos iniciales:** siguen identificándose con `is_initial_stock` y conservan su motivo, presentación y cantidad.
+
+### Criterios de aceptación propuestos
+
+- Dado un alta con 2 unidades sueltas iniciales y 1 fardo cerrado inicial, el sistema debe permitir informar un costo total para las 2 unidades sueltas y otro independiente para el fardo; el costo de un grupo no debe condicionar ni calcular el del otro.
+- Dado un fardo de factor 6 con costo total 7500, la referencia mostrada debe ser 1250 por unidad base. Ese valor es solo de referencia: no se persiste y `movements.cost` del movimiento inicial del fardo debe seguir siendo 7500.
+- Dado un costo total de 1000 para 3 unidades base, la referencia mostrada debe ser `333.33`.
+- Dado un costo total de 7500 para un fardo de factor 6, la referencia mostrada debe ser `1250.00`.
+- Dado un costo total de 1000 para 6 unidades base, la referencia mostrada debe ser `166.67`.
+- El total persistido en `movements.cost` no debe cambiar por el redondeo de la referencia; el redondeo es solo de presentación.
+- La referencia debe aparecer en la vista previa de la propuesta, no en una vista nueva.
+- El costo del fardo no debe calcularse como seis veces el costo de una botella ni como una fracción del precio de venta del fardo.
+- Dada un alta con costo de unidades sueltas, el movimiento inicial suelto debe conservar ese costo y las unidades sueltas deben quedar registradas una sola vez.
+- Dada un alta con costo de una presentación cerrada inicial, el movimiento inicial cerrado debe conservar ese costo y el stock cerrado debe quedar registrado una sola vez.
+- Dado un alta sin costos iniciales, los movimientos iniciales deben conservar `cost = None`.
+- Dado un costo cero con cantidad positiva, el alta debe aceptarse y persistir el costo cero.
+- Dado un grupo con cantidad inicial cero y un costo informado, la propuesta debe rechazarse con un mensaje que identifique el grupo y el motivo.
+- Dado un costo negativo o no representable como `Decimal` exacto, la propuesta debe rechazarse.
+- Dada una propuesta de alta pendiente con costos, la propuesta no debe escribir movimientos ni costos; deben poder editarse sus costos iniciales sin cambiar la acción.
+- Al confirmar la propuesta, los costos editados deben conservarse y los movimientos iniciales no deben duplicarse.
+- Dado un rechazo al confirmar (por costo inválido o cantidad cero con costo), no deben quedar movimientos iniciales ni costos persistidos.
+- Dada una apertura posterior de un paquete con costo inicial, la apertura no debe crear un costo nuevo ni duplicar movimientos; el costo debe permanecer en el movimiento inicial original y las unidades sueltas resultantes no reciben costo.
+- Una venta o una actualización de precio de venta no debe alterar los costos registrados ni el costo unitario de referencia mostrado.
+- El detalle del movimiento debe mostrar el costo inicial sin confundirlo con el precio de venta.
+
+### Casos de error propuestos
+
+- Costo informado para un grupo de stock inicial con cantidad cero.
+- Costo inicial negativo, no finito o no representable como `Decimal` exacto.
+- Intento de asignar un costo global único a varios grupos con costos independientes.
+- Intento de derivar el costo inicial del precio de venta o de la equivalencia.
+- Intento de transferir el costo a las unidades sueltas mediante una apertura, o de tratar la apertura como una valoración de inventario.
+- Intento de persistir la referencia como dato independiente o de usar el redondeo de presentación para alterar el costo total del movimiento inicial.
+- Intento de modificar `movements.cost` de un movimiento inicial ya confirmado.
